@@ -1,1 +1,2 @@
 - [Expo Web Dark Mode](expo-web-dark-mode.md) — Appearance.setColorScheme doesn't exist in this Expo version on web; force dark palette in useColors hook instead.
+- [Codegen + Metro crash](codegen-metro-crash.md) — Orval cleans generated folder before regenerating; if Metro caches during the clean step, it crashes with "Unable to resolve". Fix: re-run codegen then restart Expo workflow.
