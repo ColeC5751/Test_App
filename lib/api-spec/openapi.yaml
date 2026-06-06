@@ -10,6 +10,8 @@ servers:
 tags:
   - name: health
     description: Health operations
+  - name: recipes
+    description: Recipe operations
 paths:
   /healthz:
     get:
@@ -24,6 +26,26 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/HealthStatus"
+  /recipes/search:
+    get:
+      operationId: searchRecipes
+      tags: [recipes]
+      summary: Search recipes by ingredients
+      description: Fetches recipes from Spoonacular matching the given ingredients
+      parameters:
+        - name: ingredients
+          in: query
+          required: true
+          schema:
+            type: string
+          description: Comma-separated list of ingredients
+      responses:
+        "200":
+          description: Recipe search results
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RecipeSearchResult"
 components:
   schemas:
     HealthStatus:
@@ -33,4 +55,28 @@ components:
           type: string
       required:
         - status
-
+    RecipeSearchResult:
+      type: object
+      properties:
+        recipes:
+          type: array
+          items:
+            $ref: "#/components/schemas/SpoonacularRecipe"
+      required:
+        - recipes
+    SpoonacularRecipe:
+      type: object
+      properties:
+        id:
+          type: integer
+        title:
+          type: string
+        image:
+          type: string
+        readyInMinutes:
+          type: integer
+      required:
+        - id
+        - title
+        - image
+        - readyInMinutes

@@ -1,0 +1,1 @@
+- [Expo Web Dark Mode](expo-web-dark-mode.md) — Appearance.setColorScheme doesn't exist in this Expo version on web; force dark palette in useColors hook instead.

@@ -1,0 +1,27 @@
+kind = "mobile"
+previewPath = "/"
+title = "Recipe Roulette"
+version = "1.0.0"
+id = "artifacts/recipe-roulette"
+router = "expo-domain"
+
+[[integratedSkills]]
+name = "expo"
+version = "1.0.0"
+
+[[services]]
+ensurePreviewReachable = "/status"
+name = "expo"
+paths = [ "/" ]
+localPort = 18445
+
+[services.development]
+run = "pnpm --filter @workspace/recipe-roulette run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/recipe-roulette", "run", "build" ]
+run = [ "pnpm", "--filter", "@workspace/recipe-roulette", "run", "serve" ]
+
+[services.env]
+PORT = "18445"
+BASE_PATH = "/"

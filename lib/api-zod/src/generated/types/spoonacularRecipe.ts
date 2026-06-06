@@ -5,9 +5,6 @@
  * API specification
  * OpenAPI spec version: 0.1.0
  */
-export interface HealthStatus {
-  status: string;
-}
 
 export interface SpoonacularRecipe {
   id: number;
@@ -15,15 +12,3 @@ export interface SpoonacularRecipe {
   image: string;
   readyInMinutes: number;
 }
-
-export interface RecipeSearchResult {
-  recipes: SpoonacularRecipe[];
-}
-
-export type SearchRecipesParams = {
-/**
- * Comma-separated list of ingredients
- */
-ingredients: string;
-};
-
