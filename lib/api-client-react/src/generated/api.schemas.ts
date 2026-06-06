@@ -9,13 +9,23 @@ export interface HealthStatus {
   status: string;
 }
 
+export interface RecipeIngredient {
+  /** Base amount for the recipe's default serving count */
+  amount: number;
+  unit: string;
+  name: string;
+  /** Full original string e.g. "2 cloves garlic, minced" */
+  original: string;
+}
+
 export interface SpoonacularRecipe {
   id: number;
   title: string;
   image: string;
   readyInMinutes: number;
-  /** List of ingredient strings (e.g. "2 cloves garlic, minced") */
-  ingredients: string[];
+  /** Default serving count from Spoonacular */
+  servings: number;
+  ingredients: RecipeIngredient[];
   /** Ordered list of cooking step strings */
   instructions: string[];
 }

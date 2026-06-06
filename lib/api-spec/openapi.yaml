@@ -64,6 +64,24 @@ components:
             $ref: "#/components/schemas/SpoonacularRecipe"
       required:
         - recipes
+    RecipeIngredient:
+      type: object
+      properties:
+        amount:
+          type: number
+          description: Base amount for the recipe's default serving count
+        unit:
+          type: string
+        name:
+          type: string
+        original:
+          type: string
+          description: Full original string e.g. "2 cloves garlic, minced"
+      required:
+        - amount
+        - unit
+        - name
+        - original
     SpoonacularRecipe:
       type: object
       properties:
@@ -75,11 +93,13 @@ components:
           type: string
         readyInMinutes:
           type: integer
+        servings:
+          type: integer
+          description: Default serving count from Spoonacular
         ingredients:
           type: array
           items:
-            type: string
-          description: List of ingredient strings (e.g. "2 cloves garlic, minced")
+            $ref: "#/components/schemas/RecipeIngredient"
         instructions:
           type: array
           items:
@@ -90,5 +110,6 @@ components:
         - title
         - image
         - readyInMinutes
+        - servings
         - ingredients
         - instructions

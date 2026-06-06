@@ -7,6 +7,7 @@
  */
 
 export * from './healthStatus';
+export * from './recipeIngredient';
 export * from './recipeSearchResult';
 export * from './searchRecipesParams';
 export * from './spoonacularRecipe';

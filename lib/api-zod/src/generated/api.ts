@@ -31,7 +31,13 @@ export const SearchRecipesResponse = zod.object({
   "title": zod.string(),
   "image": zod.string(),
   "readyInMinutes": zod.number(),
-  "ingredients": zod.array(zod.string()).describe('List of ingredient strings (e.g. \"2 cloves garlic, minced\")'),
+  "servings": zod.number().describe('Default serving count from Spoonacular'),
+  "ingredients": zod.array(zod.object({
+  "amount": zod.number().describe('Base amount for the recipe\'s default serving count'),
+  "unit": zod.string(),
+  "name": zod.string(),
+  "original": zod.string().describe('Full original string e.g. \"2 cloves garlic, minced\"')
+})),
   "instructions": zod.array(zod.string()).describe('Ordered list of cooking step strings')
 }))
 })

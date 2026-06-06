@@ -1,8 +1,10 @@
 import { Router } from "express";
 
 interface SpoonacularIngredient {
-  original?: string;
+  amount?: number;
+  unit?: string;
   name?: string;
+  original?: string;
 }
 
 interface SpoonacularStep {
@@ -20,6 +22,7 @@ interface SpoonacularRecipe {
   title: string;
   image: string;
   readyInMinutes?: number;
+  servings?: number;
   extendedIngredients?: SpoonacularIngredient[];
   analyzedInstructions?: SpoonacularInstruction[];
 }
@@ -69,9 +72,13 @@ router.get("/search", async (req, res) => {
         title: r.title,
         image: r.image,
         readyInMinutes: r.readyInMinutes ?? 30,
-        ingredients: (r.extendedIngredients ?? [])
-          .map((i) => i.original ?? i.name ?? "")
-          .filter(Boolean),
+        servings: r.servings ?? 4,
+        ingredients: (r.extendedIngredients ?? []).map((i) => ({
+          amount: i.amount ?? 0,
+          unit: i.unit ?? "",
+          name: i.name ?? "",
+          original: i.original ?? i.name ?? "",
+        })),
         instructions: (r.analyzedInstructions?.[0]?.steps ?? []).map(
           (s) => s.step,
         ),

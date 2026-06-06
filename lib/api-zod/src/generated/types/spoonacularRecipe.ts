@@ -5,14 +5,16 @@
  * API specification
  * OpenAPI spec version: 0.1.0
  */
+import type { RecipeIngredient } from './recipeIngredient';
 
 export interface SpoonacularRecipe {
   id: number;
   title: string;
   image: string;
   readyInMinutes: number;
-  /** List of ingredient strings (e.g. "2 cloves garlic, minced") */
-  ingredients: string[];
+  /** Default serving count from Spoonacular */
+  servings: number;
+  ingredients: RecipeIngredient[];
   /** Ordered list of cooking step strings */
   instructions: string[];
 }
