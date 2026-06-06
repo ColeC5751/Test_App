@@ -11,4 +11,8 @@ export interface SpoonacularRecipe {
   title: string;
   image: string;
   readyInMinutes: number;
+  /** List of ingredient strings (e.g. "2 cloves garlic, minced") */
+  ingredients: string[];
+  /** Ordered list of cooking step strings */
+  instructions: string[];
 }

@@ -1,10 +1,27 @@
 import { Router } from "express";
 
+interface SpoonacularIngredient {
+  original?: string;
+  name?: string;
+}
+
+interface SpoonacularStep {
+  number: number;
+  step: string;
+}
+
+interface SpoonacularInstruction {
+  name?: string;
+  steps?: SpoonacularStep[];
+}
+
 interface SpoonacularRecipe {
   id: number;
   title: string;
   image: string;
   readyInMinutes?: number;
+  extendedIngredients?: SpoonacularIngredient[];
+  analyzedInstructions?: SpoonacularInstruction[];
 }
 
 interface SpoonacularResponse {
@@ -32,6 +49,8 @@ router.get("/search", async (req, res) => {
     url.searchParams.set("includeIngredients", ingredients);
     url.searchParams.set("number", "3");
     url.searchParams.set("addRecipeInformation", "true");
+    url.searchParams.set("fillIngredients", "true");
+    url.searchParams.set("instructionsRequired", "true");
     url.searchParams.set("apiKey", apiKey);
 
     const response = await fetch(url.toString());
@@ -50,6 +69,12 @@ router.get("/search", async (req, res) => {
         title: r.title,
         image: r.image,
         readyInMinutes: r.readyInMinutes ?? 30,
+        ingredients: (r.extendedIngredients ?? [])
+          .map((i) => i.original ?? i.name ?? "")
+          .filter(Boolean),
+        instructions: (r.analyzedInstructions?.[0]?.steps ?? []).map(
+          (s) => s.step,
+        ),
       })),
     });
   } catch (err) {

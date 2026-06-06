@@ -30,7 +30,9 @@ export const SearchRecipesResponse = zod.object({
   "id": zod.number(),
   "title": zod.string(),
   "image": zod.string(),
-  "readyInMinutes": zod.number()
+  "readyInMinutes": zod.number(),
+  "ingredients": zod.array(zod.string()).describe('List of ingredient strings (e.g. \"2 cloves garlic, minced\")'),
+  "instructions": zod.array(zod.string()).describe('Ordered list of cooking step strings')
 }))
 })
 

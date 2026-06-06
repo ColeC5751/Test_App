@@ -75,8 +75,20 @@ components:
           type: string
         readyInMinutes:
           type: integer
+        ingredients:
+          type: array
+          items:
+            type: string
+          description: List of ingredient strings (e.g. "2 cloves garlic, minced")
+        instructions:
+          type: array
+          items:
+            type: string
+          description: Ordered list of cooking step strings
       required:
         - id
         - title
         - image
         - readyInMinutes
+        - ingredients
+        - instructions
