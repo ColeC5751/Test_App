@@ -217,15 +217,16 @@ export default function RouletteScreen() {
 
       {/* Recipe List Header */}
       <View style={styles.listHeader}>
-        <Text style={[styles.listTitle, { color: colors.foreground }]}>
-          My Recipes
+        <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+          <Text style={[styles.listTitle, { color: colors.foreground }]}>
+            My Recipes
+          </Text>
           {recipes.length > 0 ? (
-            <Text style={{ color: colors.mutedForeground }}>
-              {"  "}
+            <Text style={[styles.listTitle, { color: colors.mutedForeground }]}>
               {recipes.length}
             </Text>
           ) : null}
-        </Text>
+        </View>
         <Pressable
           onPress={() => setShowForm(!showForm)}
           style={[styles.addBtn, { backgroundColor: colors.primary }]}
