@@ -51,7 +51,7 @@ router.get("/search", async (req, res) => {
     // Step 1: search for matching recipe IDs
     const searchUrl = new URL("https://api.spoonacular.com/recipes/complexSearch");
     searchUrl.searchParams.set("includeIngredients", ingredients);
-    searchUrl.searchParams.set("number", "5");
+    searchUrl.searchParams.set("number", "2");
     searchUrl.searchParams.set("apiKey", apiKey);
 
     const searchRes = await fetch(searchUrl.toString());
