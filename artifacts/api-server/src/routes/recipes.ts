@@ -27,8 +27,8 @@ interface SpoonacularRecipe {
   analyzedInstructions?: SpoonacularInstruction[];
 }
 
-interface SpoonacularResponse {
-  results?: SpoonacularRecipe[];
+interface SpoonacularSearchResponse {
+  results?: { id: number }[];
 }
 
 const router = Router();
@@ -48,26 +48,44 @@ router.get("/search", async (req, res) => {
   }
 
   try {
-    const url = new URL("https://api.spoonacular.com/recipes/complexSearch");
-    url.searchParams.set("includeIngredients", ingredients);
-    url.searchParams.set("number", "3");
-    url.searchParams.set("addRecipeInformation", "true");
-    url.searchParams.set("fillIngredients", "true");
-    url.searchParams.set("instructionsRequired", "true");
-    url.searchParams.set("apiKey", apiKey);
+    // Step 1: search for matching recipe IDs
+    const searchUrl = new URL("https://api.spoonacular.com/recipes/complexSearch");
+    searchUrl.searchParams.set("includeIngredients", ingredients);
+    searchUrl.searchParams.set("number", "5");
+    searchUrl.searchParams.set("apiKey", apiKey);
 
-    const response = await fetch(url.toString());
-
-    if (!response.ok) {
-      req.log.warn({ status: response.status }, "Spoonacular API error");
+    const searchRes = await fetch(searchUrl.toString());
+    if (!searchRes.ok) {
+      req.log.warn({ status: searchRes.status }, "Spoonacular search error");
       res.status(502).json({ error: "Upstream API error" });
       return;
     }
 
-    const data = (await response.json()) as SpoonacularResponse;
+    const searchData = (await searchRes.json()) as SpoonacularSearchResponse;
+    const ids = (searchData.results ?? []).map((r) => r.id);
+
+    if (ids.length === 0) {
+      res.json({ recipes: [] });
+      return;
+    }
+
+    // Step 2: fetch full details (ingredients + instructions) for all IDs at once
+    const bulkUrl = new URL("https://api.spoonacular.com/recipes/informationBulk");
+    bulkUrl.searchParams.set("ids", ids.join(","));
+    bulkUrl.searchParams.set("includeNutrition", "false");
+    bulkUrl.searchParams.set("apiKey", apiKey);
+
+    const bulkRes = await fetch(bulkUrl.toString());
+    if (!bulkRes.ok) {
+      req.log.warn({ status: bulkRes.status }, "Spoonacular bulk info error");
+      res.status(502).json({ error: "Upstream API error" });
+      return;
+    }
+
+    const recipes = (await bulkRes.json()) as SpoonacularRecipe[];
 
     res.json({
-      recipes: (data.results ?? []).map((r) => ({
+      recipes: recipes.map((r) => ({
         id: r.id,
         title: r.title,
         image: r.image,
