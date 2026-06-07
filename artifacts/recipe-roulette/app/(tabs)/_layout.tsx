@@ -18,7 +18,7 @@ function NativeTabLayout() {
       </NativeTabs.Trigger>
       <NativeTabs.Trigger name="roulette">
         <Icon sf={{ default: "fork.knife", selected: "fork.knife" }} />
-        <Label>My Recipes</Label>
+        <Label>My Dinners</Label>
       </NativeTabs.Trigger>
     </NativeTabs>
   );
@@ -77,7 +77,7 @@ function ClassicTabLayout() {
       <Tabs.Screen
         name="roulette"
         options={{
-          title: "My Recipes",
+          title: "My Dinners",
           tabBarIcon: ({ color }) =>
             isIOS ? (
               <SymbolView name="fork.knife" tintColor={color} size={24} />

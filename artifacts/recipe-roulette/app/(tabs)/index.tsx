@@ -593,7 +593,7 @@ export default function SpinScreen() {
         showsVerticalScrollIndicator={false}
       >
         <Text style={[styles.heading, { color: colors.foreground }]}>
-          Ingredient Spin
+          That's Dinner
         </Text>
         <Text style={[styles.sub, { color: colors.mutedForeground }]}>
           Spin to find tonight's dinner
