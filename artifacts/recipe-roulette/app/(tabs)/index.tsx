@@ -1,6 +1,7 @@
+import AsyncStorage from "@react-native-async-storage/async-storage";
 import { Feather } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
-import React, { useRef, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import {
   Animated,
   Easing,
@@ -121,6 +122,18 @@ function SlotColumn({
   );
 }
 
+// ─── Shared storage key (matches roulette.tsx) ───────────────────────────────
+const STORAGE_KEY = "@recipe_roulette_personal";
+
+type PersonalRecipe = {
+  id: string;
+  name: string;
+  ingredients: string;
+  steps: string;
+  photoUrl?: string;
+  createdAt: number;
+};
+
 // ─── RecipeDetailModal ────────────────────────────────────────────────────────
 function RecipeDetailModal({
   recipe,
@@ -131,6 +144,51 @@ function RecipeDetailModal({
 }) {
   const colors = useColors();
   const [currentServings, setCurrentServings] = useState<number | null>(null);
+  const [saved, setSaved] = useState(false);
+
+  // Check saved state whenever the recipe changes
+  useEffect(() => {
+    if (!recipe) { setSaved(false); return; }
+    AsyncStorage.getItem(STORAGE_KEY)
+      .then((json) => {
+        if (!json) { setSaved(false); return; }
+        const list: PersonalRecipe[] = JSON.parse(json);
+        setSaved(list.some((r) => r.id === `spoonacular_${recipe.id}`));
+      })
+      .catch(() => setSaved(false));
+  }, [recipe?.id]);
+
+  const handleSave = async () => {
+    if (!recipe) return;
+    const recipeId = `spoonacular_${recipe.id}`;
+    try {
+      const json = await AsyncStorage.getItem(STORAGE_KEY);
+      const list: PersonalRecipe[] = json ? JSON.parse(json) : [];
+      if (saved) {
+        await AsyncStorage.setItem(
+          STORAGE_KEY,
+          JSON.stringify(list.filter((r) => r.id !== recipeId)),
+        );
+        setSaved(false);
+      } else {
+        const entry: PersonalRecipe = {
+          id: recipeId,
+          name: recipe.title,
+          ingredients: recipe.ingredients
+            .map((i) => i.original || `${formatAmt(i.amount)} ${i.unit} ${i.name}`.trim())
+            .join(", "),
+          steps: recipe.instructions.map((s, i) => `${i + 1}. ${s}`).join("\n"),
+          photoUrl: recipe.image,
+          createdAt: Date.now(),
+        };
+        await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify([...list, entry]));
+        setSaved(true);
+      }
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    } catch {
+      // storage unavailable — fail silently
+    }
+  };
 
   // Reset servings when recipe changes
   const baseServings = recipe?.servings ?? 4;
@@ -198,6 +256,23 @@ function RecipeDetailModal({
             ]}
           >
             <Feather name="x" size={18} color={colors.foreground} />
+          </Pressable>
+          <Pressable
+            onPress={handleSave}
+            style={[
+              styles.floatBtn,
+              styles.floatBtnRight2,
+              {
+                backgroundColor: saved ? colors.primary : colors.card,
+                borderColor: saved ? colors.primary : colors.border,
+              },
+            ]}
+          >
+            <Feather
+              name="bookmark"
+              size={18}
+              color={saved ? colors.primaryForeground : colors.foreground}
+            />
           </Pressable>
           <Pressable
             onPress={handleShare}
@@ -701,6 +776,7 @@ const styles = StyleSheet.create({
   },
   floatBtnLeft: { left: 16 },
   floatBtnRight: { right: 16 },
+  floatBtnRight2: { right: 62 },
   modalBody: { padding: 20, gap: 6 },
   modalTitle: {
     fontSize: 22,
