@@ -521,7 +521,7 @@ export default function SpinScreen() {
           Ingredient Spin
         </Text>
         <Text style={[styles.sub, { color: colors.mutedForeground }]}>
-          Spin the reels to discover your next meal
+          Spin to find tonight's dinner
         </Text>
 
         <View style={styles.machine}>

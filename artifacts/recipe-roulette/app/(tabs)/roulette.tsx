@@ -120,7 +120,7 @@ export default function RouletteScreen() {
       showsVerticalScrollIndicator={false}
     >
       <Text style={[styles.heading, { color: colors.foreground }]}>
-        Recipe Roulette
+        That's Dinner
       </Text>
       <Text style={[styles.sub, { color: colors.mutedForeground }]}>
         Spin for a random recipe from your collection
