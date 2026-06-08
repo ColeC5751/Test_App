@@ -1,3 +1,4 @@
+import { useFocusEffect } from "expo-router";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { Feather } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
@@ -46,15 +47,31 @@ export default function RouletteScreen() {
   const [formSteps, setFormSteps] = useState("");
   const [formPhoto, setFormPhoto] = useState("");
 
-  useEffect(() => {
-    (async () => {
+useEffect(() => {
+    const loadRecipes = async () => {
       try {
         const json = await AsyncStorage.getItem(STORAGE_KEY);
         if (json) setRecipes(JSON.parse(json));
+        else setRecipes([]);
       } catch {}
       setLoaded(true);
-    })();
+    };
+    loadRecipes();
   }, []);
+
+  useFocusEffect(
+    React.useCallback(() => {
+      const loadRecipes = async () => {
+        try {
+          const json = await AsyncStorage.getItem(STORAGE_KEY);
+          if (json) setRecipes(JSON.parse(json));
+          else setRecipes([]);
+        } catch {}
+      };
+      loadRecipes();
+    }, [])
+  );
+
 
   const persist = async (updated: PersonalRecipe[]) => {
     setRecipes(updated);
