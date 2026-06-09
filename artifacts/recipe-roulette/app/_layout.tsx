@@ -18,7 +18,7 @@ import { setBaseUrl } from "@workspace/api-client-react";
 
 SplashScreen.preventAutoHideAsync();
 
-setBaseUrl("https://test-app-api-server-r63f.vercel.app");
+setBaseUrl("https://test-app-api-server.vercel.app");
 
 const queryClient = new QueryClient();
 
