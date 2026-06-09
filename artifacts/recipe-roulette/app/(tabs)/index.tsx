@@ -79,6 +79,41 @@ async function fetchRecipes(ingredients: string): Promise<Recipe[]> {
   searchUrl.searchParams.set("number", "3");
   searchUrl.searchParams.set("apiKey", SPOONACULAR_API_KEY);
 
+  const proxyUrl = `https://corsproxy.io/?${encodeURIComponent(searchUrl.toString())}`;
+
+  const searchRes = await fetch(proxyUrl);
+  const searchData = await searchRes.json();
+  const ids = (searchData.results ?? []).map((r: any) => r.id);
+
+  if (ids.length === 0) return [];
+
+  const bulkUrl = new URL("https://api.spoonacular.com/recipes/informationBulk");
+  bulkUrl.searchParams.set("ids", ids.join(","));
+  bulkUrl.searchParams.set("includeNutrition", "false");
+  bulkUrl.searchParams.set("apiKey", SPOONACULAR_API_KEY);
+
+  const bulkProxyUrl = `https://corsproxy.io/?${encodeURIComponent(bulkUrl.toString())}`;
+
+  const bulkRes = await fetch(bulkProxyUrl);
+  const recipes = await bulkRes.json();
+
+  return recipes.map((r: any) => ({
+    id: r.id,
+    title: r.title,
+    image: r.image,
+    readyInMinutes: r.readyInMinutes ?? 30,
+    servings: r.servings ?? 4,
+    ingredients: (r.extendedIngredients ?? []).map((i: any) => ({
+      amount: i.amount ?? 0,
+      unit: i.unit ?? "",
+      name: i.name ?? "",
+      original: i.original ?? i.name ?? "",
+    })),
+    instructions: (r.analyzedInstructions?.[0]?.steps ?? []).map((s: any) => s.step),
+  }));
+}
+
+
   const searchRes = await fetch(searchUrl.toString());
   const searchData = await searchRes.json();
   const ids = (searchData.results ?? []).map((r: any) => r.id);
