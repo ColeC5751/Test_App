@@ -14,8 +14,11 @@ import { KeyboardProvider } from "react-native-keyboard-controller";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 
 import { ErrorBoundary } from "@/components/ErrorBoundary";
+import { setBaseUrl } from "@workspace/api-client-react";
 
 SplashScreen.preventAutoHideAsync();
+
+setBaseUrl("https://test-app-api-server-r63f.vercel.app");
 
 const queryClient = new QueryClient();
 
