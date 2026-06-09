@@ -4,10 +4,11 @@
     "incremental": true,
     "tsBuildInfoFile": ".tsbuildinfo",
     "outDir": "dist",
-    "rootDir": "src",
-    "types": ["node"]
+    "rootDir": ".",
+    "types": ["node"],
+    "noEmitOnError": false
   },
-  "include": ["src"],
+  "include": ["src", "api"],
   "references": [
     {
       "path": "../../lib/db"
@@ -17,3 +18,4 @@
     }
   ]
 }
+
