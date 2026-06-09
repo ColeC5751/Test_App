@@ -21,7 +21,7 @@ import {
 
 import { useColors } from "@/hooks/useColors";
 
-const SPOONACULAR_API_KEY = "YOUR_API_KEY_HERE";
+const SPOONACULAR_API_KEY = "257283d53ee54b63acc667363a5791e7";
 
 const DEFAULT_PROTEINS = ["Fish", "Chicken", "Ground Beef", "Pork"];
 const DEFAULT_CARBS = ["Rice", "Pasta", "Potatoes", "Bread"];
