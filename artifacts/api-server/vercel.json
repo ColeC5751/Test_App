@@ -1,8 +1,5 @@
 {
-  "installCommand": "pnpm install --no-frozen-lockfile",
-  "buildCommand": "pnpm run build",
-  "outputDirectory": "dist",
-  "framework": null,
+  "version": 2,
   "builds": [
     {
       "src": "api/index.ts",
@@ -16,4 +13,5 @@
     }
   ]
 }
+
 
