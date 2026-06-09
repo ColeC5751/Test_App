@@ -1,0 +1,54 @@
+import type { VercelRequest, VercelResponse } from "@vercel/node";
+
+export default async function handler(req: VercelRequest, res: VercelResponse) {
+  const { ingredients } = req.query;
+  const apiKey = process.env["SPOONACULAR_API_KEY"];
+
+  if (!apiKey) {
+    return res.status(500).json({ error: "API key not configured" });
+  }
+
+  if (!ingredients || typeof ingredients !== "string") {
+    return res.status(400).json({ error: "ingredients query param is required" });
+  }
+
+  try {
+    const searchUrl = new URL("https://api.spoonacular.com/recipes/complexSearch");
+    searchUrl.searchParams.set("includeIngredients", ingredients);
+    searchUrl.searchParams.set("number", "3");
+    searchUrl.searchParams.set("apiKey", apiKey);
+
+    const searchRes = await fetch(searchUrl.toString());
+    const searchData = await searchRes.json() as any;
+    const ids = (searchData.results ?? []).map((r: any) => r.id);
+
+    if (ids.length === 0) return res.json({ recipes: [] });
+
+    const bulkUrl = new URL("https://api.spoonacular.com/recipes/informationBulk");
+    bulkUrl.searchParams.set("ids", ids.join(","));
+    bulkUrl.searchParams.set("includeNutrition", "false");
+    bulkUrl.searchParams.set("apiKey", apiKey);
+
+    const bulkRes = await fetch(bulkUrl.toString());
+    const recipes = await bulkRes.json() as any[];
+
+    return res.json({
+      recipes: recipes.map((r) => ({
+        id: r.id,
+        title: r.title,
+        image: r.image,
+        readyInMinutes: r.readyInMinutes ?? 30,
+        servings: r.servings ?? 4,
+        ingredients: (r.extendedIngredients ?? []).map((i: any) => ({
+          amount: i.amount ?? 0,
+          unit: i.unit ?? "",
+          name: i.name ?? "",
+          original: i.original ?? i.name ?? "",
+        })),
+        instructions: (r.analyzedInstructions?.[0]?.steps ?? []).map((s: any) => s.step),
+      })),
+    });
+  } catch (err) {
+    return res.status(500).json({ error: "Failed to fetch recipes" });
+  }
+}
