@@ -11,7 +11,7 @@ export default async function handler(req: any, res: any) {
 
   try {
     const searchRes = await fetch(
-      `https://api.spoonacular.com/recipes/complexSearch?includeIngredients=${ingredients}&number=3&apiKey=${apiKey}`
+      `https://api.spoonacular.com/recipes/complexSearch?includeIngredients=${ingredients}&number=2&type=main+course&sort=popularity&sortDirection=desc&apiKey=${apiKey}`
     );
     const searchData = await searchRes.json();
     const ids = (searchData.results ?? []).map((r: any) => r.id);
