@@ -91,10 +91,11 @@ type WheelData = {
 };
 
 async function fetchRecipes(ingredients: string): Promise<Recipe[]> {
-  const searchUrl = new URL("https://api.spoonacular.com/recipes/complexSearch");
-  searchUrl.searchParams.set("includeIngredients", ingredients);
-  searchUrl.searchParams.set("number", "3");
-  searchUrl.searchParams.set("apiKey", SPOONACULAR_API_KEY);
+  const res = await fetch(`/api/recipes/search?ingredients=${encodeURIComponent(ingredients)}`);
+  const data = await res.json();
+  return data.recipes ?? [];
+}
+
 
   const searchRes = await fetch(searchUrl.toString());
   const searchData = await searchRes.json();
