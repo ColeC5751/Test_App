@@ -96,8 +96,7 @@ async function fetchRecipes(ingredients: string): Promise<Recipe[]> {
   searchUrl.searchParams.set("number", "3");
   searchUrl.searchParams.set("apiKey", SPOONACULAR_API_KEY);
 
-  const proxyUrl = `https://corsproxy.io/?${encodeURIComponent(searchUrl.toString())}`;
-  const searchRes = await fetch(proxyUrl);
+  const searchRes = await fetch(searchUrl.toString());
   const searchData = await searchRes.json();
   const ids = (searchData.results ?? []).map((r: any) => r.id);
 
@@ -108,8 +107,7 @@ async function fetchRecipes(ingredients: string): Promise<Recipe[]> {
   bulkUrl.searchParams.set("includeNutrition", "false");
   bulkUrl.searchParams.set("apiKey", SPOONACULAR_API_KEY);
 
-  const bulkProxyUrl = `https://corsproxy.io/?${encodeURIComponent(bulkUrl.toString())}`;
-  const bulkRes = await fetch(bulkProxyUrl);
+  const bulkRes = await fetch(bulkUrl.toString());
   const recipes = await bulkRes.json();
 
   return recipes.map((r: any) => ({
@@ -244,10 +242,7 @@ function WheelSettingsModal({
           {renderCategory("PROTEIN", proteins, setProteins, newProtein, setNewProtein)}
           {renderCategory("CARBS", carbs, setCarbs, newCarb, setNewCarb)}
           {renderCategory("VEGGIE", veggies, setVeggies, newVeggie, setNewVeggie)}
-          <Pressable
-            onPress={handleSave}
-            style={[styles.saveBtn, { backgroundColor: colors.primary }]}
-          >
+          <Pressable onPress={handleSave} style={[styles.saveBtn, { backgroundColor: colors.primary }]}>
             <Text style={[styles.saveBtnText, { color: colors.primaryForeground }]}>Save Changes</Text>
           </Pressable>
         </ScrollView>
@@ -649,5 +644,3 @@ const styles = StyleSheet.create({
   stepText: { flex: 1, fontSize: 14, fontFamily: "Inter_400Regular", lineHeight: 20 },
   noDetailText: { fontSize: 14, fontFamily: "Inter_400Regular", textAlign: "center", marginTop: 24 },
 });
-
-
