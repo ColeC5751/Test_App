@@ -92,9 +92,11 @@ type WheelData = {
 
 async function fetchRecipes(ingredients: string): Promise<Recipe[]> {
   const res = await fetch(`/api/recipes/search?ingredients=${encodeURIComponent(ingredients)}`);
+  if (!res.ok) return [];
   const data = await res.json();
   return data.recipes ?? [];
 }
+
 
 
   const searchRes = await fetch(searchUrl.toString());
