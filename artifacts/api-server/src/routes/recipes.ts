@@ -1,4 +1,5 @@
 import { Router } from "express";
+import { calculateMacros } from "../lib/calculateMacros";
 
 interface SpoonacularIngredient {
   amount?: number;
@@ -17,12 +18,6 @@ interface SpoonacularInstruction {
   steps?: SpoonacularStep[];
 }
 
-interface SpoonacularNutrient {
-  name: string;
-  amount: number;
-  unit: string;
-}
-
 interface SpoonacularRecipe {
   id: number;
   title: string;
@@ -31,17 +26,10 @@ interface SpoonacularRecipe {
   servings?: number;
   extendedIngredients?: SpoonacularIngredient[];
   analyzedInstructions?: SpoonacularInstruction[];
-  nutrition?: {
-    nutrients?: SpoonacularNutrient[];
-  };
 }
 
 interface SpoonacularSearchResponse {
   results?: { id: number }[];
-}
-
-function findNutrient(nutrients: SpoonacularNutrient[], name: string): number {
-  return Math.round(nutrients.find((n) => n.name === name)?.amount ?? 0);
 }
 
 const router = Router();
@@ -61,7 +49,6 @@ router.get("/search", async (req, res) => {
   }
 
   try {
-    // Step 1: search for matching recipe IDs
     const searchUrl = new URL("https://api.spoonacular.com/recipes/complexSearch");
     searchUrl.searchParams.set("includeIngredients", ingredients);
     searchUrl.searchParams.set("number", "2");
@@ -82,10 +69,10 @@ router.get("/search", async (req, res) => {
       return;
     }
 
-    // Step 2: fetch full details including nutrition for all IDs at once
+    // includeNutrition is false — we calculate macros ourselves
     const bulkUrl = new URL("https://api.spoonacular.com/recipes/informationBulk");
     bulkUrl.searchParams.set("ids", ids.join(","));
-    bulkUrl.searchParams.set("includeNutrition", "true");
+    bulkUrl.searchParams.set("includeNutrition", "false");
     bulkUrl.searchParams.set("apiKey", apiKey);
 
     const bulkRes = await fetch(bulkUrl.toString());
@@ -99,29 +86,34 @@ router.get("/search", async (req, res) => {
 
     res.json({
       recipes: recipes.map((r) => {
-        const nutrients = r.nutrition?.nutrients ?? [];
+        const mappedIngredients = (r.extendedIngredients ?? []).map((i) => ({
+          amount: i.amount ?? 0,
+          unit: i.unit ?? "",
+          name: i.name ?? "",
+          original: i.original ?? i.name ?? "",
+        }));
+
+        const servings = r.servings ?? 4;
+        const totalMacros = calculateMacros(mappedIngredients);
+
+        // Return per-serving macros
+        const macros = {
+          calories: Math.round(totalMacros.calories / servings),
+          protein:  Math.round(totalMacros.protein  / servings),
+          carbs:    Math.round(totalMacros.carbs     / servings),
+          fat:      Math.round(totalMacros.fat       / servings),
+          fiber:    Math.round(totalMacros.fiber     / servings),
+        };
+
         return {
           id: r.id,
           title: r.title,
           image: r.image,
           readyInMinutes: r.readyInMinutes ?? 30,
-          servings: r.servings ?? 4,
-          ingredients: (r.extendedIngredients ?? []).map((i) => ({
-            amount: i.amount ?? 0,
-            unit: i.unit ?? "",
-            name: i.name ?? "",
-            original: i.original ?? i.name ?? "",
-          })),
-          instructions: (r.analyzedInstructions?.[0]?.steps ?? []).map(
-            (s) => s.step,
-          ),
-          macros: {
-            calories: findNutrient(nutrients, "Calories"),
-            protein: findNutrient(nutrients, "Protein"),
-            carbs: findNutrient(nutrients, "Carbohydrates"),
-            fat: findNutrient(nutrients, "Fat"),
-            fiber: findNutrient(nutrients, "Fiber"),
-          },
+          servings,
+          ingredients: mappedIngredients,
+          instructions: (r.analyzedInstructions?.[0]?.steps ?? []).map((s) => s.step),
+          macros,
         };
       }),
     });
