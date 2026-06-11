@@ -21,8 +21,6 @@ import {
 
 import { useColors } from "@/hooks/useColors";
 
-const SPOONACULAR_API_KEY = "257283d53ee54b63acc667363a5791e7";
-
 const DEFAULT_PROTEINS = ["Fish", "Chicken", "Ground Beef", "Pork"];
 const DEFAULT_CARBS = ["Rice", "Pasta", "Potatoes", "Bread"];
 const DEFAULT_VEGGIES = ["Broccoli", "Spinach", "Carrots", "Peppers"];
@@ -65,6 +63,14 @@ type RecipeIngredient = {
   original: string;
 };
 
+type Macros = {
+  calories: number;
+  protein: number;
+  carbs: number;
+  fat: number;
+  fiber: number;
+};
+
 type Recipe = {
   id: number;
   title: string;
@@ -73,6 +79,7 @@ type Recipe = {
   servings: number;
   ingredients: RecipeIngredient[];
   instructions: string[];
+  macros?: Macros;
 };
 
 type PersonalRecipe = {
@@ -99,38 +106,67 @@ async function fetchRecipes(ingredients: string): Promise<Recipe[]> {
   return data.recipes ?? [];
 }
 
-
-
-
-  const searchRes = await fetch(searchUrl.toString());
-  const searchData = await searchRes.json();
-  const ids = (searchData.results ?? []).map((r: any) => r.id);
-
-  if (ids.length === 0) return [];
-
-  const bulkUrl = new URL("https://api.spoonacular.com/recipes/informationBulk");
-  bulkUrl.searchParams.set("ids", ids.join(","));
-  bulkUrl.searchParams.set("includeNutrition", "false");
-  bulkUrl.searchParams.set("apiKey", SPOONACULAR_API_KEY);
-
-  const bulkRes = await fetch(bulkUrl.toString());
-  const recipes = await bulkRes.json();
-
-  return recipes.map((r: any) => ({
-    id: r.id,
-    title: r.title,
-    image: r.image,
-    readyInMinutes: r.readyInMinutes ?? 30,
-    servings: r.servings ?? 4,
-    ingredients: (r.extendedIngredients ?? []).map((i: any) => ({
-      amount: i.amount ?? 0,
-      unit: i.unit ?? "",
-      name: i.name ?? "",
-      original: i.original ?? i.name ?? "",
-    })),
-    instructions: (r.analyzedInstructions?.[0]?.steps ?? []).map((s: any) => s.step),
-  }));
+function MacroBar({ macros, servings, baseServings, colors }: { macros: Macros; servings: number; baseServings: number; colors: ReturnType<typeof useColors> }) {
+  const scale = servings / baseServings;
+  const items: { label: string; value: number; unit: string; color: string }[] = [
+    { label: "Calories", value: Math.round(macros.calories * scale), unit: "kcal", color: colors.primary },
+    { label: "Protein", value: Math.round(macros.protein * scale), unit: "g", color: "#7C8C5E" },
+    { label: "Carbs", value: Math.round(macros.carbs * scale), unit: "g", color: "#C8A86B" },
+    { label: "Fat", value: Math.round(macros.fat * scale), unit: "g", color: "#B87333" },
+    { label: "Fiber", value: Math.round(macros.fiber * scale), unit: "g", color: "#6B8E6B" },
+  ];
+  return (
+    <View style={[macroStyles.wrap, { backgroundColor: colors.card, borderColor: colors.border }]}>
+      <Text style={[macroStyles.heading, { color: colors.mutedForeground }]}>NUTRITION PER SERVING</Text>
+      <View style={macroStyles.row}>
+        {items.map((item) => (
+          <View key={item.label} style={macroStyles.cell}>
+            <Text style={[macroStyles.value, { color: colors.foreground }]}>{item.value}</Text>
+            <Text style={[macroStyles.unit, { color: item.color }]}>{item.unit}</Text>
+            <Text style={[macroStyles.label, { color: colors.mutedForeground }]}>{item.label}</Text>
+          </View>
+        ))}
+      </View>
+    </View>
+  );
 }
+
+function MacroPills({ macros, colors }: { macros: Macros; colors: ReturnType<typeof useColors> }) {
+  return (
+    <View style={macroStyles.pillRow}>
+      <View style={[macroStyles.pill, { backgroundColor: colors.secondary }]}>
+        <Text style={[macroStyles.pillVal, { color: colors.foreground }]}>{macros.calories}</Text>
+        <Text style={[macroStyles.pillLabel, { color: colors.mutedForeground }]}>kcal</Text>
+      </View>
+      <View style={[macroStyles.pill, { backgroundColor: colors.secondary }]}>
+        <Text style={[macroStyles.pillVal, { color: colors.foreground }]}>{macros.protein}g</Text>
+        <Text style={[macroStyles.pillLabel, { color: colors.mutedForeground }]}>protein</Text>
+      </View>
+      <View style={[macroStyles.pill, { backgroundColor: colors.secondary }]}>
+        <Text style={[macroStyles.pillVal, { color: colors.foreground }]}>{macros.carbs}g</Text>
+        <Text style={[macroStyles.pillLabel, { color: colors.mutedForeground }]}>carbs</Text>
+      </View>
+      <View style={[macroStyles.pill, { backgroundColor: colors.secondary }]}>
+        <Text style={[macroStyles.pillVal, { color: colors.foreground }]}>{macros.fat}g</Text>
+        <Text style={[macroStyles.pillLabel, { color: colors.mutedForeground }]}>fat</Text>
+      </View>
+    </View>
+  );
+}
+
+const macroStyles = StyleSheet.create({
+  wrap: { borderRadius: 14, borderWidth: 1, padding: 16, marginTop: 8, marginBottom: 4 },
+  heading: { fontSize: 10, fontFamily: "Inter_600SemiBold", letterSpacing: 2, marginBottom: 12 },
+  row: { flexDirection: "row", justifyContent: "space-between" },
+  cell: { alignItems: "center", flex: 1 },
+  value: { fontSize: 17, fontFamily: "Inter_700Bold" },
+  unit: { fontSize: 10, fontFamily: "Inter_600SemiBold", marginTop: 1 },
+  label: { fontSize: 10, fontFamily: "Inter_400Regular", marginTop: 2 },
+  pillRow: { flexDirection: "row", flexWrap: "wrap", gap: 6, marginTop: 6 },
+  pill: { flexDirection: "row", alignItems: "baseline", gap: 3, borderRadius: 20, paddingHorizontal: 10, paddingVertical: 4 },
+  pillVal: { fontSize: 12, fontFamily: "Inter_700Bold" },
+  pillLabel: { fontSize: 11, fontFamily: "Inter_400Regular" },
+});
 
 function SlotColumn({ label, items, animValue }: { label: string; items: string[]; animValue: Animated.Value }) {
   const colors = useColors();
@@ -300,20 +336,24 @@ function RecipeDetailModal({ recipe, onClose }: { recipe: Recipe | null; onClose
 
   const baseServings = recipe?.servings ?? 4;
   const servings = currentServings ?? baseServings;
-  const scale = servings / baseServings;
 
   const handleClose = () => { setCurrentServings(null); onClose(); };
 
   const handleShare = async () => {
     if (!recipe) return;
+    const scale = servings / baseServings;
     const ingList = recipe.ingredients.map((ing) => {
       const amt = formatAmt(ing.amount * scale);
       const unit = ing.unit ? `${ing.unit} ` : "";
       return `• ${amt} ${unit}${ing.name}`.trim();
     }).join("\n");
     const stepList = recipe.instructions.map((s, i) => `${i + 1}. ${s}`).join("\n");
-    const message = `${recipe.title}\nServings: ${servings}  |  Ready in: ${recipe.readyInMinutes} min\n\n` +
-      (ingList ? `INGREDIENTS\n${ingList}\n\n` : "") + (stepList ? `INSTRUCTIONS\n${stepList}` : "");
+    const macroLine = recipe.macros
+      ? `Calories: ${recipe.macros.calories} kcal | Protein: ${recipe.macros.protein}g | Carbs: ${recipe.macros.carbs}g | Fat: ${recipe.macros.fat}g`
+      : "";
+    const message = `${recipe.title}\nServings: ${servings}  |  Ready in: ${recipe.readyInMinutes} min\n` +
+      (macroLine ? `${macroLine}\n` : "") +
+      `\n` + (ingList ? `INGREDIENTS\n${ingList}\n\n` : "") + (stepList ? `INSTRUCTIONS\n${stepList}` : "");
     try { await Share.share({ title: recipe.title, message }); } catch {}
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
   };
@@ -342,6 +382,7 @@ function RecipeDetailModal({ recipe, onClose }: { recipe: Recipe | null; onClose
                 <Text style={[styles.metaText, { color: colors.mutedForeground }]}>{recipe.readyInMinutes} min</Text>
               </View>
             </View>
+
             <View style={[styles.servingsRow, { backgroundColor: colors.card, borderColor: colors.border }]}>
               <Text style={[styles.servingsLabel, { color: colors.mutedForeground }]}>SERVINGS</Text>
               <View style={styles.stepper}>
@@ -354,11 +395,17 @@ function RecipeDetailModal({ recipe, onClose }: { recipe: Recipe | null; onClose
                 </Pressable>
               </View>
             </View>
+
+            {recipe.macros && (
+              <MacroBar macros={recipe.macros} servings={servings} baseServings={baseServings} colors={colors} />
+            )}
+
             {recipe.ingredients.length > 0 && (
               <>
                 <Text style={[styles.sectionLabel, { color: colors.mutedForeground }]}>INGREDIENTS</Text>
                 <View style={[styles.sectionCard, { backgroundColor: colors.card, borderColor: colors.border }]}>
                   {recipe.ingredients.map((ing, i) => {
+                    const scale = servings / baseServings;
                     const line = `${formatAmt(ing.amount * scale)} ${ing.unit ? `${ing.unit} ` : ""}${ing.name}`.trim();
                     return (
                       <View key={i} style={styles.ingRow}>
@@ -397,6 +444,7 @@ function RecipeCard({ recipe, onPress }: { recipe: Recipe; onPress: () => void }
       <Image source={{ uri: recipe.image }} style={styles.recipeImg} />
       <View style={styles.recipeBody}>
         <Text style={[styles.recipeTitle, { color: colors.foreground }]} numberOfLines={2}>{recipe.title}</Text>
+        {recipe.macros && <MacroPills macros={recipe.macros} colors={colors} />}
         <View style={styles.recipeFooter}>
           <View style={styles.timeRow}>
             <Feather name="clock" size={12} color={colors.mutedForeground} />
@@ -603,11 +651,11 @@ const styles = StyleSheet.create({
   results: { gap: 10 },
   resultsTitle: { fontSize: 19, fontFamily: "Inter_600SemiBold", marginBottom: 2 },
   resultsSub: { fontSize: 12, fontFamily: "Inter_400Regular", marginBottom: 6 },
-  recipeCard: { flexDirection: "row", borderRadius: 12, overflow: "hidden", borderWidth: 1 },
-  recipeImg: { width: 90, height: 90 },
-  recipeBody: { flex: 1, padding: 12, justifyContent: "space-between" },
+  recipeCard: { borderRadius: 12, overflow: "hidden", borderWidth: 1 },
+  recipeImg: { width: "100%", height: 140 },
+  recipeBody: { padding: 12, gap: 6 },
   recipeTitle: { fontSize: 14, fontFamily: "Inter_600SemiBold", lineHeight: 20 },
-  recipeFooter: { flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
+  recipeFooter: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginTop: 2 },
   timeRow: { flexDirection: "row", alignItems: "center", gap: 5 },
   timeText: { fontSize: 12, fontFamily: "Inter_400Regular" },
   tapHint: { flexDirection: "row", alignItems: "center", gap: 2 },
@@ -648,5 +696,4 @@ const styles = StyleSheet.create({
   stepNum: { width: 24, height: 24, borderRadius: 12, alignItems: "center", justifyContent: "center", flexShrink: 0 },
   stepNumText: { fontSize: 12, fontFamily: "Inter_700Bold" },
   stepText: { flex: 1, fontSize: 14, fontFamily: "Inter_400Regular", lineHeight: 20 },
-  noDetailText: { fontSize: 14, fontFamily: "Inter_400Regular", textAlign: "center", marginTop: 24 },
 });
