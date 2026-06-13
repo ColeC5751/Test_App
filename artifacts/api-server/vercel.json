@@ -1,0 +1,15 @@
+{
+  "version": 2,
+  "builds": [
+    {
+      "src": "api/recipes/search.ts",
+      "use": "@vercel/node"
+    }
+  ],
+  "routes": [
+    {
+      "src": "/api/recipes/search",
+      "dest": "api/recipes/search.ts"
+    }
+  ]
+}
