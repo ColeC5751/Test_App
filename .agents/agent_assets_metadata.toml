@@ -1,8 +1,0 @@
-uploads = []
-outputs = []
-
-[[generated]]
-id = "B7XlqxKobx5Wz-3uLfaU_"
-uri = "file://artifacts/recipe-roulette/assets/images/icon.png"
-type = "image"
-title = "generated_image"
