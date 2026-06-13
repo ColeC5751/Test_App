@@ -5,7 +5,9 @@ export default async function handler(req: any, res: any) {
   if (req.method === "OPTIONS") return res.status(200).end();
 
   const { ingredients } = req.query;
-  const apiKey = "257283d53ee54b63acc667363a5791e7";
+  const apiKey = process.env.SPOONACULAR_API_KEY;
+
+  if (!apiKey) return res.status(500).json({ error: "API key not configured" });
 
   if (!ingredients) return res.status(400).json({ error: "ingredients required" });
 
