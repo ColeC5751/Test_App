@@ -3,9 +3,9 @@
   "version": "1.0.0",
   "private": true,
   "dependencies": {
-    "typescript": "^5.0.0"
+    "typescript": "catalog:"
   },
   "devDependencies": {
-    "@types/node": "^20.0.0"
+    "@types/node": "catalog:"
   }
 }
