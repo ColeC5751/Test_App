@@ -5,7 +5,6 @@ import React, { useEffect, useRef, useState } from "react";
 import {
   Animated,
   Easing,
-  ActivityIndicator,
   Image,
   Modal,
   Platform,
@@ -14,6 +13,7 @@ import {
   ScrollView,
   Share,
   StyleSheet,
+  Switch,
   Text,
   TextInput,
   View,
@@ -27,6 +27,7 @@ const DEFAULT_VEGGIES = ["Broccoli", "Spinach", "Carrots", "Peppers"];
 
 const STORAGE_KEY = "@recipe_roulette_personal";
 const WHEELS_KEY = "@recipe_roulette_wheels";
+const FILTERS_KEY = "@recipe_roulette_filters";
 
 const ITEM_HEIGHT = 80;
 const VISIBLE = 3;
@@ -36,6 +37,22 @@ const SPIN_ROUNDS = 5;
 const PROTEIN_DUR = 1600;
 const CARB_DUR = 2200;
 const VEGGIE_DUR = 2800;
+
+const HEALTHY_MAX_CALORIES = 600;
+const HEALTHY_MIN_PROTEIN = 20;
+
+// Spoonacular diet values (null = no filter)
+const DIET_OPTIONS: { label: string; value: string | null }[] = [
+  { label: "Vegetarian", value: "vegetarian" },
+  { label: "Vegan", value: "vegan" },
+  { label: "Gluten-free", value: "gluten free" },
+  { label: "Dairy-free", value: "dairy free" },
+];
+
+type DietFilters = {
+  diet: string | null;
+  healthyOnly: boolean;
+};
 
 function makeDisplay(items: string[]) {
   return Array.from({ length: COPY_COUNT }, () => items).flat();
@@ -49,71 +66,89 @@ function spinTargetY(items: string[], prevIdx: number, newIdx: number) {
 function resetY(items: string[], newIdx: number) {
   return ITEM_HEIGHT * (1 - (START_COPY * items.length + newIdx));
 }
-
 function formatAmt(n: number): string {
   if (n <= 0) return "0";
   const r = Math.round(n * 10) / 10;
   return r % 1 === 0 ? String(Math.round(r)) : r.toFixed(1);
 }
 
-type RecipeIngredient = {
-  amount: number;
-  unit: string;
-  name: string;
-  original: string;
-};
-
-type Macros = {
-  calories: number;
-  protein: number;
-  carbs: number;
-  fat: number;
-  fiber: number;
-};
-
+type RecipeIngredient = { amount: number; unit: string; name: string; original: string };
+type Macros = { calories: number; protein: number; carbs: number; fat: number; fiber: number };
 type Recipe = {
-  id: number;
-  title: string;
-  image: string;
-  readyInMinutes: number;
-  servings: number;
-  ingredients: RecipeIngredient[];
-  instructions: string[];
-  macros?: Macros;
+  id: number; title: string; image: string; readyInMinutes: number;
+  servings: number; ingredients: RecipeIngredient[]; instructions: string[]; macros?: Macros;
 };
-
 type PersonalRecipe = {
-  id: string;
-  name: string;
-  ingredients: string;
-  steps: string;
-  photoUrl?: string;
-  createdAt: number;
+  id: string; name: string; ingredients: string; steps: string; photoUrl?: string; createdAt: number;
 };
+type WheelData = { proteins: string[]; carbs: string[]; veggies: string[] };
 
-type WheelData = {
-  proteins: string[];
-  carbs: string[];
-  veggies: string[];
-};
-
-async function fetchRecipes(ingredients: string): Promise<Recipe[]> {
-  const res = await fetch(
-    `https://test-app-api-server.vercel.app/api/recipes/search?ingredients=${encodeURIComponent(ingredients)}`
-  );
+async function fetchRecipes(ingredients: string, diet: string | null): Promise<Recipe[]> {
+  const url = new URL("https://test-app-api-server.vercel.app/api/recipes/search");
+  url.searchParams.set("ingredients", ingredients);
+  if (diet) url.searchParams.set("diet", diet);
+  const res = await fetch(url.toString());
   if (!res.ok) return [];
   const data = await res.json();
   return data.recipes ?? [];
 }
 
+// ─── Skeleton loader ─────────────────────────────────────────────────────────
+
+function SkeletonCard() {
+  const colors = useColors();
+  const shimmer = useRef(new Animated.Value(0)).current;
+
+  useEffect(() => {
+    Animated.loop(
+      Animated.sequence([
+        Animated.timing(shimmer, { toValue: 1, duration: 900, useNativeDriver: false }),
+        Animated.timing(shimmer, { toValue: 0, duration: 900, useNativeDriver: false }),
+      ])
+    ).start();
+    return () => shimmer.stopAnimation();
+  }, []);
+
+  const bg = shimmer.interpolate({
+    inputRange: [0, 1],
+    outputRange: [colors.card, colors.secondary],
+  });
+
+  const Bone = ({ style }: { style: object }) => (
+    <Animated.View style={[{ borderRadius: 6, backgroundColor: bg }, style]} />
+  );
+
+  return (
+    <View style={[styles.recipeCard, { backgroundColor: colors.card, borderColor: colors.border }]}>
+      <Animated.View style={[{ width: "100%", height: 140, backgroundColor: bg }]} />
+      <View style={[styles.recipeBody, { gap: 8 }]}>
+        <Bone style={{ height: 14, width: "75%" }} />
+        <Bone style={{ height: 12, width: "50%" }} />
+        <View style={{ flexDirection: "row", gap: 6, marginTop: 2 }}>
+          <Bone style={{ height: 24, width: 62, borderRadius: 20 }} />
+          <Bone style={{ height: 24, width: 62, borderRadius: 20 }} />
+          <Bone style={{ height: 24, width: 62, borderRadius: 20 }} />
+          <Bone style={{ height: 24, width: 62, borderRadius: 20 }} />
+        </View>
+        <View style={{ flexDirection: "row", justifyContent: "space-between", marginTop: 2 }}>
+          <Bone style={{ height: 11, width: 55 }} />
+          <Bone style={{ height: 11, width: 70 }} />
+        </View>
+      </View>
+    </View>
+  );
+}
+
+// ─── Macro components ─────────────────────────────────────────────────────────
+
 function MacroBar({ macros, servings, baseServings, colors }: { macros: Macros; servings: number; baseServings: number; colors: ReturnType<typeof useColors> }) {
   const scale = servings / baseServings;
-  const items: { label: string; value: number; unit: string; color: string }[] = [
+  const items = [
     { label: "Calories", value: Math.round(macros.calories * scale), unit: "kcal", color: colors.primary },
-    { label: "Protein", value: Math.round(macros.protein * scale), unit: "g", color: "#7C8C5E" },
-    { label: "Carbs", value: Math.round(macros.carbs * scale), unit: "g", color: "#C8A86B" },
-    { label: "Fat", value: Math.round(macros.fat * scale), unit: "g", color: "#B87333" },
-    { label: "Fiber", value: Math.round(macros.fiber * scale), unit: "g", color: "#6B8E6B" },
+    { label: "Protein",  value: Math.round(macros.protein  * scale), unit: "g",    color: "#7C8C5E" },
+    { label: "Carbs",    value: Math.round(macros.carbs    * scale), unit: "g",    color: "#C8A86B" },
+    { label: "Fat",      value: Math.round(macros.fat      * scale), unit: "g",    color: "#B87333" },
+    { label: "Fiber",    value: Math.round(macros.fiber    * scale), unit: "g",    color: "#6B8E6B" },
   ];
   return (
     <View style={[macroStyles.wrap, { backgroundColor: colors.card, borderColor: colors.border }]}>
@@ -134,39 +169,36 @@ function MacroBar({ macros, servings, baseServings, colors }: { macros: Macros; 
 function MacroPills({ macros, colors }: { macros: Macros; colors: ReturnType<typeof useColors> }) {
   return (
     <View style={macroStyles.pillRow}>
-      <View style={[macroStyles.pill, { backgroundColor: colors.secondary }]}>
-        <Text style={[macroStyles.pillVal, { color: colors.foreground }]}>{macros.calories}</Text>
-        <Text style={[macroStyles.pillLabel, { color: colors.mutedForeground }]}>kcal</Text>
-      </View>
-      <View style={[macroStyles.pill, { backgroundColor: colors.secondary }]}>
-        <Text style={[macroStyles.pillVal, { color: colors.foreground }]}>{macros.protein}g</Text>
-        <Text style={[macroStyles.pillLabel, { color: colors.mutedForeground }]}>protein</Text>
-      </View>
-      <View style={[macroStyles.pill, { backgroundColor: colors.secondary }]}>
-        <Text style={[macroStyles.pillVal, { color: colors.foreground }]}>{macros.carbs}g</Text>
-        <Text style={[macroStyles.pillLabel, { color: colors.mutedForeground }]}>carbs</Text>
-      </View>
-      <View style={[macroStyles.pill, { backgroundColor: colors.secondary }]}>
-        <Text style={[macroStyles.pillVal, { color: colors.foreground }]}>{macros.fat}g</Text>
-        <Text style={[macroStyles.pillLabel, { color: colors.mutedForeground }]}>fat</Text>
-      </View>
+      {[
+        { val: `${macros.calories}`, lbl: "kcal" },
+        { val: `${macros.protein}g`, lbl: "protein" },
+        { val: `${macros.carbs}g`,   lbl: "carbs" },
+        { val: `${macros.fat}g`,     lbl: "fat" },
+      ].map((p) => (
+        <View key={p.lbl} style={[macroStyles.pill, { backgroundColor: colors.secondary }]}>
+          <Text style={[macroStyles.pillVal, { color: colors.foreground }]}>{p.val}</Text>
+          <Text style={[macroStyles.pillLabel, { color: colors.mutedForeground }]}>{p.lbl}</Text>
+        </View>
+      ))}
     </View>
   );
 }
 
 const macroStyles = StyleSheet.create({
-  wrap: { borderRadius: 14, borderWidth: 1, padding: 16, marginTop: 8, marginBottom: 4 },
-  heading: { fontSize: 10, fontFamily: "Inter_600SemiBold", letterSpacing: 2, marginBottom: 12 },
-  row: { flexDirection: "row", justifyContent: "space-between" },
-  cell: { alignItems: "center", flex: 1 },
-  value: { fontSize: 17, fontFamily: "Inter_700Bold" },
-  unit: { fontSize: 10, fontFamily: "Inter_600SemiBold", marginTop: 1 },
-  label: { fontSize: 10, fontFamily: "Inter_400Regular", marginTop: 2 },
-  pillRow: { flexDirection: "row", flexWrap: "wrap", gap: 6, marginTop: 6 },
-  pill: { flexDirection: "row", alignItems: "baseline", gap: 3, borderRadius: 20, paddingHorizontal: 10, paddingVertical: 4 },
-  pillVal: { fontSize: 12, fontFamily: "Inter_700Bold" },
+  wrap:      { borderRadius: 14, borderWidth: 1, padding: 16, marginTop: 8, marginBottom: 4 },
+  heading:   { fontSize: 10, fontFamily: "Inter_600SemiBold", letterSpacing: 2, marginBottom: 12 },
+  row:       { flexDirection: "row", justifyContent: "space-between" },
+  cell:      { alignItems: "center", flex: 1 },
+  value:     { fontSize: 17, fontFamily: "Inter_700Bold" },
+  unit:      { fontSize: 10, fontFamily: "Inter_600SemiBold", marginTop: 1 },
+  label:     { fontSize: 10, fontFamily: "Inter_400Regular", marginTop: 2 },
+  pillRow:   { flexDirection: "row", flexWrap: "wrap", gap: 6, marginTop: 6 },
+  pill:      { flexDirection: "row", alignItems: "baseline", gap: 3, borderRadius: 20, paddingHorizontal: 10, paddingVertical: 4 },
+  pillVal:   { fontSize: 12, fontFamily: "Inter_700Bold" },
   pillLabel: { fontSize: 11, fontFamily: "Inter_400Regular" },
 });
+
+// ─── Slot column ──────────────────────────────────────────────────────────────
 
 function SlotColumn({ label, items, animValue }: { label: string; items: string[]; animValue: Animated.Value }) {
   const colors = useColors();
@@ -188,60 +220,65 @@ function SlotColumn({ label, items, animValue }: { label: string; items: string[
   );
 }
 
+// ─── Wheel settings modal (with dietary filters) ──────────────────────────────
+
 function WheelSettingsModal({
-  visible,
-  onClose,
-  wheels,
-  onSave,
+  visible, onClose, wheels, onSave, filters, onSaveFilters,
 }: {
   visible: boolean;
   onClose: () => void;
   wheels: WheelData;
   onSave: (wheels: WheelData) => void;
+  filters: DietFilters;
+  onSaveFilters: (f: DietFilters) => void;
 }) {
   const colors = useColors();
   const [proteins, setProteins] = useState<string[]>(wheels.proteins);
-  const [carbs, setCarbs] = useState<string[]>(wheels.carbs);
-  const [veggies, setVeggies] = useState<string[]>(wheels.veggies);
+  const [carbs, setCarbs]       = useState<string[]>(wheels.carbs);
+  const [veggies, setVeggies]   = useState<string[]>(wheels.veggies);
   const [newProtein, setNewProtein] = useState("");
-  const [newCarb, setNewCarb] = useState("");
-  const [newVeggie, setNewVeggie] = useState("");
+  const [newCarb, setNewCarb]       = useState("");
+  const [newVeggie, setNewVeggie]   = useState("");
+  const [activeDiet, setActiveDiet]     = useState<string | null>(filters.diet);
+  const [healthyOnly, setHealthyOnly]   = useState(filters.healthyOnly);
 
   useEffect(() => {
     setProteins(wheels.proteins);
     setCarbs(wheels.carbs);
     setVeggies(wheels.veggies);
-  }, [wheels]);
+    setActiveDiet(filters.diet);
+    setHealthyOnly(filters.healthyOnly);
+  }, [wheels, filters]);
+
+  // Warn if selected diet conflicts with wheel items
+  const nonVeganProteins = ["Chicken", "Ground Beef", "Pork", "Fish", "Beef", "Turkey", "Lamb", "Shrimp", "Salmon", "Tuna", "Cod", "Tilapia", "Bacon", "Sausage"];
+  const conflictWarning = (() => {
+    if (activeDiet === "vegan" || activeDiet === "vegetarian") {
+      const hasAnimal = proteins.some((p) => nonVeganProteins.some((n) => p.toLowerCase().includes(n.toLowerCase())));
+      if (hasAnimal) return `Your protein wheel includes items that may not match "${activeDiet}". Spoonacular will filter results automatically.`;
+    }
+    return null;
+  })();
 
   const handleSave = () => {
     if (proteins.length === 0 || carbs.length === 0 || veggies.length === 0) return;
     onSave({ proteins, carbs, veggies });
+    onSaveFilters({ diet: activeDiet, healthyOnly });
     onClose();
   };
 
   const inputStyle = [styles.input, { backgroundColor: colors.secondary, borderColor: colors.border, color: colors.foreground }];
 
   const renderCategory = (
-    label: string,
-    items: string[],
-    setItems: (items: string[]) => void,
-    newItem: string,
-    setNewItem: (val: string) => void,
+    label: string, items: string[], setItems: (v: string[]) => void,
+    newItem: string, setNewItem: (v: string) => void,
   ) => (
     <View style={styles.categorySection}>
       <Text style={[styles.categoryLabel, { color: colors.mutedForeground }]}>{label}</Text>
       {items.map((item, i) => (
         <View key={i} style={[styles.ingredientRow, { backgroundColor: colors.card, borderColor: colors.border }]}>
           <Text style={[styles.ingredientText, { color: colors.foreground }]}>{item}</Text>
-          <Pressable
-            onPress={() => {
-              if (items.length > 1) {
-                setItems(items.filter((_, idx) => idx !== i));
-                Haptics.selectionAsync();
-              }
-            }}
-            hitSlop={12}
-          >
+          <Pressable onPress={() => { if (items.length > 1) { setItems(items.filter((_, idx) => idx !== i)); Haptics.selectionAsync(); } }} hitSlop={12}>
             <Feather name="x" size={16} color={items.length > 1 ? colors.mutedForeground : colors.muted} />
           </Pressable>
         </View>
@@ -256,13 +293,7 @@ function WheelSettingsModal({
           autoCapitalize="words"
         />
         <Pressable
-          onPress={() => {
-            if (newItem.trim()) {
-              setItems([...items, newItem.trim()]);
-              setNewItem("");
-              Haptics.selectionAsync();
-            }
-          }}
+          onPress={() => { if (newItem.trim()) { setItems([...items, newItem.trim()]); setNewItem(""); Haptics.selectionAsync(); } }}
           style={[styles.addBtn, { backgroundColor: colors.primary }]}
         >
           <Feather name="plus" size={18} color={colors.primaryForeground} />
@@ -276,14 +307,54 @@ function WheelSettingsModal({
       <SafeAreaView style={[styles.modalRoot, { backgroundColor: colors.background }]}>
         <View style={[styles.modalHeader, { borderBottomColor: colors.border }]}>
           <Text style={[styles.modalTitle, { color: colors.foreground }]}>Customize Wheels</Text>
-          <Pressable onPress={onClose}>
-            <Feather name="x" size={22} color={colors.foreground} />
-          </Pressable>
+          <Pressable onPress={onClose}><Feather name="x" size={22} color={colors.foreground} /></Pressable>
         </View>
         <ScrollView contentContainerStyle={{ padding: 20, paddingBottom: 48 }} showsVerticalScrollIndicator={false}>
+
+          {/* ── Dietary preferences ── */}
+          <Text style={[styles.categoryLabel, { color: colors.mutedForeground, marginBottom: 12 }]}>DIETARY PREFERENCES</Text>
+
+          <View style={[filterStyles.dietGrid, { marginBottom: 8 }]}>
+            {DIET_OPTIONS.map((opt) => {
+              const active = activeDiet === opt.value;
+              return (
+                <Pressable
+                  key={opt.label}
+                  onPress={() => { setActiveDiet(active ? null : opt.value); Haptics.selectionAsync(); }}
+                  style={[filterStyles.dietChip, { backgroundColor: active ? colors.primary : colors.card, borderColor: active ? colors.primary : colors.border }]}
+                >
+                  <Text style={[filterStyles.dietChipText, { color: active ? colors.primaryForeground : colors.foreground }]}>{opt.label}</Text>
+                </Pressable>
+              );
+            })}
+          </View>
+
+          <View style={[filterStyles.healthyRow, { backgroundColor: colors.card, borderColor: colors.border }]}>
+            <View style={{ flex: 1 }}>
+              <Text style={[filterStyles.healthyLabel, { color: colors.foreground }]}>Healthy only</Text>
+              <Text style={[filterStyles.healthySub, { color: colors.mutedForeground }]}>Under 600 kcal · 20g+ protein per serving</Text>
+            </View>
+            <Switch
+              value={healthyOnly}
+              onValueChange={(v) => { setHealthyOnly(v); Haptics.selectionAsync(); }}
+              trackColor={{ false: colors.border, true: colors.primary }}
+              thumbColor={colors.primaryForeground}
+            />
+          </View>
+
+          {conflictWarning && (
+            <View style={[filterStyles.warningBox, { backgroundColor: colors.secondary, borderColor: colors.border }]}>
+              <Feather name="alert-triangle" size={14} color={colors.mutedForeground} />
+              <Text style={[filterStyles.warningText, { color: colors.mutedForeground }]}>{conflictWarning}</Text>
+            </View>
+          )}
+
+          <View style={[filterStyles.divider, { backgroundColor: colors.border, marginVertical: 20 }]} />
+
           {renderCategory("PROTEIN", proteins, setProteins, newProtein, setNewProtein)}
           {renderCategory("CARBS", carbs, setCarbs, newCarb, setNewCarb)}
           {renderCategory("VEGGIE", veggies, setVeggies, newVeggie, setNewVeggie)}
+
           <Pressable onPress={handleSave} style={[styles.saveBtn, { backgroundColor: colors.primary }]}>
             <Text style={[styles.saveBtnText, { color: colors.primaryForeground }]}>Save Changes</Text>
           </Pressable>
@@ -293,6 +364,20 @@ function WheelSettingsModal({
   );
 }
 
+const filterStyles = StyleSheet.create({
+  dietGrid:      { flexDirection: "row", flexWrap: "wrap", gap: 8 },
+  dietChip:      { paddingHorizontal: 14, paddingVertical: 8, borderRadius: 20, borderWidth: 1 },
+  dietChipText:  { fontSize: 13, fontFamily: "Inter_600SemiBold" },
+  healthyRow:    { flexDirection: "row", alignItems: "center", borderRadius: 12, borderWidth: 1, paddingHorizontal: 14, paddingVertical: 12, gap: 12, marginTop: 4 },
+  healthyLabel:  { fontSize: 14, fontFamily: "Inter_600SemiBold", marginBottom: 2 },
+  healthySub:    { fontSize: 11, fontFamily: "Inter_400Regular" },
+  warningBox:    { flexDirection: "row", alignItems: "flex-start", gap: 8, borderRadius: 10, borderWidth: 1, padding: 12, marginTop: 10 },
+  warningText:   { flex: 1, fontSize: 12, fontFamily: "Inter_400Regular", lineHeight: 17 },
+  divider:       { height: 1 },
+});
+
+// ─── Recipe detail modal ──────────────────────────────────────────────────────
+
 function RecipeDetailModal({ recipe, onClose }: { recipe: Recipe | null; onClose: () => void }) {
   const colors = useColors();
   const [currentServings, setCurrentServings] = useState<number | null>(null);
@@ -300,13 +385,11 @@ function RecipeDetailModal({ recipe, onClose }: { recipe: Recipe | null; onClose
 
   useEffect(() => {
     if (!recipe) { setSaved(false); return; }
-    AsyncStorage.getItem(STORAGE_KEY)
-      .then((json) => {
-        if (!json) { setSaved(false); return; }
-        const list: PersonalRecipe[] = JSON.parse(json);
-        setSaved(list.some((r) => r.id === `spoonacular_${recipe.id}`));
-      })
-      .catch(() => setSaved(false));
+    AsyncStorage.getItem(STORAGE_KEY).then((json) => {
+      if (!json) { setSaved(false); return; }
+      const list: PersonalRecipe[] = JSON.parse(json);
+      setSaved(list.some((r) => r.id === `spoonacular_${recipe.id}`));
+    }).catch(() => setSaved(false));
   }, [recipe?.id]);
 
   const handleSave = async () => {
@@ -320,12 +403,10 @@ function RecipeDetailModal({ recipe, onClose }: { recipe: Recipe | null; onClose
         setSaved(false);
       } else {
         const entry: PersonalRecipe = {
-          id: recipeId,
-          name: recipe.title,
+          id: recipeId, name: recipe.title,
           ingredients: recipe.ingredients.map((i) => i.original || `${formatAmt(i.amount)} ${i.unit} ${i.name}`.trim()).join(", "),
           steps: recipe.instructions.map((s, i) => `${i + 1}. ${s}`).join("\n"),
-          photoUrl: recipe.image,
-          createdAt: Date.now(),
+          photoUrl: recipe.image, createdAt: Date.now(),
         };
         await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify([...list, entry]));
         setSaved(true);
@@ -336,7 +417,6 @@ function RecipeDetailModal({ recipe, onClose }: { recipe: Recipe | null; onClose
 
   const baseServings = recipe?.servings ?? 4;
   const servings = currentServings ?? baseServings;
-
   const handleClose = () => { setCurrentServings(null); onClose(); };
 
   const handleShare = async () => {
@@ -382,7 +462,6 @@ function RecipeDetailModal({ recipe, onClose }: { recipe: Recipe | null; onClose
                 <Text style={[styles.metaText, { color: colors.mutedForeground }]}>{recipe.readyInMinutes} min</Text>
               </View>
             </View>
-
             <View style={[styles.servingsRow, { backgroundColor: colors.card, borderColor: colors.border }]}>
               <Text style={[styles.servingsLabel, { color: colors.mutedForeground }]}>SERVINGS</Text>
               <View style={styles.stepper}>
@@ -395,11 +474,7 @@ function RecipeDetailModal({ recipe, onClose }: { recipe: Recipe | null; onClose
                 </Pressable>
               </View>
             </View>
-
-            {recipe.macros && (
-              <MacroBar macros={recipe.macros} servings={servings} baseServings={baseServings} colors={colors} />
-            )}
-
+            {recipe.macros && <MacroBar macros={recipe.macros} servings={servings} baseServings={baseServings} colors={colors} />}
             {recipe.ingredients.length > 0 && (
               <>
                 <Text style={[styles.sectionLabel, { color: colors.mutedForeground }]}>INGREDIENTS</Text>
@@ -437,6 +512,8 @@ function RecipeDetailModal({ recipe, onClose }: { recipe: Recipe | null; onClose
   );
 }
 
+// ─── Recipe card ──────────────────────────────────────────────────────────────
+
 function RecipeCard({ recipe, onPress }: { recipe: Recipe; onPress: () => void }) {
   const colors = useColors();
   return (
@@ -460,28 +537,24 @@ function RecipeCard({ recipe, onPress }: { recipe: Recipe; onPress: () => void }
   );
 }
 
+// ─── Main screen ──────────────────────────────────────────────────────────────
+
 export default function SpinScreen() {
   const colors = useColors();
   const topPad = Platform.OS === "web" ? 67 : 0;
 
-  const [wheels, setWheels] = useState<WheelData>({
-    proteins: DEFAULT_PROTEINS,
-    carbs: DEFAULT_CARBS,
-    veggies: DEFAULT_VEGGIES,
-  });
+  const [wheels, setWheels] = useState<WheelData>({ proteins: DEFAULT_PROTEINS, carbs: DEFAULT_CARBS, veggies: DEFAULT_VEGGIES });
+  const [filters, setFilters] = useState<DietFilters>({ diet: null, healthyOnly: false });
   const [showSettings, setShowSettings] = useState(false);
 
   useEffect(() => {
-    AsyncStorage.getItem(WHEELS_KEY).then((json) => {
-      if (json) setWheels(JSON.parse(json));
-    }).catch(() => {});
+    AsyncStorage.getItem(WHEELS_KEY).then((json) => { if (json) setWheels(JSON.parse(json)); }).catch(() => {});
+    AsyncStorage.getItem(FILTERS_KEY).then((json) => { if (json) setFilters(JSON.parse(json)); }).catch(() => {});
   }, []);
 
   const handleSaveWheels = async (newWheels: WheelData) => {
     setWheels(newWheels);
-    setSelProtein(0);
-    setSelCarb(0);
-    setSelVeggie(0);
+    setSelProtein(0); setSelCarb(0); setSelVeggie(0);
     proteinY.setValue(initialY(newWheels.proteins));
     carbY.setValue(initialY(newWheels.carbs));
     veggieY.setValue(initialY(newWheels.veggies));
@@ -489,20 +562,35 @@ export default function SpinScreen() {
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
   };
 
+  const handleSaveFilters = async (newFilters: DietFilters) => {
+    setFilters(newFilters);
+    await AsyncStorage.setItem(FILTERS_KEY, JSON.stringify(newFilters));
+  };
+
   const [selProtein, setSelProtein] = useState(0);
-  const [selCarb, setSelCarb] = useState(0);
-  const [selVeggie, setSelVeggie] = useState(0);
+  const [selCarb, setSelCarb]       = useState(0);
+  const [selVeggie, setSelVeggie]   = useState(0);
 
   const proteinY = useRef(new Animated.Value(initialY(wheels.proteins))).current;
-  const carbY = useRef(new Animated.Value(initialY(wheels.carbs))).current;
-  const veggieY = useRef(new Animated.Value(initialY(wheels.veggies))).current;
+  const carbY    = useRef(new Animated.Value(initialY(wheels.carbs))).current;
+  const veggieY  = useRef(new Animated.Value(initialY(wheels.veggies))).current;
 
-  const [spinning, setSpinning] = useState(false);
-  const [recipes, setRecipes] = useState<Recipe[]>([]);
-  const [isLoading, setIsLoading] = useState(false);
-  const [isError, setIsError] = useState(false);
-  const [selectedRecipe, setSelectedRecipe] = useState<Recipe | null>(null);
+  const [spinning, setSpinning]               = useState(false);
+  const [recipes, setRecipes]                 = useState<Recipe[]>([]);
+  const [isLoading, setIsLoading]             = useState(false);
+  const [isError, setIsError]                 = useState(false);
+  const [selectedRecipe, setSelectedRecipe]   = useState<Recipe | null>(null);
   const [currentIngredients, setCurrentIngredients] = useState("");
+
+  // Active filter badge labels for the header
+  const activeFilterLabels = [
+    ...(filters.diet ? [DIET_OPTIONS.find((d) => d.value === filters.diet)?.label ?? ""] : []),
+    ...(filters.healthyOnly ? ["Healthy"] : []),
+  ].filter(Boolean);
+
+  const filteredRecipes = filters.healthyOnly
+    ? recipes.filter((r) => (r.macros?.calories ?? 9999) <= HEALTHY_MAX_CALORIES && (r.macros?.protein ?? 0) >= HEALTHY_MIN_PROTEIN)
+    : recipes;
 
   const spin = () => {
     if (spinning) return;
@@ -510,25 +598,20 @@ export default function SpinScreen() {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
 
     const newProtein = Math.floor(Math.random() * wheels.proteins.length);
-    const newCarb = Math.floor(Math.random() * wheels.carbs.length);
-    const newVeggie = Math.floor(Math.random() * wheels.veggies.length);
-
+    const newCarb    = Math.floor(Math.random() * wheels.carbs.length);
+    const newVeggie  = Math.floor(Math.random() * wheels.veggies.length);
     const easing = Easing.out(Easing.cubic);
 
     Animated.parallel([
       Animated.timing(proteinY, { toValue: spinTargetY(wheels.proteins, selProtein, newProtein), duration: PROTEIN_DUR, easing, useNativeDriver: false }),
-      Animated.timing(carbY, { toValue: spinTargetY(wheels.carbs, selCarb, newCarb), duration: CARB_DUR, easing, useNativeDriver: false }),
-      Animated.timing(veggieY, { toValue: spinTargetY(wheels.veggies, selVeggie, newVeggie), duration: VEGGIE_DUR, easing, useNativeDriver: false }),
+      Animated.timing(carbY,    { toValue: spinTargetY(wheels.carbs,    selCarb,    newCarb),    duration: CARB_DUR,    easing, useNativeDriver: false }),
+      Animated.timing(veggieY,  { toValue: spinTargetY(wheels.veggies,  selVeggie,  newVeggie),  duration: VEGGIE_DUR,  easing, useNativeDriver: false }),
     ]).start(async () => {
       proteinY.setValue(resetY(wheels.proteins, newProtein));
       carbY.setValue(resetY(wheels.carbs, newCarb));
       veggieY.setValue(resetY(wheels.veggies, newVeggie));
-
-      setSelProtein(newProtein);
-      setSelCarb(newCarb);
-      setSelVeggie(newVeggie);
+      setSelProtein(newProtein); setSelCarb(newCarb); setSelVeggie(newVeggie);
       setSpinning(false);
-
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
 
       const ingredients = `${wheels.proteins[newProtein]},${wheels.carbs[newCarb]},${wheels.veggies[newVeggie]}`;
@@ -538,7 +621,7 @@ export default function SpinScreen() {
       setRecipes([]);
 
       try {
-        const results = await fetchRecipes(ingredients);
+        const results = await fetchRecipes(ingredients, filters.diet);
         setRecipes(results);
       } catch {
         setIsError(true);
@@ -556,9 +639,18 @@ export default function SpinScreen() {
         showsVerticalScrollIndicator={false}
       >
         <View style={styles.headerRow}>
-          <View>
+          <View style={{ flex: 1 }}>
             <Text style={[styles.heading, { color: colors.foreground }]}>That's Dinner</Text>
             <Text style={[styles.sub, { color: colors.mutedForeground }]}>Spin to find tonight's dinner</Text>
+            {activeFilterLabels.length > 0 && (
+              <View style={styles.activeBadgeRow}>
+                {activeFilterLabels.map((lbl) => (
+                  <View key={lbl} style={[styles.activeBadge, { backgroundColor: colors.primary }]}>
+                    <Text style={[styles.activeBadgeText, { color: colors.primaryForeground }]}>{lbl}</Text>
+                  </View>
+                ))}
+              </View>
+            )}
           </View>
           <Pressable onPress={() => setShowSettings(true)} style={[styles.settingsBtn, { backgroundColor: colors.card, borderColor: colors.border }]}>
             <Feather name="settings" size={18} color={colors.foreground} />
@@ -567,8 +659,8 @@ export default function SpinScreen() {
 
         <View style={styles.machine}>
           <SlotColumn label="PROTEIN" items={wheels.proteins} animValue={proteinY} />
-          <SlotColumn label="CARBS" items={wheels.carbs} animValue={carbY} />
-          <SlotColumn label="VEGGIE" items={wheels.veggies} animValue={veggieY} />
+          <SlotColumn label="CARBS"   items={wheels.carbs}    animValue={carbY} />
+          <SlotColumn label="VEGGIE"  items={wheels.veggies}  animValue={veggieY} />
         </View>
 
         <Pressable
@@ -582,9 +674,9 @@ export default function SpinScreen() {
         </Pressable>
 
         {isLoading && (
-          <View style={styles.center}>
-            <ActivityIndicator color={colors.primary} size="large" />
-            <Text style={[styles.statusText, { color: colors.mutedForeground }]}>Finding recipes…</Text>
+          <View style={styles.results}>
+            <SkeletonCard />
+            <SkeletonCard />
           </View>
         )}
 
@@ -598,15 +690,23 @@ export default function SpinScreen() {
           </View>
         )}
 
-        {!isLoading && !isError && recipes.length > 0 && (
+        {!isLoading && !isError && filteredRecipes.length > 0 && (
           <View style={styles.results}>
             <Text style={[styles.resultsTitle, { color: colors.foreground }]}>Suggested Recipes</Text>
             <Text style={[styles.resultsSub, { color: colors.mutedForeground }]}>
               Using {wheels.proteins[selProtein]}, {wheels.carbs[selCarb]} and {wheels.veggies[selVeggie]}
+              {activeFilterLabels.length > 0 ? ` · ${activeFilterLabels.join(", ")}` : ""}
             </Text>
-            {recipes.map((r) => (
+            {filteredRecipes.map((r) => (
               <RecipeCard key={r.id} recipe={r} onPress={() => setSelectedRecipe(r)} />
             ))}
+          </View>
+        )}
+
+        {!isLoading && !isError && recipes.length > 0 && filteredRecipes.length === 0 && (
+          <View style={styles.center}>
+            <Feather name="leaf" size={24} color={colors.mutedForeground} />
+            <Text style={[styles.statusText, { color: colors.mutedForeground }]}>No healthy recipes found for this combo — try spinning again!</Text>
           </View>
         )}
 
@@ -624,76 +724,81 @@ export default function SpinScreen() {
         onClose={() => setShowSettings(false)}
         wheels={wheels}
         onSave={handleSaveWheels}
+        filters={filters}
+        onSaveFilters={handleSaveFilters}
       />
     </>
   );
 }
 
 const styles = StyleSheet.create({
-  root: { flex: 1 },
-  headerRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 28 },
-  heading: { fontSize: 26, fontFamily: "Inter_700Bold", marginBottom: 4 },
-  sub: { fontSize: 13, fontFamily: "Inter_400Regular" },
-  settingsBtn: { width: 38, height: 38, borderRadius: 19, borderWidth: 1, alignItems: "center", justifyContent: "center", marginTop: 4 },
-  machine: { flexDirection: "row", gap: 8, marginBottom: 20 },
-  colWrap: { flex: 1, alignItems: "center" },
-  colLabel: { fontSize: 10, letterSpacing: 2, fontFamily: "Inter_600SemiBold", marginBottom: 8 },
-  colViewport: { width: "100%", overflow: "hidden", borderRadius: 14, borderWidth: 1, position: "relative" },
-  slotItem: { justifyContent: "center", alignItems: "center" },
-  slotText: { fontSize: 13, fontFamily: "Inter_700Bold", textAlign: "center", paddingHorizontal: 4 },
-  selectionBox: { position: "absolute", top: ITEM_HEIGHT, left: 0, right: 0, height: ITEM_HEIGHT, borderTopWidth: 1.5, borderBottomWidth: 1.5, zIndex: 10 },
-  spinBtn: { borderRadius: 50, paddingVertical: 18, alignItems: "center", marginBottom: 32 },
-  spinBtnText: { fontSize: 16, fontFamily: "Inter_700Bold", letterSpacing: 3 },
-  center: { alignItems: "center", gap: 10, paddingVertical: 24 },
-  statusText: { fontSize: 14, fontFamily: "Inter_400Regular", textAlign: "center" },
-  retryBtn: { borderWidth: 1.5, borderRadius: 10, paddingHorizontal: 20, paddingVertical: 10, marginTop: 4 },
-  retryText: { fontSize: 13, fontFamily: "Inter_600SemiBold" },
-  results: { gap: 10 },
-  resultsTitle: { fontSize: 19, fontFamily: "Inter_600SemiBold", marginBottom: 2 },
-  resultsSub: { fontSize: 12, fontFamily: "Inter_400Regular", marginBottom: 6 },
-  recipeCard: { borderRadius: 12, overflow: "hidden", borderWidth: 1 },
-  recipeImg: { width: "100%", height: 140 },
-  recipeBody: { padding: 12, gap: 6 },
-  recipeTitle: { fontSize: 14, fontFamily: "Inter_600SemiBold", lineHeight: 20 },
-  recipeFooter: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginTop: 2 },
-  timeRow: { flexDirection: "row", alignItems: "center", gap: 5 },
-  timeText: { fontSize: 12, fontFamily: "Inter_400Regular" },
-  tapHint: { flexDirection: "row", alignItems: "center", gap: 2 },
-  tapHintText: { fontSize: 11, fontFamily: "Inter_600SemiBold" },
-  modalRoot: { flex: 1 },
-  modalHeader: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", padding: 20, borderBottomWidth: 1 },
-  modalTitle: { fontSize: 20, fontFamily: "Inter_700Bold" },
-  categorySection: { marginBottom: 24 },
-  categoryLabel: { fontSize: 10, fontFamily: "Inter_600SemiBold", letterSpacing: 2, marginBottom: 10 },
-  ingredientRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", borderRadius: 10, borderWidth: 1, paddingHorizontal: 14, paddingVertical: 12, marginBottom: 8 },
-  ingredientText: { fontSize: 14, fontFamily: "Inter_400Regular" },
-  addRow: { flexDirection: "row", gap: 8, marginTop: 4 },
-  addBtn: { width: 46, height: 46, borderRadius: 10, alignItems: "center", justifyContent: "center" },
-  input: { borderRadius: 10, borderWidth: 1, paddingHorizontal: 14, paddingVertical: 12, fontSize: 14, fontFamily: "Inter_400Regular" },
-  saveBtn: { borderRadius: 12, paddingVertical: 16, alignItems: "center", marginTop: 8 },
-  saveBtnText: { fontSize: 15, fontFamily: "Inter_600SemiBold" },
-  recipeModalImage: { width: "100%", height: 240 },
-  floatBtn: { position: "absolute", top: 16, width: 38, height: 38, borderRadius: 19, borderWidth: 1, alignItems: "center", justifyContent: "center" },
-  floatBtnLeft: { left: 16 },
-  floatBtnRight: { right: 16 },
-  floatBtnRight2: { right: 62 },
-  modalBody: { padding: 20, gap: 6 },
-  recipeModalTitle: { fontSize: 22, fontFamily: "Inter_700Bold", lineHeight: 28, marginBottom: 4 },
-  metaRow: { flexDirection: "row", gap: 12, marginBottom: 4 },
-  metaChip: { flexDirection: "row", alignItems: "center", gap: 5 },
-  metaText: { fontSize: 13, fontFamily: "Inter_400Regular" },
-  servingsRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", borderRadius: 14, borderWidth: 1, paddingHorizontal: 16, paddingVertical: 12, marginTop: 8, marginBottom: 4 },
-  servingsLabel: { fontSize: 11, fontFamily: "Inter_600SemiBold", letterSpacing: 1.5 },
-  stepper: { flexDirection: "row", alignItems: "center", gap: 16 },
-  stepperBtn: { width: 34, height: 34, borderRadius: 17, borderWidth: 1, alignItems: "center", justifyContent: "center" },
-  stepperValue: { fontSize: 18, fontFamily: "Inter_700Bold", minWidth: 28, textAlign: "center" },
-  sectionLabel: { fontSize: 10, fontFamily: "Inter_600SemiBold", letterSpacing: 2, marginTop: 16, marginBottom: 8 },
-  sectionCard: { borderRadius: 12, borderWidth: 1, padding: 14, gap: 10 },
-  ingRow: { flexDirection: "row", alignItems: "flex-start", gap: 10 },
-  ingDot: { width: 6, height: 6, borderRadius: 3, marginTop: 7, flexShrink: 0 },
-  ingText: { flex: 1, fontSize: 14, fontFamily: "Inter_400Regular", lineHeight: 20 },
-  stepRow: { flexDirection: "row", alignItems: "flex-start", gap: 12, borderRadius: 12, borderWidth: 1, padding: 14, marginBottom: 8 },
-  stepNum: { width: 24, height: 24, borderRadius: 12, alignItems: "center", justifyContent: "center", flexShrink: 0 },
-  stepNumText: { fontSize: 12, fontFamily: "Inter_700Bold" },
-  stepText: { flex: 1, fontSize: 14, fontFamily: "Inter_400Regular", lineHeight: 20 },
+  root:              { flex: 1 },
+  headerRow:         { flexDirection: "row", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 28 },
+  heading:           { fontSize: 26, fontFamily: "Inter_700Bold", marginBottom: 4 },
+  sub:               { fontSize: 13, fontFamily: "Inter_400Regular" },
+  activeBadgeRow:    { flexDirection: "row", flexWrap: "wrap", gap: 6, marginTop: 6 },
+  activeBadge:       { paddingHorizontal: 10, paddingVertical: 3, borderRadius: 20 },
+  activeBadgeText:   { fontSize: 11, fontFamily: "Inter_600SemiBold" },
+  settingsBtn:       { width: 38, height: 38, borderRadius: 19, borderWidth: 1, alignItems: "center", justifyContent: "center", marginTop: 4 },
+  machine:           { flexDirection: "row", gap: 8, marginBottom: 20 },
+  colWrap:           { flex: 1, alignItems: "center" },
+  colLabel:          { fontSize: 10, letterSpacing: 2, fontFamily: "Inter_600SemiBold", marginBottom: 8 },
+  colViewport:       { width: "100%", overflow: "hidden", borderRadius: 14, borderWidth: 1, position: "relative" },
+  slotItem:          { justifyContent: "center", alignItems: "center" },
+  slotText:          { fontSize: 13, fontFamily: "Inter_700Bold", textAlign: "center", paddingHorizontal: 4 },
+  selectionBox:      { position: "absolute", top: ITEM_HEIGHT, left: 0, right: 0, height: ITEM_HEIGHT, borderTopWidth: 1.5, borderBottomWidth: 1.5, zIndex: 10 },
+  spinBtn:           { borderRadius: 50, paddingVertical: 18, alignItems: "center", marginBottom: 32 },
+  spinBtnText:       { fontSize: 16, fontFamily: "Inter_700Bold", letterSpacing: 3 },
+  center:            { alignItems: "center", gap: 10, paddingVertical: 24 },
+  statusText:        { fontSize: 14, fontFamily: "Inter_400Regular", textAlign: "center" },
+  retryBtn:          { borderWidth: 1.5, borderRadius: 10, paddingHorizontal: 20, paddingVertical: 10, marginTop: 4 },
+  retryText:         { fontSize: 13, fontFamily: "Inter_600SemiBold" },
+  results:           { gap: 10 },
+  resultsTitle:      { fontSize: 19, fontFamily: "Inter_600SemiBold", marginBottom: 2 },
+  resultsSub:        { fontSize: 12, fontFamily: "Inter_400Regular", marginBottom: 6 },
+  recipeCard:        { borderRadius: 12, overflow: "hidden", borderWidth: 1 },
+  recipeImg:         { width: "100%", height: 140 },
+  recipeBody:        { padding: 12, gap: 6 },
+  recipeTitle:       { fontSize: 14, fontFamily: "Inter_600SemiBold", lineHeight: 20 },
+  recipeFooter:      { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginTop: 2 },
+  timeRow:           { flexDirection: "row", alignItems: "center", gap: 5 },
+  timeText:          { fontSize: 12, fontFamily: "Inter_400Regular" },
+  tapHint:           { flexDirection: "row", alignItems: "center", gap: 2 },
+  tapHintText:       { fontSize: 11, fontFamily: "Inter_600SemiBold" },
+  modalRoot:         { flex: 1 },
+  modalHeader:       { flexDirection: "row", justifyContent: "space-between", alignItems: "center", padding: 20, borderBottomWidth: 1 },
+  modalTitle:        { fontSize: 20, fontFamily: "Inter_700Bold" },
+  categorySection:   { marginBottom: 24 },
+  categoryLabel:     { fontSize: 10, fontFamily: "Inter_600SemiBold", letterSpacing: 2, marginBottom: 10 },
+  ingredientRow:     { flexDirection: "row", justifyContent: "space-between", alignItems: "center", borderRadius: 10, borderWidth: 1, paddingHorizontal: 14, paddingVertical: 12, marginBottom: 8 },
+  ingredientText:    { fontSize: 14, fontFamily: "Inter_400Regular" },
+  addRow:            { flexDirection: "row", gap: 8, marginTop: 4 },
+  addBtn:            { width: 46, height: 46, borderRadius: 10, alignItems: "center", justifyContent: "center" },
+  input:             { borderRadius: 10, borderWidth: 1, paddingHorizontal: 14, paddingVertical: 12, fontSize: 14, fontFamily: "Inter_400Regular" },
+  saveBtn:           { borderRadius: 12, paddingVertical: 16, alignItems: "center", marginTop: 8 },
+  saveBtnText:       { fontSize: 15, fontFamily: "Inter_600SemiBold" },
+  recipeModalImage:  { width: "100%", height: 240 },
+  floatBtn:          { position: "absolute", top: 16, width: 38, height: 38, borderRadius: 19, borderWidth: 1, alignItems: "center", justifyContent: "center" },
+  floatBtnLeft:      { left: 16 },
+  floatBtnRight:     { right: 16 },
+  floatBtnRight2:    { right: 62 },
+  modalBody:         { padding: 20, gap: 6 },
+  recipeModalTitle:  { fontSize: 22, fontFamily: "Inter_700Bold", lineHeight: 28, marginBottom: 4 },
+  metaRow:           { flexDirection: "row", gap: 12, marginBottom: 4 },
+  metaChip:          { flexDirection: "row", alignItems: "center", gap: 5 },
+  metaText:          { fontSize: 13, fontFamily: "Inter_400Regular" },
+  servingsRow:       { flexDirection: "row", alignItems: "center", justifyContent: "space-between", borderRadius: 14, borderWidth: 1, paddingHorizontal: 16, paddingVertical: 12, marginTop: 8, marginBottom: 4 },
+  servingsLabel:     { fontSize: 11, fontFamily: "Inter_600SemiBold", letterSpacing: 1.5 },
+  stepper:           { flexDirection: "row", alignItems: "center", gap: 16 },
+  stepperBtn:        { width: 34, height: 34, borderRadius: 17, borderWidth: 1, alignItems: "center", justifyContent: "center" },
+  stepperValue:      { fontSize: 18, fontFamily: "Inter_700Bold", minWidth: 28, textAlign: "center" },
+  sectionLabel:      { fontSize: 10, fontFamily: "Inter_600SemiBold", letterSpacing: 2, marginTop: 16, marginBottom: 8 },
+  sectionCard:       { borderRadius: 12, borderWidth: 1, padding: 14, gap: 10 },
+  ingRow:            { flexDirection: "row", alignItems: "flex-start", gap: 10 },
+  ingDot:            { width: 6, height: 6, borderRadius: 3, marginTop: 7, flexShrink: 0 },
+  ingText:           { flex: 1, fontSize: 14, fontFamily: "Inter_400Regular", lineHeight: 20 },
+  stepRow:           { flexDirection: "row", alignItems: "flex-start", gap: 12, borderRadius: 12, borderWidth: 1, padding: 14, marginBottom: 8 },
+  stepNum:           { width: 24, height: 24, borderRadius: 12, alignItems: "center", justifyContent: "center", flexShrink: 0 },
+  stepNumText:       { fontSize: 12, fontFamily: "Inter_700Bold" },
+  stepText:          { flex: 1, fontSize: 14, fontFamily: "Inter_400Regular", lineHeight: 20 },
 });
