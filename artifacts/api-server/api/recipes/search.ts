@@ -4,17 +4,25 @@ export default async function handler(req: any, res: any) {
 
   if (req.method === "OPTIONS") return res.status(200).end();
 
-  const { ingredients } = req.query;
+  const { ingredients, diet } = req.query;
   const apiKey = process.env.SPOONACULAR_API_KEY;
 
   if (!apiKey) return res.status(500).json({ error: "API key not configured" });
-
   if (!ingredients) return res.status(400).json({ error: "ingredients required" });
 
   try {
-    const searchRes = await fetch(
-      `https://api.spoonacular.com/recipes/complexSearch?includeIngredients=${ingredients}&number=2&type=main+course&sort=popularity&sortDirection=desc&apiKey=${apiKey}`
-    );
+    const searchUrl = new URL("https://api.spoonacular.com/recipes/complexSearch");
+    searchUrl.searchParams.set("includeIngredients", String(ingredients));
+    searchUrl.searchParams.set("number", "2");
+    searchUrl.searchParams.set("type", "main course");
+    searchUrl.searchParams.set("sort", "popularity");
+    searchUrl.searchParams.set("sortDirection", "desc");
+    searchUrl.searchParams.set("apiKey", String(apiKey));
+    if (diet && typeof diet === "string") {
+      searchUrl.searchParams.set("diet", diet);
+    }
+
+    const searchRes = await fetch(searchUrl.toString());
     const searchData = await searchRes.json();
     const ids = (searchData.results ?? []).map((r: any) => r.id);
 
@@ -37,14 +45,6 @@ export default async function handler(req: any, res: any) {
         const servings = r.servings ?? 4;
         const totalMacros = calculateMacros(mappedIngredients);
 
-        const macros = {
-          calories: Math.round(totalMacros.calories / servings),
-          protein:  Math.round(totalMacros.protein  / servings),
-          carbs:    Math.round(totalMacros.carbs     / servings),
-          fat:      Math.round(totalMacros.fat       / servings),
-          fiber:    Math.round(totalMacros.fiber     / servings),
-        };
-
         return {
           id: r.id,
           title: r.title,
@@ -53,7 +53,13 @@ export default async function handler(req: any, res: any) {
           servings,
           ingredients: mappedIngredients,
           instructions: (r.analyzedInstructions?.[0]?.steps ?? []).map((s: any) => s.step),
-          macros,
+          macros: {
+            calories: Math.round(totalMacros.calories / servings),
+            protein:  Math.round(totalMacros.protein  / servings),
+            carbs:    Math.round(totalMacros.carbs     / servings),
+            fat:      Math.round(totalMacros.fat       / servings),
+            fiber:    Math.round(totalMacros.fiber     / servings),
+          },
         };
       }),
     });
@@ -64,21 +70,8 @@ export default async function handler(req: any, res: any) {
 
 // ─── Macro Calculator ────────────────────────────────────────────────────────
 
-type NutritionPer100 = {
-  calories: number;
-  protein: number;
-  carbs: number;
-  fat: number;
-  fiber: number;
-};
-
-type Macros = {
-  calories: number;
-  protein: number;
-  carbs: number;
-  fat: number;
-  fiber: number;
-};
+type NutritionPer100 = { calories: number; protein: number; carbs: number; fat: number; fiber: number };
+type Macros = { calories: number; protein: number; carbs: number; fat: number; fiber: number };
 
 const UNIT_TO_GRAMS: Record<string, number> = {
   g: 1, gram: 1, grams: 1,
@@ -244,12 +237,8 @@ function lookupNutrition(name: string): NutritionPer100 | null {
   const lower = name.toLowerCase().trim();
   if (nutritionData[lower]) return nutritionData[lower];
   const keys = Object.keys(nutritionData).sort((a, b) => b.length - a.length);
-  for (const key of keys) {
-    if (lower.includes(key)) return nutritionData[key];
-  }
-  for (const key of keys) {
-    if (key.includes(lower)) return nutritionData[key];
-  }
+  for (const key of keys) { if (lower.includes(key)) return nutritionData[key]; }
+  for (const key of keys) { if (key.includes(lower)) return nutritionData[key]; }
   return null;
 }
 
