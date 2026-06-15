@@ -1,15 +1,13 @@
 {
   "version": 2,
   "builds": [
-    {
-      "src": "api/recipes/search.ts",
-      "use": "@vercel/node"
-    }
+    { "src": "api/recipes/search.ts", "use": "@vercel/node" },
+    { "src": "api/recipes/extract.ts", "use": "@vercel/node" },
+    { "src": "api/recipes/scrape.ts", "use": "@vercel/node" }
   ],
   "routes": [
-    {
-      "src": "/api/recipes/search",
-      "dest": "api/recipes/search.ts"
-    }
+    { "src": "/api/recipes/search", "dest": "api/recipes/search.ts" },
+    { "src": "/api/recipes/extract", "dest": "api/recipes/extract.ts" },
+    { "src": "/api/recipes/scrape", "dest": "api/recipes/scrape.ts" }
   ]
 }
