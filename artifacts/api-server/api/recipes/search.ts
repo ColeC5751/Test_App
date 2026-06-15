@@ -18,6 +18,7 @@ export default async function handler(req: any, res: any) {
     searchUrl.searchParams.set("sort", "popularity");
     searchUrl.searchParams.set("sortDirection", "desc");
     searchUrl.searchParams.set("apiKey", String(apiKey));
+    searchUrl.searchParams.set("ranking", "2");
     if (diet && typeof diet === "string") {
       searchUrl.searchParams.set("diet", diet);
     }
