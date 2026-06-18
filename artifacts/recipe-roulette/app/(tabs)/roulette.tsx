@@ -53,6 +53,7 @@ function ImportModal({
   const colors = useColors();
   const [mode, setMode] = useState<"manual" | "photo" | "url">("manual");
   const [isExtracting, setIsExtracting] = useState(false);
+  const [extractingStatus, setExtractingStatus] = useState("");
   const [extractError, setExtractError] = useState("");
 
   // Form fields
@@ -124,6 +125,12 @@ function ImportModal({
     setIsExtracting(true);
     setExtractError("");
     try {
+      const domain = new URL(urlInput.trim()).hostname.replace("www.", "");
+      setExtractingStatus(`Fetching recipe from ${domain}…`);
+    } catch {
+      setExtractingStatus("Fetching recipe…");
+    }
+    try {
       const res = await fetch(`${API_BASE}/api/recipes/scrape`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -139,6 +146,7 @@ function ImportModal({
       setExtractError(err.message ?? "Could not scrape recipe. Check the URL and try again.");
     } finally {
       setIsExtracting(false);
+      setExtractingStatus("");
     }
   };
 
@@ -215,7 +223,7 @@ function ImportModal({
                   : <><Feather name="download" size={16} color={colors.primaryForeground} /><Text style={[styles.importActionBtnText, { color: colors.primaryForeground }]}>Import Recipe</Text></>
                 }
               </Pressable>
-              {isExtracting && <Text style={[styles.extractingText, { color: colors.mutedForeground }]}>Scraping recipe from URL…</Text>}
+              {isExtracting && extractingStatus ? <Text style={[styles.extractingText, { color: colors.mutedForeground }]}>{extractingStatus}</Text> : null}
             </View>
           )}
 
