@@ -411,6 +411,7 @@ export default function GroceryScreen() {
               onEditStart={() => startEdit(item)}
               onEditChange={setEditValue}
               onEditCommit={() => commitEdit(item.id)}
+              onDelete={() => persist(items.filter((it) => it.id !== item.id))}
             />
           ))}
         </View>
@@ -436,6 +437,7 @@ export default function GroceryScreen() {
                 onEditStart={() => {}}
                 onEditChange={() => {}}
                 onEditCommit={() => {}}
+                onDelete={() => persist(items.filter((it) => it.id !== item.id))}
               />
             ))
           )}
@@ -456,6 +458,7 @@ function GroceryRow({
   onEditStart,
   onEditChange,
   onEditCommit,
+  onDelete,
 }: {
   item: GroceryItem;
   colors: ReturnType<typeof useColors>;
@@ -465,6 +468,7 @@ function GroceryRow({
   onEditStart: () => void;
   onEditChange: (v: string) => void;
   onEditCommit: () => void;
+  onDelete: () => void;
 }) {
   return (
     <View
@@ -519,6 +523,11 @@ function GroceryRow({
       >
         {item.name}
       </Text>
+
+      {/* Delete */}
+      <Pressable onPress={onDelete} hitSlop={12}>
+        <Feather name="x" size={16} color={colors.mutedForeground} />
+      </Pressable>
     </View>
   );
 }
