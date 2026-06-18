@@ -4,34 +4,49 @@ export default async function handler(req: any, res: any) {
 
   if (req.method === "OPTIONS") return res.status(200).end();
 
-  const { ingredients, diet } = req.query;
+  const { ingredients } = req.query;
   const apiKey = process.env.SPOONACULAR_API_KEY;
 
-  if (!apiKey) return res.status(500).json({ error: "API key not configured" });
-  if (!ingredients) return res.status(400).json({ error: "ingredients required" });
+  if (!apiKey) return res.status(500).json({ error: "API key not configured", code: "config_error" });
+  if (!ingredients) return res.status(400).json({ error: "ingredients required", code: "bad_request" });
 
   try {
-    const searchUrl = new URL("https://api.spoonacular.com/recipes/complexSearch");
-    searchUrl.searchParams.set("includeIngredients", String(ingredients));
-    searchUrl.searchParams.set("number", "2");
-    searchUrl.searchParams.set("type", "main course");
-    searchUrl.searchParams.set("sort", "popularity");
-    searchUrl.searchParams.set("sortDirection", "desc");
-    searchUrl.searchParams.set("apiKey", String(apiKey));
-    searchUrl.searchParams.set("ranking", "2");
-    if (diet && typeof diet === "string") {
-      searchUrl.searchParams.set("diet", diet);
+    const searchRes = await fetch(
+      `https://api.spoonacular.com/recipes/complexSearch?includeIngredients=${ingredients}&number=2&type=main+course&sort=popularity&sortDirection=desc&apiKey=${apiKey}`
+    );
+
+    // Spoonacular quota errors
+    if (searchRes.status === 401) {
+      return res.status(402).json({ error: "Invalid Spoonacular API key.", code: "api_key_invalid" });
+    }
+    if (searchRes.status === 402 || searchRes.status === 429) {
+      return res.status(429).json({ error: "Daily recipe search limit reached. Try again tomorrow.", code: "quota_exceeded" });
+    }
+    if (!searchRes.ok) {
+      return res.status(502).json({ error: `Recipe service error (${searchRes.status}). Try again shortly.`, code: "upstream_error" });
     }
 
-    const searchRes = await fetch(searchUrl.toString());
     const searchData = await searchRes.json();
-    const ids = (searchData.results ?? []).map((r: any) => r.id);
 
+    // Spoonacular sometimes returns 200 with a quota message in the body
+    if (searchData.status === "failure" || searchData.code === 402) {
+      return res.status(429).json({ error: "Daily recipe search limit reached. Try again tomorrow.", code: "quota_exceeded" });
+    }
+
+    const ids = (searchData.results ?? []).map((r: any) => r.id);
     if (ids.length === 0) return res.status(200).json({ recipes: [] });
 
     const bulkRes = await fetch(
       `https://api.spoonacular.com/recipes/informationBulk?ids=${ids.join(",")}&includeNutrition=false&apiKey=${apiKey}`
     );
+
+    if (bulkRes.status === 402 || bulkRes.status === 429) {
+      return res.status(429).json({ error: "Daily recipe search limit reached. Try again tomorrow.", code: "quota_exceeded" });
+    }
+    if (!bulkRes.ok) {
+      return res.status(502).json({ error: `Recipe service error (${bulkRes.status}). Try again shortly.`, code: "upstream_error" });
+    }
+
     const recipes = await bulkRes.json();
 
     return res.status(200).json({
@@ -46,6 +61,14 @@ export default async function handler(req: any, res: any) {
         const servings = r.servings ?? 4;
         const totalMacros = calculateMacros(mappedIngredients);
 
+        const macros = {
+          calories: Math.round(totalMacros.calories / servings),
+          protein:  Math.round(totalMacros.protein  / servings),
+          carbs:    Math.round(totalMacros.carbs     / servings),
+          fat:      Math.round(totalMacros.fat       / servings),
+          fiber:    Math.round(totalMacros.fiber     / servings),
+        };
+
         return {
           id: r.id,
           title: r.title,
@@ -54,25 +77,38 @@ export default async function handler(req: any, res: any) {
           servings,
           ingredients: mappedIngredients,
           instructions: (r.analyzedInstructions?.[0]?.steps ?? []).map((s: any) => s.step),
-          macros: {
-            calories: Math.round(totalMacros.calories / servings),
-            protein:  Math.round(totalMacros.protein  / servings),
-            carbs:    Math.round(totalMacros.carbs     / servings),
-            fat:      Math.round(totalMacros.fat       / servings),
-            fiber:    Math.round(totalMacros.fiber     / servings),
-          },
+          macros,
         };
       }),
     });
-  } catch {
-    return res.status(500).json({ error: "Failed to fetch recipes" });
+  } catch (err: any) {
+    // Network-level failure (no connection, DNS, timeout)
+    const isNetworkError = err?.cause?.code === "ENOTFOUND"
+      || err?.cause?.code === "ECONNREFUSED"
+      || err?.name === "TypeError";
+    if (isNetworkError) {
+      return res.status(503).json({ error: "Could not reach recipe service. Check your connection.", code: "network_error" });
+    }
+    return res.status(500).json({ error: "Something went wrong. Please try again.", code: "unknown_error" });
   }
 }
-
 // ─── Macro Calculator ────────────────────────────────────────────────────────
 
-type NutritionPer100 = { calories: number; protein: number; carbs: number; fat: number; fiber: number };
-type Macros = { calories: number; protein: number; carbs: number; fat: number; fiber: number };
+type NutritionPer100 = {
+  calories: number;
+  protein: number;
+  carbs: number;
+  fat: number;
+  fiber: number;
+};
+
+type Macros = {
+  calories: number;
+  protein: number;
+  carbs: number;
+  fat: number;
+  fiber: number;
+};
 
 const UNIT_TO_GRAMS: Record<string, number> = {
   g: 1, gram: 1, grams: 1,
@@ -238,8 +274,12 @@ function lookupNutrition(name: string): NutritionPer100 | null {
   const lower = name.toLowerCase().trim();
   if (nutritionData[lower]) return nutritionData[lower];
   const keys = Object.keys(nutritionData).sort((a, b) => b.length - a.length);
-  for (const key of keys) { if (lower.includes(key)) return nutritionData[key]; }
-  for (const key of keys) { if (key.includes(lower)) return nutritionData[key]; }
+  for (const key of keys) {
+    if (lower.includes(key)) return nutritionData[key];
+  }
+  for (const key of keys) {
+    if (key.includes(lower)) return nutritionData[key];
+  }
   return null;
 }
 
