@@ -20,6 +20,10 @@ function NativeTabLayout() {
         <Icon sf={{ default: "fork.knife", selected: "fork.knife" }} />
         <Label>My Dinners</Label>
       </NativeTabs.Trigger>
+      <NativeTabs.Trigger name="grocery">
+        <Icon sf={{ default: "cart", selected: "cart.fill" }} />
+        <Label>Grocery List</Label>
+      </NativeTabs.Trigger>
     </NativeTabs>
   );
 }
@@ -86,11 +90,28 @@ function ClassicTabLayout() {
             ),
         }}
       />
+      <Tabs.Screen
+        name="grocery"
+        options={{
+          title: "Grocery List",
+          tabBarIcon: ({ color }) =>
+            isIOS ? (
+              <SymbolView name="cart" tintColor={color} size={24} />
+            ) : (
+              <Feather name="shopping-cart" size={22} color={color} />
+            ),
+        }}
+      />
     </Tabs>
   );
 }
 
 export default function TabLayout() {
+  if (isLiquidGlassAvailable()) {
+    return <NativeTabLayout />;
+  }
+  return <ClassicTabLayout />;
+}
   if (isLiquidGlassAvailable()) {
     return <NativeTabLayout />;
   }
