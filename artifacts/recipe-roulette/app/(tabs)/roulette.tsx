@@ -1,18 +1,18 @@
-import { useFocusEffect } from "expo-router";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { Feather } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
-import * as ImagePicker from "expo-image-picker";
-import React, { useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import {
+  Animated,
+  Easing,
   ActivityIndicator,
-  Alert,
   Image,
   Modal,
   Platform,
   Pressable,
   SafeAreaView,
   ScrollView,
+  Share,
   StyleSheet,
   Text,
   TextInput,
@@ -20,283 +20,457 @@ import {
 } from "react-native";
 
 import { useColors } from "@/hooks/useColors";
+import { addIngredientsToGrocery } from "@/app/(tabs)/grocery";
+
+const DEFAULT_PROTEINS = ["Fish", "Chicken", "Ground Beef", "Pork"];
+const DEFAULT_CARBS = ["Rice", "Pasta", "Potatoes", "Bread"];
+const DEFAULT_VEGGIES = ["Broccoli", "Spinach", "Carrots", "Peppers"];
 
 const STORAGE_KEY = "@recipe_roulette_personal";
-const API_BASE = "https://test-app-api-server.vercel.app";
+const WHEELS_KEY = "@recipe_roulette_wheels";
 
-interface PersonalRecipe {
+const ITEM_HEIGHT = 80;
+const VISIBLE = 3;
+const COPY_COUNT = 10;
+const START_COPY = 2;
+const SPIN_ROUNDS = 5;
+const PROTEIN_DUR = 1600;
+const CARB_DUR = 2200;
+const VEGGIE_DUR = 2800;
+
+function makeDisplay(items: string[]) {
+  return Array.from({ length: COPY_COUNT }, () => items).flat();
+}
+function initialY(items: string[], idx = 0) {
+  return ITEM_HEIGHT * (1 - (START_COPY * items.length + idx));
+}
+function spinTargetY(items: string[], prevIdx: number, newIdx: number) {
+  return ITEM_HEIGHT * (1 - (START_COPY * items.length + prevIdx + SPIN_ROUNDS * items.length + newIdx));
+}
+function resetY(items: string[], newIdx: number) {
+  return ITEM_HEIGHT * (1 - (START_COPY * items.length + newIdx));
+}
+
+function formatAmt(n: number): string {
+  if (n <= 0) return "0";
+  const r = Math.round(n * 10) / 10;
+  return r % 1 === 0 ? String(Math.round(r)) : r.toFixed(1);
+}
+
+type RecipeIngredient = {
+  amount: number;
+  unit: string;
+  name: string;
+  original: string;
+};
+
+type Macros = {
+  calories: number;
+  protein: number;
+  carbs: number;
+  fat: number;
+  fiber: number;
+};
+
+type Recipe = {
+  id: number;
+  title: string;
+  image: string;
+  readyInMinutes: number;
+  servings: number;
+  ingredients: RecipeIngredient[];
+  instructions: string[];
+  macros?: Macros;
+};
+
+type PersonalRecipe = {
   id: string;
   name: string;
   ingredients: string;
   steps: string;
   photoUrl?: string;
   createdAt: number;
-  source?: "manual" | "photo" | "url";
+};
+
+type WheelData = {
+  proteins: string[];
+  carbs: string[];
+  veggies: string[];
+};
+
+async function fetchRecipes(ingredients: string): Promise<Recipe[]> {
+  const res = await fetch(
+    `https://test-app-api-server.vercel.app/api/recipes/search?ingredients=${encodeURIComponent(ingredients)}`
+  );
+  if (!res.ok) return [];
+  const data = await res.json();
+  return data.recipes ?? [];
 }
 
-function generateId() {
-  return Date.now().toString() + Math.random().toString(36).substring(2, 9);
+function MacroBar({ macros, servings, baseServings, colors }: { macros: Macros; servings: number; baseServings: number; colors: ReturnType<typeof useColors> }) {
+  const scale = servings / baseServings;
+  const items: { label: string; value: number; unit: string; color: string }[] = [
+    { label: "Calories", value: Math.round(macros.calories * scale), unit: "kcal", color: colors.primary },
+    { label: "Protein", value: Math.round(macros.protein * scale), unit: "g", color: "#7C8C5E" },
+    { label: "Carbs", value: Math.round(macros.carbs * scale), unit: "g", color: "#C8A86B" },
+    { label: "Fat", value: Math.round(macros.fat * scale), unit: "g", color: "#B87333" },
+    { label: "Fiber", value: Math.round(macros.fiber * scale), unit: "g", color: "#6B8E6B" },
+  ];
+  return (
+    <View style={[macroStyles.wrap, { backgroundColor: colors.card, borderColor: colors.border }]}>
+      <Text style={[macroStyles.heading, { color: colors.mutedForeground }]}>NUTRITION PER SERVING</Text>
+      <View style={macroStyles.row}>
+        {items.map((item) => (
+          <View key={item.label} style={macroStyles.cell}>
+            <Text style={[macroStyles.value, { color: colors.foreground }]}>{item.value}</Text>
+            <Text style={[macroStyles.unit, { color: item.color }]}>{item.unit}</Text>
+            <Text style={[macroStyles.label, { color: colors.mutedForeground }]}>{item.label}</Text>
+          </View>
+        ))}
+      </View>
+    </View>
+  );
 }
 
-// ─── Import Modal ─────────────────────────────────────────────────────────────
+function MacroPills({ macros, colors }: { macros: Macros; colors: ReturnType<typeof useColors> }) {
+  return (
+    <View style={macroStyles.pillRow}>
+      <View style={[macroStyles.pill, { backgroundColor: colors.secondary }]}>
+        <Text style={[macroStyles.pillVal, { color: colors.foreground }]}>{macros.calories}</Text>
+        <Text style={[macroStyles.pillLabel, { color: colors.mutedForeground }]}>kcal</Text>
+      </View>
+      <View style={[macroStyles.pill, { backgroundColor: colors.secondary }]}>
+        <Text style={[macroStyles.pillVal, { color: colors.foreground }]}>{macros.protein}g</Text>
+        <Text style={[macroStyles.pillLabel, { color: colors.mutedForeground }]}>protein</Text>
+      </View>
+      <View style={[macroStyles.pill, { backgroundColor: colors.secondary }]}>
+        <Text style={[macroStyles.pillVal, { color: colors.foreground }]}>{macros.carbs}g</Text>
+        <Text style={[macroStyles.pillLabel, { color: colors.mutedForeground }]}>carbs</Text>
+      </View>
+      <View style={[macroStyles.pill, { backgroundColor: colors.secondary }]}>
+        <Text style={[macroStyles.pillVal, { color: colors.foreground }]}>{macros.fat}g</Text>
+        <Text style={[macroStyles.pillLabel, { color: colors.mutedForeground }]}>fat</Text>
+      </View>
+    </View>
+  );
+}
 
-function ImportModal({
+const macroStyles = StyleSheet.create({
+  wrap: { borderRadius: 14, borderWidth: 1, padding: 16, marginTop: 8, marginBottom: 4 },
+  heading: { fontSize: 10, fontFamily: "Inter_600SemiBold", letterSpacing: 2, marginBottom: 12 },
+  row: { flexDirection: "row", justifyContent: "space-between" },
+  cell: { alignItems: "center", flex: 1 },
+  value: { fontSize: 17, fontFamily: "Inter_700Bold" },
+  unit: { fontSize: 10, fontFamily: "Inter_600SemiBold", marginTop: 1 },
+  label: { fontSize: 10, fontFamily: "Inter_400Regular", marginTop: 2 },
+  pillRow: { flexDirection: "row", flexWrap: "wrap", gap: 6, marginTop: 6 },
+  pill: { flexDirection: "row", alignItems: "baseline", gap: 3, borderRadius: 20, paddingHorizontal: 10, paddingVertical: 4 },
+  pillVal: { fontSize: 12, fontFamily: "Inter_700Bold" },
+  pillLabel: { fontSize: 11, fontFamily: "Inter_400Regular" },
+});
+
+function SlotColumn({ label, items, animValue }: { label: string; items: string[]; animValue: Animated.Value }) {
+  const colors = useColors();
+  const display = makeDisplay(items);
+  return (
+    <View style={styles.colWrap}>
+      <Text style={[styles.colLabel, { color: colors.mutedForeground }]}>{label}</Text>
+      <View style={[styles.colViewport, { height: ITEM_HEIGHT * VISIBLE, backgroundColor: colors.card, borderColor: colors.border }]}>
+        <View style={[styles.selectionBox, { borderColor: colors.primary, pointerEvents: "none" }]} />
+        <Animated.View style={{ transform: [{ translateY: animValue }] }}>
+          {display.map((item, i) => (
+            <View key={i} style={[styles.slotItem, { height: ITEM_HEIGHT }]}>
+              <Text style={[styles.slotText, { color: colors.foreground }]}>{item}</Text>
+            </View>
+          ))}
+        </Animated.View>
+      </View>
+    </View>
+  );
+}
+
+function WheelSettingsModal({
   visible,
   onClose,
+  wheels,
   onSave,
 }: {
   visible: boolean;
   onClose: () => void;
-  onSave: (recipe: PersonalRecipe) => void;
+  wheels: WheelData;
+  onSave: (wheels: WheelData) => void;
 }) {
   const colors = useColors();
-  const [mode, setMode] = useState<"manual" | "photo" | "url">("manual");
-  const [isExtracting, setIsExtracting] = useState(false);
-  const [extractError, setExtractError] = useState("");
+  const [proteins, setProteins] = useState<string[]>(wheels.proteins);
+  const [carbs, setCarbs] = useState<string[]>(wheels.carbs);
+  const [veggies, setVeggies] = useState<string[]>(wheels.veggies);
+  const [newProtein, setNewProtein] = useState("");
+  const [newCarb, setNewCarb] = useState("");
+  const [newVeggie, setNewVeggie] = useState("");
 
-  // Form fields
-  const [formName, setFormName] = useState("");
-  const [formIngredients, setFormIngredients] = useState("");
-  const [formSteps, setFormSteps] = useState("");
-  const [formPhoto, setFormPhoto] = useState("");
-  const [urlInput, setUrlInput] = useState("");
-
-  const reset = () => {
-    setFormName(""); setFormIngredients(""); setFormSteps("");
-    setFormPhoto(""); setUrlInput(""); setExtractError("");
-    setIsExtracting(false); setMode("manual");
-  };
-
-  const handleClose = () => { reset(); onClose(); };
+  useEffect(() => {
+    setProteins(wheels.proteins);
+    setCarbs(wheels.carbs);
+    setVeggies(wheels.veggies);
+  }, [wheels]);
 
   const handleSave = () => {
-    if (!formName.trim() || !formIngredients.trim() || !formSteps.trim()) return;
-    onSave({
-      id: generateId(),
-      name: formName.trim(),
-      ingredients: formIngredients.trim(),
-      steps: formSteps.trim(),
-      photoUrl: formPhoto.trim() || undefined,
-      createdAt: Date.now(),
-      source: mode,
-    });
-    reset();
+    if (proteins.length === 0 || carbs.length === 0 || veggies.length === 0) return;
+    onSave({ proteins, carbs, veggies });
     onClose();
   };
 
-  const handlePhotoImport = async () => {
-    const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
-    if (!permission.granted) {
-      Alert.alert("Permission needed", "Please allow access to your photo library.");
-      return;
-    }
-    const result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ImagePicker.MediaTypeOptions.Images,
-      base64: true,
-      quality: 0.7,
-    });
-    if (result.canceled || !result.assets[0]?.base64) return;
-
-    setIsExtracting(true);
-    setExtractError("");
-    try {
-      const res = await fetch(`${API_BASE}/api/recipes/extract`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ imageBase64: result.assets[0].base64 }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error ?? "Extraction failed");
-      setFormName(data.name ?? "");
-      setFormIngredients(Array.isArray(data.ingredients) ? data.ingredients.join(", ") : data.ingredients ?? "");
-      setFormSteps(Array.isArray(data.steps) ? data.steps.map((s: string, i: number) => `${i + 1}. ${s}`).join("\n") : data.steps ?? "");
-      setFormPhoto(result.assets[0].uri ?? "");
-    } catch (err: any) {
-      setExtractError(err.message ?? "Could not extract recipe. Try again or enter manually.");
-    } finally {
-      setIsExtracting(false);
-    }
-  };
-
-  const handleUrlImport = async () => {
-    if (!urlInput.trim()) return;
-    setIsExtracting(true);
-    setExtractError("");
-    try {
-      const res = await fetch(`${API_BASE}/api/recipes/scrape`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ url: urlInput.trim() }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error ?? "Scrape failed");
-      setFormName(data.name ?? "");
-      setFormIngredients(Array.isArray(data.ingredients) ? data.ingredients.join(", ") : data.ingredients ?? "");
-      setFormSteps(Array.isArray(data.steps) ? data.steps.map((s: string, i: number) => `${i + 1}. ${s}`).join("\n") : data.steps ?? "");
-      setFormPhoto(data.image ?? "");
-    } catch (err: any) {
-      setExtractError(err.message ?? "Could not scrape recipe. Check the URL and try again.");
-    } finally {
-      setIsExtracting(false);
-    }
-  };
-
   const inputStyle = [styles.input, { backgroundColor: colors.secondary, borderColor: colors.border, color: colors.foreground }];
-  const canSave = formName.trim() && formIngredients.trim() && formSteps.trim();
+
+  const renderCategory = (
+    label: string,
+    items: string[],
+    setItems: (items: string[]) => void,
+    newItem: string,
+    setNewItem: (val: string) => void,
+  ) => (
+    <View style={styles.categorySection}>
+      <Text style={[styles.categoryLabel, { color: colors.mutedForeground }]}>{label}</Text>
+      {items.map((item, i) => (
+        <View key={i} style={[styles.ingredientRow, { backgroundColor: colors.card, borderColor: colors.border }]}>
+          <Text style={[styles.ingredientText, { color: colors.foreground }]}>{item}</Text>
+          <Pressable
+            onPress={() => {
+              if (items.length > 1) {
+                setItems(items.filter((_, idx) => idx !== i));
+                Haptics.selectionAsync();
+              }
+            }}
+            hitSlop={12}
+          >
+            <Feather name="x" size={16} color={items.length > 1 ? colors.mutedForeground : colors.muted} />
+          </Pressable>
+        </View>
+      ))}
+      <View style={styles.addRow}>
+        <TextInput
+          style={[inputStyle, { flex: 1 }]}
+          value={newItem}
+          onChangeText={setNewItem}
+          placeholder={`Add ${label.toLowerCase()}...`}
+          placeholderTextColor={colors.mutedForeground}
+          autoCapitalize="words"
+        />
+        <Pressable
+          onPress={() => {
+            if (newItem.trim()) {
+              setItems([...items, newItem.trim()]);
+              setNewItem("");
+              Haptics.selectionAsync();
+            }
+          }}
+          style={[styles.addBtn, { backgroundColor: colors.primary }]}
+        >
+          <Feather name="plus" size={18} color={colors.primaryForeground} />
+        </Pressable>
+      </View>
+    </View>
+  );
 
   return (
-    <Modal visible={visible} animationType="slide" presentationStyle="pageSheet" onRequestClose={handleClose}>
+    <Modal visible={visible} animationType="slide" presentationStyle="pageSheet" onRequestClose={onClose}>
       <SafeAreaView style={[styles.modalRoot, { backgroundColor: colors.background }]}>
         <View style={[styles.modalHeader, { borderBottomColor: colors.border }]}>
-          <Text style={[styles.modalTitle, { color: colors.foreground }]}>Add Recipe</Text>
-          <Pressable onPress={handleClose}><Feather name="x" size={22} color={colors.foreground} /></Pressable>
+          <Text style={[styles.modalTitle, { color: colors.foreground }]}>Customize Wheels</Text>
+          <Pressable onPress={onClose}>
+            <Feather name="x" size={22} color={colors.foreground} />
+          </Pressable>
         </View>
-
-        {/* Mode selector */}
-        <View style={[styles.modeRow, { backgroundColor: colors.secondary, borderColor: colors.border }]}>
-          {(["manual", "photo", "url"] as const).map((m) => (
-            <Pressable
-              key={m}
-              onPress={() => { setMode(m); setExtractError(""); }}
-              style={[styles.modeBtn, mode === m && { backgroundColor: colors.primary, borderRadius: 8 }]}
-            >
-              <Feather
-                name={m === "manual" ? "edit-3" : m === "photo" ? "camera" : "link"}
-                size={14}
-                color={mode === m ? colors.primaryForeground : colors.mutedForeground}
-              />
-              <Text style={[styles.modeBtnText, { color: mode === m ? colors.primaryForeground : colors.mutedForeground }]}>
-                {m === "manual" ? "Manual" : m === "photo" ? "Photo" : "URL"}
-              </Text>
-            </Pressable>
-          ))}
-        </View>
-
-        <ScrollView contentContainerStyle={{ padding: 20, paddingBottom: 48 }} keyboardShouldPersistTaps="handled">
-
-          {/* Photo mode */}
-          {mode === "photo" && (
-            <View style={{ marginBottom: 20 }}>
-              <Pressable
-                onPress={handlePhotoImport}
-                disabled={isExtracting}
-                style={[styles.importActionBtn, { backgroundColor: colors.primary, opacity: isExtracting ? 0.6 : 1 }]}
-              >
-                {isExtracting
-                  ? <ActivityIndicator color={colors.primaryForeground} />
-                  : <><Feather name="camera" size={16} color={colors.primaryForeground} /><Text style={[styles.importActionBtnText, { color: colors.primaryForeground }]}>Choose Photo</Text></>
-                }
-              </Pressable>
-              {isExtracting && <Text style={[styles.extractingText, { color: colors.mutedForeground }]}>Extracting recipe from photo…</Text>}
-            </View>
-          )}
-
-          {/* URL mode */}
-          {mode === "url" && (
-            <View style={{ marginBottom: 20 }}>
-              <TextInput
-                style={[inputStyle, { marginBottom: 10 }]}
-                value={urlInput}
-                onChangeText={setUrlInput}
-                placeholder="https://www.example.com/recipe..."
-                placeholderTextColor={colors.mutedForeground}
-                keyboardType="url"
-                autoCapitalize="none"
-                autoCorrect={false}
-              />
-              <Pressable
-                onPress={handleUrlImport}
-                disabled={isExtracting || !urlInput.trim()}
-                style={[styles.importActionBtn, { backgroundColor: colors.primary, opacity: isExtracting || !urlInput.trim() ? 0.6 : 1 }]}
-              >
-                {isExtracting
-                  ? <ActivityIndicator color={colors.primaryForeground} />
-                  : <><Feather name="download" size={16} color={colors.primaryForeground} /><Text style={[styles.importActionBtnText, { color: colors.primaryForeground }]}>Import Recipe</Text></>
-                }
-              </Pressable>
-              {isExtracting && <Text style={[styles.extractingText, { color: colors.mutedForeground }]}>Scraping recipe from URL…</Text>}
-            </View>
-          )}
-
-          {/* Error */}
-          {extractError ? (
-            <View style={[styles.errorBox, { backgroundColor: colors.secondary, borderColor: colors.border }]}>
-              <Feather name="alert-circle" size={14} color={colors.destructive} />
-              <Text style={[styles.errorText, { color: colors.destructive }]}>{extractError}</Text>
-            </View>
-          ) : null}
-
-          {/* Form fields — shown for manual, or after successful extract */}
-          {(mode === "manual" || formName || formIngredients || formSteps) && (
-            <>
-              {(mode === "photo" || mode === "url") && (formName || formIngredients) && (
-                <View style={[styles.extractedBanner, { backgroundColor: colors.secondary, borderColor: colors.border }]}>
-                  <Feather name="check-circle" size={14} color={colors.primary} />
-                  <Text style={[styles.extractedText, { color: colors.mutedForeground }]}>Recipe extracted — review and edit below</Text>
-                </View>
-              )}
-
-              <Text style={[styles.formLabel, { color: colors.mutedForeground }]}>RECIPE NAME</Text>
-              <TextInput style={inputStyle} value={formName} onChangeText={setFormName} placeholder="e.g. Garlic Butter Salmon" placeholderTextColor={colors.mutedForeground} />
-
-              <Text style={[styles.formLabel, { color: colors.mutedForeground }]}>INGREDIENTS</Text>
-              <TextInput style={[inputStyle, styles.multiInput]} value={formIngredients} onChangeText={setFormIngredients} placeholder="Salmon, garlic, butter, lemon..." placeholderTextColor={colors.mutedForeground} multiline numberOfLines={4} textAlignVertical="top" />
-
-              <Text style={[styles.formLabel, { color: colors.mutedForeground }]}>STEPS</Text>
-              <TextInput style={[inputStyle, styles.multiInput]} value={formSteps} onChangeText={setFormSteps} placeholder="1. Preheat pan... 2. Season salmon..." placeholderTextColor={colors.mutedForeground} multiline numberOfLines={5} textAlignVertical="top" />
-
-              <Text style={[styles.formLabel, { color: colors.mutedForeground }]}>PHOTO URL (optional)</Text>
-              <TextInput style={inputStyle} value={formPhoto} onChangeText={setFormPhoto} placeholder="https://..." placeholderTextColor={colors.mutedForeground} keyboardType="url" autoCapitalize="none" />
-
-              <Pressable
-                onPress={handleSave}
-                disabled={!canSave}
-                style={[styles.saveBtn, { backgroundColor: canSave ? colors.primary : colors.muted }]}
-              >
-                <Text style={[styles.saveBtnText, { color: canSave ? colors.primaryForeground : colors.mutedForeground }]}>Save Recipe</Text>
-              </Pressable>
-            </>
-          )}
+        <ScrollView contentContainerStyle={{ padding: 20, paddingBottom: 48 }} showsVerticalScrollIndicator={false}>
+          {renderCategory("PROTEIN", proteins, setProteins, newProtein, setNewProtein)}
+          {renderCategory("CARBS", carbs, setCarbs, newCarb, setNewCarb)}
+          {renderCategory("VEGGIE", veggies, setVeggies, newVeggie, setNewVeggie)}
+          <Pressable onPress={handleSave} style={[styles.saveBtn, { backgroundColor: colors.primary }]}>
+            <Text style={[styles.saveBtnText, { color: colors.primaryForeground }]}>Save Changes</Text>
+          </Pressable>
         </ScrollView>
       </SafeAreaView>
     </Modal>
   );
 }
 
-// ─── Recipe Detail Modal ──────────────────────────────────────────────────────
-
-function RecipeDetailModal({ recipe, onClose, onDelete }: { recipe: PersonalRecipe | null; onClose: () => void; onDelete: (id: string) => void }) {
+function RecipeDetailModal({ recipe, onClose }: { recipe: Recipe | null; onClose: () => void }) {
   const colors = useColors();
+  const [currentServings, setCurrentServings] = useState<number | null>(null);
+  const [saved, setSaved] = useState(false);
+  const [addedToGrocery, setAddedToGrocery] = useState(false);
+
+  useEffect(() => {
+    if (!recipe) { setSaved(false); setAddedToGrocery(false); return; }
+    AsyncStorage.getItem(STORAGE_KEY)
+      .then((json) => {
+        if (!json) { setSaved(false); return; }
+        const list: PersonalRecipe[] = JSON.parse(json);
+        setSaved(list.some((r) => r.id === `spoonacular_${recipe.id}`));
+      })
+      .catch(() => setSaved(false));
+  }, [recipe?.id]);
+
+  const handleSave = async () => {
+    if (!recipe) return;
+    const recipeId = `spoonacular_${recipe.id}`;
+    try {
+      const json = await AsyncStorage.getItem(STORAGE_KEY);
+      const list: PersonalRecipe[] = json ? JSON.parse(json) : [];
+      if (saved) {
+        await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(list.filter((r) => r.id !== recipeId)));
+        setSaved(false);
+      } else {
+        const entry: PersonalRecipe = {
+          id: recipeId,
+          name: recipe.title,
+          ingredients: recipe.ingredients.map((i) => i.original || `${formatAmt(i.amount)} ${i.unit} ${i.name}`.trim()).join(", "),
+          steps: recipe.instructions.map((s, i) => `${i + 1}. ${s}`).join("\n"),
+          photoUrl: recipe.image,
+          createdAt: Date.now(),
+        };
+        await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify([...list, entry]));
+        setSaved(true);
+      }
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    } catch {}
+  };
+
+  const handleAddToGrocery = async () => {
+    if (!recipe) return;
+    const scale = servings / baseServings;
+    const ingredientsString = recipe.ingredients
+      .map((ing) => {
+        const amt = formatAmt(ing.amount * scale);
+        const unit = ing.unit ? `${ing.unit} ` : "";
+        return `${amt} ${unit}${ing.name}`.trim();
+      })
+      .join("\n");
+    await addIngredientsToGrocery(ingredientsString);
+    setAddedToGrocery(true);
+    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    setTimeout(() => setAddedToGrocery(false), 2000);
+  };
+
+  const baseServings = recipe?.servings ?? 4;
+  const servings = currentServings ?? baseServings;
+
+  const handleClose = () => { setCurrentServings(null); onClose(); };
+
+  const handleShare = async () => {
+    if (!recipe) return;
+    const scale = servings / baseServings;
+    const ingList = recipe.ingredients.map((ing) => {
+      const amt = formatAmt(ing.amount * scale);
+      const unit = ing.unit ? `${ing.unit} ` : "";
+      return `• ${amt} ${unit}${ing.name}`.trim();
+    }).join("\n");
+    const stepList = recipe.instructions.map((s, i) => `${i + 1}. ${s}`).join("\n");
+    const macroLine = recipe.macros
+      ? `Calories: ${recipe.macros.calories} kcal | Protein: ${recipe.macros.protein}g | Carbs: ${recipe.macros.carbs}g | Fat: ${recipe.macros.fat}g`
+      : "";
+    const message = `${recipe.title}\nServings: ${servings}  |  Ready in: ${recipe.readyInMinutes} min\n` +
+      (macroLine ? `${macroLine}\n` : "") +
+      `\n` + (ingList ? `INGREDIENTS\n${ingList}\n\n` : "") + (stepList ? `INSTRUCTIONS\n${stepList}` : "");
+    try { await Share.share({ title: recipe.title, message }); } catch {}
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+  };
+
   if (!recipe) return null;
 
-  const sourceBadge = recipe.source === "photo" ? "📷 Photo import" : recipe.source === "url" ? "🔗 Link import" : "✍️ Manual";
-
   return (
-    <Modal visible={!!recipe} animationType="slide" presentationStyle="pageSheet" onRequestClose={onClose}>
+    <Modal visible={!!recipe} animationType="slide" presentationStyle="pageSheet" onRequestClose={handleClose}>
       <SafeAreaView style={[styles.modalRoot, { backgroundColor: colors.background }]}>
-        <View style={[styles.modalHeader, { borderBottomColor: colors.border }]}>
-          <Text style={[styles.modalTitle, { color: colors.foreground }]} numberOfLines={1}>{recipe.name}</Text>
-          <View style={{ flexDirection: "row", gap: 12, alignItems: "center" }}>
-            <Pressable onPress={() => { onDelete(recipe.id); onClose(); }}>
-              <Feather name="trash-2" size={18} color={colors.destructive} />
+        <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 48 }}>
+          <Image source={{ uri: recipe.image }} style={styles.recipeModalImage} />
+          <Pressable onPress={handleClose} style={[styles.floatBtn, styles.floatBtnRight, { backgroundColor: colors.card, borderColor: colors.border }]}>
+            <Feather name="x" size={18} color={colors.foreground} />
+          </Pressable>
+          <Pressable onPress={handleSave} style={[styles.floatBtn, styles.floatBtnRight2, { backgroundColor: saved ? colors.primary : colors.card, borderColor: saved ? colors.primary : colors.border }]}>
+            <Feather name="bookmark" size={18} color={saved ? colors.primaryForeground : colors.foreground} />
+          </Pressable>
+          <Pressable onPress={handleShare} style={[styles.floatBtn, styles.floatBtnLeft, { backgroundColor: colors.primary }]}>
+            <Feather name="share" size={18} color={colors.primaryForeground} />
+          </Pressable>
+          <View style={styles.modalBody}>
+            <Text style={[styles.recipeModalTitle, { color: colors.foreground }]}>{recipe.title}</Text>
+            <View style={styles.metaRow}>
+              <View style={styles.metaChip}>
+                <Feather name="clock" size={13} color={colors.primary} />
+                <Text style={[styles.metaText, { color: colors.mutedForeground }]}>{recipe.readyInMinutes} min</Text>
+              </View>
+            </View>
+
+            <View style={[styles.servingsRow, { backgroundColor: colors.card, borderColor: colors.border }]}>
+              <Text style={[styles.servingsLabel, { color: colors.mutedForeground }]}>SERVINGS</Text>
+              <View style={styles.stepper}>
+                <Pressable onPress={() => { setCurrentServings((s) => Math.max(1, (s ?? baseServings) - 1)); Haptics.selectionAsync(); }} style={[styles.stepperBtn, { backgroundColor: colors.secondary, borderColor: colors.border }]}>
+                  <Feather name="minus" size={16} color={colors.foreground} />
+                </Pressable>
+                <Text style={[styles.stepperValue, { color: colors.foreground }]}>{servings}</Text>
+                <Pressable onPress={() => { setCurrentServings((s) => Math.min(20, (s ?? baseServings) + 1)); Haptics.selectionAsync(); }} style={[styles.stepperBtn, { backgroundColor: colors.secondary, borderColor: colors.border }]}>
+                  <Feather name="plus" size={16} color={colors.foreground} />
+                </Pressable>
+              </View>
+            </View>
+
+            <Pressable
+              onPress={handleAddToGrocery}
+              style={({ pressed }) => [
+                styles.groceryBtn,
+                { backgroundColor: addedToGrocery ? colors.secondary : colors.primary },
+                pressed && { opacity: 0.9 },
+              ]}
+            >
+              <Feather
+                name={addedToGrocery ? "check" : "shopping-cart"}
+                size={16}
+                color={addedToGrocery ? colors.foreground : colors.primaryForeground}
+              />
+              <Text
+                style={[
+                  styles.groceryBtnText,
+                  { color: addedToGrocery ? colors.foreground : colors.primaryForeground },
+                ]}
+              >
+                {addedToGrocery ? "Added to Grocery List" : "Add to Grocery List"}
+              </Text>
             </Pressable>
-            <Pressable onPress={onClose}><Feather name="x" size={22} color={colors.foreground} /></Pressable>
-          </View>
-        </View>
-        <ScrollView contentContainerStyle={{ padding: 20, paddingBottom: 48 }}>
-          {recipe.photoUrl ? (
-            <Image source={{ uri: recipe.photoUrl }} style={styles.detailImage} />
-          ) : null}
-          <View style={[styles.sourceBadge, { backgroundColor: colors.secondary }]}>
-            <Text style={[styles.sourceBadgeText, { color: colors.mutedForeground }]}>{sourceBadge}</Text>
-          </View>
-          <Text style={[styles.sectionLabel, { color: colors.mutedForeground }]}>INGREDIENTS</Text>
-          <View style={[styles.sectionCard, { backgroundColor: colors.card, borderColor: colors.border }]}>
-            <Text style={[styles.bodyText, { color: colors.foreground }]}>{recipe.ingredients}</Text>
-          </View>
-          <Text style={[styles.sectionLabel, { color: colors.mutedForeground }]}>STEPS</Text>
-          <View style={[styles.sectionCard, { backgroundColor: colors.card, borderColor: colors.border }]}>
-            <Text style={[styles.bodyText, { color: colors.foreground }]}>{recipe.steps}</Text>
+
+            {recipe.macros && (
+              <MacroBar macros={recipe.macros} servings={servings} baseServings={baseServings} colors={colors} />
+            )}
+
+            {recipe.ingredients.length > 0 && (
+              <>
+                <Text style={[styles.sectionLabel, { color: colors.mutedForeground }]}>INGREDIENTS</Text>
+                <View style={[styles.sectionCard, { backgroundColor: colors.card, borderColor: colors.border }]}>
+                  {recipe.ingredients.map((ing, i) => {
+                    const scale = servings / baseServings;
+                    const line = `${formatAmt(ing.amount * scale)} ${ing.unit ? `${ing.unit} ` : ""}${ing.name}`.trim();
+                    return (
+                      <View key={i} style={styles.ingRow}>
+                        <View style={[styles.ingDot, { backgroundColor: colors.primary }]} />
+                        <Text style={[styles.ingText, { color: colors.foreground }]}>{line}</Text>
+                      </View>
+                    );
+                  })}
+                </View>
+              </>
+            )}
+            {recipe.instructions.length > 0 && (
+              <>
+                <Text style={[styles.sectionLabel, { color: colors.mutedForeground }]}>INSTRUCTIONS</Text>
+                {recipe.instructions.map((step, i) => (
+                  <View key={i} style={[styles.stepRow, { backgroundColor: colors.card, borderColor: colors.border }]}>
+                    <View style={[styles.stepNum, { backgroundColor: colors.primary }]}>
+                      <Text style={[styles.stepNumText, { color: colors.primaryForeground }]}>{i + 1}</Text>
+                    </View>
+                    <Text style={[styles.stepText, { color: colors.foreground }]}>{step}</Text>
+                  </View>
+                ))}
+              </>
+            )}
           </View>
         </ScrollView>
       </SafeAreaView>
@@ -304,223 +478,265 @@ function RecipeDetailModal({ recipe, onClose, onDelete }: { recipe: PersonalReci
   );
 }
 
-// ─── Main Screen ──────────────────────────────────────────────────────────────
+function RecipeCard({ recipe, onPress }: { recipe: Recipe; onPress: () => void }) {
+  const colors = useColors();
+  return (
+    <Pressable onPress={onPress} style={({ pressed }) => [styles.recipeCard, { backgroundColor: colors.card, borderColor: colors.border }, pressed && { opacity: 0.82 }]}>
+      <Image source={{ uri: recipe.image }} style={styles.recipeImg} />
+      <View style={styles.recipeBody}>
+        <Text style={[styles.recipeTitle, { color: colors.foreground }]} numberOfLines={2}>{recipe.title}</Text>
+        {recipe.macros && <MacroPills macros={recipe.macros} colors={colors} />}
+        <View style={styles.recipeFooter}>
+          <View style={styles.timeRow}>
+            <Feather name="clock" size={12} color={colors.mutedForeground} />
+            <Text style={[styles.timeText, { color: colors.mutedForeground }]}>{recipe.readyInMinutes} min</Text>
+          </View>
+          <View style={styles.tapHint}>
+            <Text style={[styles.tapHintText, { color: colors.primary }]}>View recipe</Text>
+            <Feather name="chevron-right" size={13} color={colors.primary} />
+          </View>
+        </View>
+      </View>
+    </Pressable>
+  );
+}
 
-export default function RouletteScreen() {
+export default function SpinScreen() {
   const colors = useColors();
   const topPad = Platform.OS === "web" ? 67 : 0;
 
-  const [recipes, setRecipes] = useState<PersonalRecipe[]>([]);
-  const [loaded, setLoaded] = useState(false);
-  const [showImport, setShowImport] = useState(false);
-  const [spinning, setSpinning] = useState(false);
-  const [picked, setPicked] = useState<PersonalRecipe | null>(null);
-  const [selectedRecipe, setSelectedRecipe] = useState<PersonalRecipe | null>(null);
+  const [wheels, setWheels] = useState<WheelData>({
+    proteins: DEFAULT_PROTEINS,
+    carbs: DEFAULT_CARBS,
+    veggies: DEFAULT_VEGGIES,
+  });
+  const [showSettings, setShowSettings] = useState(false);
 
-  useFocusEffect(
-    React.useCallback(() => {
-      const loadRecipes = async () => {
-        try {
-          const json = await AsyncStorage.getItem(STORAGE_KEY);
-          setRecipes(json ? JSON.parse(json) : []);
-        } catch {}
-        setLoaded(true);
-      };
-      loadRecipes();
-    }, [])
-  );
+  useEffect(() => {
+    AsyncStorage.getItem(WHEELS_KEY).then((json) => {
+      if (json) setWheels(JSON.parse(json));
+    }).catch(() => {});
+  }, []);
 
-  const persist = async (updated: PersonalRecipe[]) => {
-    setRecipes(updated);
-    await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
-  };
-
-  const handleSave = async (recipe: PersonalRecipe) => {
-    await persist([...recipes, recipe]);
+  const handleSaveWheels = async (newWheels: WheelData) => {
+    setWheels(newWheels);
+    setSelProtein(0);
+    setSelCarb(0);
+    setSelVeggie(0);
+    proteinY.setValue(initialY(newWheels.proteins));
+    carbY.setValue(initialY(newWheels.carbs));
+    veggieY.setValue(initialY(newWheels.veggies));
+    await AsyncStorage.setItem(WHEELS_KEY, JSON.stringify(newWheels));
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
   };
 
-  const deleteRecipe = async (id: string) => {
-    await persist(recipes.filter((r) => r.id !== id));
-    if (picked?.id === id) setPicked(null);
-  };
+  const [selProtein, setSelProtein] = useState(0);
+  const [selCarb, setSelCarb] = useState(0);
+  const [selVeggie, setSelVeggie] = useState(0);
 
-  const spinRecipe = () => {
-    if (recipes.length === 0 || spinning) return;
+  const proteinY = useRef(new Animated.Value(initialY(wheels.proteins))).current;
+  const carbY = useRef(new Animated.Value(initialY(wheels.carbs))).current;
+  const veggieY = useRef(new Animated.Value(initialY(wheels.veggies))).current;
+
+  const [spinning, setSpinning] = useState(false);
+  const [recipes, setRecipes] = useState<Recipe[]>([]);
+  const [isLoading, setIsLoading] = useState(false);
+  const [isError, setIsError] = useState(false);
+  const [selectedRecipe, setSelectedRecipe] = useState<Recipe | null>(null);
+  const [currentIngredients, setCurrentIngredients] = useState("");
+
+  const spin = () => {
+    if (spinning) return;
     setSpinning(true);
-    setPicked(null);
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
-    setTimeout(() => {
-      const idx = Math.floor(Math.random() * recipes.length);
-      setPicked(recipes[idx]);
-      setSpinning(false);
-      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-    }, 1200);
-  };
 
-  const sourceIcon = (source?: string) =>
-    source === "photo" ? "camera" : source === "url" ? "link" : "edit-3";
+    const newProtein = Math.floor(Math.random() * wheels.proteins.length);
+    const newCarb = Math.floor(Math.random() * wheels.carbs.length);
+    const newVeggie = Math.floor(Math.random() * wheels.veggies.length);
+
+    const easing = Easing.out(Easing.cubic);
+
+    Animated.parallel([
+      Animated.timing(proteinY, { toValue: spinTargetY(wheels.proteins, selProtein, newProtein), duration: PROTEIN_DUR, easing, useNativeDriver: false }),
+      Animated.timing(carbY, { toValue: spinTargetY(wheels.carbs, selCarb, newCarb), duration: CARB_DUR, easing, useNativeDriver: false }),
+      Animated.timing(veggieY, { toValue: spinTargetY(wheels.veggies, selVeggie, newVeggie), duration: VEGGIE_DUR, easing, useNativeDriver: false }),
+    ]).start(async () => {
+      proteinY.setValue(resetY(wheels.proteins, newProtein));
+      carbY.setValue(resetY(wheels.carbs, newCarb));
+      veggieY.setValue(resetY(wheels.veggies, newVeggie));
+
+      setSelProtein(newProtein);
+      setSelCarb(newCarb);
+      setSelVeggie(newVeggie);
+      setSpinning(false);
+
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+
+      const ingredients = `${wheels.proteins[newProtein]},${wheels.carbs[newCarb]},${wheels.veggies[newVeggie]}`;
+      setCurrentIngredients(ingredients);
+      setIsLoading(true);
+      setIsError(false);
+      setRecipes([]);
+
+      try {
+        const results = await fetchRecipes(ingredients);
+        setRecipes(results);
+      } catch {
+        setIsError(true);
+      } finally {
+        setIsLoading(false);
+      }
+    });
+  };
 
   return (
     <>
       <ScrollView
         style={[styles.root, { backgroundColor: colors.background }]}
         contentContainerStyle={{ paddingTop: topPad + 32, paddingHorizontal: 20, paddingBottom: 120 }}
-        keyboardShouldPersistTaps="handled"
         showsVerticalScrollIndicator={false}
       >
         <View style={styles.headerRow}>
           <View>
-            <Text style={[styles.heading, { color: colors.foreground }]}>My Dinners</Text>
-            <Text style={[styles.sub, { color: colors.mutedForeground }]}>Spin for a random recipe from your collection</Text>
+            <Text style={[styles.heading, { color: colors.foreground }]}>That's Dinner</Text>
+            <Text style={[styles.sub, { color: colors.mutedForeground }]}>Spin to find tonight's dinner</Text>
           </View>
-          <Pressable onPress={() => setShowImport(true)} style={[styles.addBtn, { backgroundColor: colors.primary }]}>
-            <Feather name="plus" size={18} color={colors.primaryForeground} />
+          <Pressable onPress={() => setShowSettings(true)} style={[styles.settingsBtn, { backgroundColor: colors.card, borderColor: colors.border }]}>
+            <Feather name="settings" size={18} color={colors.foreground} />
           </Pressable>
         </View>
 
-        {/* Spin Button */}
+        <View style={styles.machine}>
+          <SlotColumn label="PROTEIN" items={wheels.proteins} animValue={proteinY} />
+          <SlotColumn label="CARBS" items={wheels.carbs} animValue={carbY} />
+          <SlotColumn label="VEGGIE" items={wheels.veggies} animValue={veggieY} />
+        </View>
+
         <Pressable
-          onPress={spinRecipe}
-          disabled={recipes.length === 0 || spinning}
-          style={({ pressed }) => [
-            styles.spinBtn,
-            { backgroundColor: recipes.length === 0 ? colors.muted : spinning ? colors.secondary : colors.primary },
-            pressed && recipes.length > 0 && { transform: [{ scale: 0.96 }], opacity: 0.9 },
-          ]}
+          onPress={spin}
+          disabled={spinning}
+          style={({ pressed }) => [styles.spinBtn, { backgroundColor: spinning ? colors.secondary : colors.primary }, pressed && !spinning && { transform: [{ scale: 0.96 }], opacity: 0.9 }]}
         >
-          {spinning
-            ? <ActivityIndicator color={colors.primary} />
-            : <Text style={[styles.spinBtnText, { color: recipes.length === 0 ? colors.mutedForeground : colors.primaryForeground }]}>
-                {recipes.length === 0 ? "ADD RECIPES TO SPIN" : "SPIN MY DINNERS"}
-              </Text>
-          }
+          <Text style={[styles.spinBtnText, { color: spinning ? colors.mutedForeground : colors.primaryForeground }]}>
+            {spinning ? "SPINNING..." : "SPIN"}
+          </Text>
         </Pressable>
 
-        {/* Picked Recipe */}
-        {picked && (
-          <Pressable onPress={() => setSelectedRecipe(picked)} style={[styles.pickedCard, { backgroundColor: colors.card, borderColor: colors.primary }]}>
-            <View style={styles.pickedHeader}>
-              <View style={[styles.badge, { backgroundColor: colors.primary }]}>
-                <Text style={[styles.badgeText, { color: colors.primaryForeground }]}>Tonight's Pick</Text>
-              </View>
-              <Pressable onPress={() => setPicked(null)}>
-                <Feather name="x" size={18} color={colors.mutedForeground} />
-              </Pressable>
-            </View>
-            {picked.photoUrl ? <Image source={{ uri: picked.photoUrl }} style={styles.pickedImage} /> : null}
-            <Text style={[styles.pickedName, { color: colors.foreground }]}>{picked.name}</Text>
-            <Text style={[styles.tapHint, { color: colors.primary }]}>Tap to view full recipe ›</Text>
-          </Pressable>
+        {isLoading && (
+          <View style={styles.center}>
+            <ActivityIndicator color={colors.primary} size="large" />
+            <Text style={[styles.statusText, { color: colors.mutedForeground }]}>Finding recipes…</Text>
+          </View>
         )}
 
-        {/* Recipe List */}
-        <View style={styles.listHeader}>
-          <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
-            <Text style={[styles.listTitle, { color: colors.foreground }]}>My Recipes</Text>
-            {recipes.length > 0 && <Text style={[styles.listCount, { color: colors.mutedForeground }]}>{recipes.length}</Text>}
-          </View>
-        </View>
-
-        {!loaded ? (
-          <ActivityIndicator color={colors.primary} style={{ marginTop: 24 }} />
-        ) : recipes.length === 0 ? (
-          <View style={styles.empty}>
-            <Feather name="book-open" size={36} color={colors.mutedForeground} />
-            <Text style={[styles.emptyTitle, { color: colors.foreground }]}>No recipes yet</Text>
-            <Text style={[styles.emptyText, { color: colors.mutedForeground }]}>Tap the + button to add your first recipe</Text>
-          </View>
-        ) : (
-          recipes.map((recipe) => (
-            <Pressable
-              key={recipe.id}
-              onPress={() => setSelectedRecipe(recipe)}
-              style={({ pressed }) => [
-                styles.recipeCard,
-                { backgroundColor: picked?.id === recipe.id ? colors.secondary : colors.card, borderColor: picked?.id === recipe.id ? colors.primary : colors.border },
-                pressed && { opacity: 0.8 },
-              ]}
-            >
-              <View style={styles.recipeRow}>
-                {recipe.photoUrl ? (
-                  <Image source={{ uri: recipe.photoUrl }} style={styles.thumb} />
-                ) : (
-                  <View style={[styles.thumbPlaceholder, { backgroundColor: colors.muted }]}>
-                    <Feather name="coffee" size={20} color={colors.mutedForeground} />
-                  </View>
-                )}
-                <View style={styles.recipeText}>
-                  <Text style={[styles.recipeName, { color: colors.foreground }]} numberOfLines={1}>{recipe.name}</Text>
-                  <Text style={[styles.recipeIngredientPreview, { color: colors.mutedForeground }]} numberOfLines={1}>{recipe.ingredients}</Text>
-                </View>
-                <View style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
-                  <Feather name={sourceIcon(recipe.source)} size={14} color={colors.mutedForeground} />
-                  <Pressable onPress={() => deleteRecipe(recipe.id)} hitSlop={12}>
-                    <Feather name="trash-2" size={16} color={colors.mutedForeground} />
-                  </Pressable>
-                </View>
-              </View>
+        {isError && (
+          <View style={styles.center}>
+            <Feather name="alert-circle" size={24} color={colors.destructive} />
+            <Text style={[styles.statusText, { color: colors.destructive }]}>Couldn't load recipes. Check your connection.</Text>
+            <Pressable onPress={spin} style={[styles.retryBtn, { borderColor: colors.primary }]}>
+              <Text style={[styles.retryText, { color: colors.primary }]}>Spin Again</Text>
             </Pressable>
-          ))
+          </View>
+        )}
+
+        {!isLoading && !isError && recipes.length > 0 && (
+          <View style={styles.results}>
+            <Text style={[styles.resultsTitle, { color: colors.foreground }]}>Suggested Recipes</Text>
+            <Text style={[styles.resultsSub, { color: colors.mutedForeground }]}>
+              Using {wheels.proteins[selProtein]}, {wheels.carbs[selCarb]} and {wheels.veggies[selVeggie]}
+            </Text>
+            {recipes.map((r) => (
+              <RecipeCard key={r.id} recipe={r} onPress={() => setSelectedRecipe(r)} />
+            ))}
+          </View>
+        )}
+
+        {!isLoading && !isError && recipes.length === 0 && currentIngredients && (
+          <View style={styles.center}>
+            <Feather name="search" size={24} color={colors.mutedForeground} />
+            <Text style={[styles.statusText, { color: colors.mutedForeground }]}>No recipes found for this combination</Text>
+          </View>
         )}
       </ScrollView>
 
-      <ImportModal visible={showImport} onClose={() => setShowImport(false)} onSave={handleSave} />
-      <RecipeDetailModal recipe={selectedRecipe} onClose={() => setSelectedRecipe(null)} onDelete={deleteRecipe} />
+      <RecipeDetailModal recipe={selectedRecipe} onClose={() => setSelectedRecipe(null)} />
+      <WheelSettingsModal
+        visible={showSettings}
+        onClose={() => setShowSettings(false)}
+        wheels={wheels}
+        onSave={handleSaveWheels}
+      />
     </>
   );
 }
 
 const styles = StyleSheet.create({
-  root:               { flex: 1 },
-  headerRow:          { flexDirection: "row", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 24 },
-  heading:            { fontSize: 26, fontFamily: "Inter_700Bold", marginBottom: 4 },
-  sub:                { fontSize: 13, fontFamily: "Inter_400Regular" },
-  addBtn:             { width: 36, height: 36, borderRadius: 18, alignItems: "center", justifyContent: "center", marginTop: 4 },
-  spinBtn:            { borderRadius: 50, paddingVertical: 18, alignItems: "center", justifyContent: "center", marginBottom: 28, minHeight: 58 },
-  spinBtnText:        { fontSize: 16, fontFamily: "Inter_700Bold", letterSpacing: 3 },
-  pickedCard:         { borderRadius: 16, borderWidth: 1.5, padding: 16, marginBottom: 28, gap: 8 },
-  pickedHeader:       { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 4 },
-  badge:              { borderRadius: 50, paddingHorizontal: 10, paddingVertical: 4 },
-  badgeText:          { fontSize: 11, fontFamily: "Inter_600SemiBold", letterSpacing: 0.5 },
-  pickedImage:        { width: "100%", height: 160, borderRadius: 10 },
-  pickedName:         { fontSize: 20, fontFamily: "Inter_700Bold" },
-  tapHint:            { fontSize: 12, fontFamily: "Inter_600SemiBold" },
-  listHeader:         { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 14 },
-  listTitle:          { fontSize: 19, fontFamily: "Inter_600SemiBold" },
-  listCount:          { fontSize: 19, fontFamily: "Inter_600SemiBold" },
-  empty:              { alignItems: "center", paddingVertical: 48, gap: 10 },
-  emptyTitle:         { fontSize: 17, fontFamily: "Inter_600SemiBold" },
-  emptyText:          { fontSize: 13, fontFamily: "Inter_400Regular", textAlign: "center" },
-  recipeCard:         { borderRadius: 12, borderWidth: 1, marginBottom: 10, overflow: "hidden" },
-  recipeRow:          { flexDirection: "row", alignItems: "center", padding: 12, gap: 12 },
-  thumb:              { width: 52, height: 52, borderRadius: 8 },
-  thumbPlaceholder:   { width: 52, height: 52, borderRadius: 8, alignItems: "center", justifyContent: "center" },
-  recipeText:         { flex: 1, gap: 3 },
-  recipeName:         { fontSize: 15, fontFamily: "Inter_600SemiBold" },
-  recipeIngredientPreview: { fontSize: 12, fontFamily: "Inter_400Regular" },
-  modalRoot:          { flex: 1 },
-  modalHeader:        { flexDirection: "row", justifyContent: "space-between", alignItems: "center", padding: 20, borderBottomWidth: 1 },
-  modalTitle:         { fontSize: 20, fontFamily: "Inter_700Bold", flex: 1, marginRight: 12 },
-  modeRow:            { flexDirection: "row", margin: 16, borderRadius: 10, borderWidth: 1, padding: 4, gap: 4 },
-  modeBtn:            { flex: 1, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6, paddingVertical: 8 },
-  modeBtnText:        { fontSize: 13, fontFamily: "Inter_600SemiBold" },
-  importActionBtn:    { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, borderRadius: 12, paddingVertical: 14 },
-  importActionBtnText:{ fontSize: 15, fontFamily: "Inter_600SemiBold" },
-  extractingText:     { fontSize: 12, fontFamily: "Inter_400Regular", textAlign: "center", marginTop: 10 },
-  errorBox:           { flexDirection: "row", alignItems: "flex-start", gap: 8, borderRadius: 10, borderWidth: 1, padding: 12, marginBottom: 16 },
-  errorText:          { flex: 1, fontSize: 12, fontFamily: "Inter_400Regular", lineHeight: 17 },
-  extractedBanner:    { flexDirection: "row", alignItems: "center", gap: 8, borderRadius: 10, borderWidth: 1, padding: 12, marginBottom: 16 },
-  extractedText:      { flex: 1, fontSize: 12, fontFamily: "Inter_400Regular" },
-  formLabel:          { fontSize: 10, fontFamily: "Inter_600SemiBold", letterSpacing: 2, marginTop: 14, marginBottom: 4 },
-  input:              { borderRadius: 10, borderWidth: 1, paddingHorizontal: 14, paddingVertical: 12, fontSize: 14, fontFamily: "Inter_400Regular" },
-  multiInput:         { textAlignVertical: "top", minHeight: 90 },
-  saveBtn:            { borderRadius: 10, paddingVertical: 14, alignItems: "center", marginTop: 16 },
-  saveBtnText:        { fontSize: 15, fontFamily: "Inter_600SemiBold" },
-  detailImage:        { width: "100%", height: 200, borderRadius: 12, marginBottom: 16 },
-  sourceBadge:        { alignSelf: "flex-start", borderRadius: 20, paddingHorizontal: 10, paddingVertical: 4, marginBottom: 16 },
-  sourceBadgeText:    { fontSize: 11, fontFamily: "Inter_400Regular" },
-  sectionLabel:       { fontSize: 10, fontFamily: "Inter_600SemiBold", letterSpacing: 2, marginBottom: 8, marginTop: 4 },
-  sectionCard:        { borderRadius: 12, borderWidth: 1, padding: 14, marginBottom: 16 },
-  bodyText:           { fontSize: 14, fontFamily: "Inter_400Regular", lineHeight: 22 },
+  root: { flex: 1 },
+  headerRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 28 },
+  heading: { fontSize: 26, fontFamily: "Inter_700Bold", marginBottom: 4 },
+  sub: { fontSize: 13, fontFamily: "Inter_400Regular" },
+  settingsBtn: { width: 38, height: 38, borderRadius: 19, borderWidth: 1, alignItems: "center", justifyContent: "center", marginTop: 4 },
+  machine: { flexDirection: "row", gap: 8, marginBottom: 20 },
+  colWrap: { flex: 1, alignItems: "center" },
+  colLabel: { fontSize: 10, letterSpacing: 2, fontFamily: "Inter_600SemiBold", marginBottom: 8 },
+  colViewport: { width: "100%", overflow: "hidden", borderRadius: 14, borderWidth: 1, position: "relative" },
+  slotItem: { justifyContent: "center", alignItems: "center" },
+  slotText: { fontSize: 13, fontFamily: "Inter_700Bold", textAlign: "center", paddingHorizontal: 4 },
+  selectionBox: { position: "absolute", top: ITEM_HEIGHT, left: 0, right: 0, height: ITEM_HEIGHT, borderTopWidth: 1.5, borderBottomWidth: 1.5, zIndex: 10 },
+  spinBtn: { borderRadius: 50, paddingVertical: 18, alignItems: "center", marginBottom: 32 },
+  spinBtnText: { fontSize: 16, fontFamily: "Inter_700Bold", letterSpacing: 3 },
+  center: { alignItems: "center", gap: 10, paddingVertical: 24 },
+  statusText: { fontSize: 14, fontFamily: "Inter_400Regular", textAlign: "center" },
+  retryBtn: { borderWidth: 1.5, borderRadius: 10, paddingHorizontal: 20, paddingVertical: 10, marginTop: 4 },
+  retryText: { fontSize: 13, fontFamily: "Inter_600SemiBold" },
+  results: { gap: 10 },
+  resultsTitle: { fontSize: 19, fontFamily: "Inter_600SemiBold", marginBottom: 2 },
+  resultsSub: { fontSize: 12, fontFamily: "Inter_400Regular", marginBottom: 6 },
+  recipeCard: { borderRadius: 12, overflow: "hidden", borderWidth: 1 },
+  recipeImg: { width: "100%", height: 140 },
+  recipeBody: { padding: 12, gap: 6 },
+  recipeTitle: { fontSize: 14, fontFamily: "Inter_600SemiBold", lineHeight: 20 },
+  recipeFooter: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginTop: 2 },
+  timeRow: { flexDirection: "row", alignItems: "center", gap: 5 },
+  timeText: { fontSize: 12, fontFamily: "Inter_400Regular" },
+  tapHint: { flexDirection: "row", alignItems: "center", gap: 2 },
+  tapHintText: { fontSize: 11, fontFamily: "Inter_600SemiBold" },
+  modalRoot: { flex: 1 },
+  modalHeader: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", padding: 20, borderBottomWidth: 1 },
+  modalTitle: { fontSize: 20, fontFamily: "Inter_700Bold" },
+  categorySection: { marginBottom: 24 },
+  categoryLabel: { fontSize: 10, fontFamily: "Inter_600SemiBold", letterSpacing: 2, marginBottom: 10 },
+  ingredientRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", borderRadius: 10, borderWidth: 1, paddingHorizontal: 14, paddingVertical: 12, marginBottom: 8 },
+  ingredientText: { fontSize: 14, fontFamily: "Inter_400Regular" },
+  addRow: { flexDirection: "row", gap: 8, marginTop: 4 },
+  addBtn: { width: 46, height: 46, borderRadius: 10, alignItems: "center", justifyContent: "center" },
+  input: { borderRadius: 10, borderWidth: 1, paddingHorizontal: 14, paddingVertical: 12, fontSize: 14, fontFamily: "Inter_400Regular" },
+  saveBtn: { borderRadius: 12, paddingVertical: 16, alignItems: "center", marginTop: 8 },
+  saveBtnText: { fontSize: 15, fontFamily: "Inter_600SemiBold" },
+  recipeModalImage: { width: "100%", height: 240 },
+  floatBtn: { position: "absolute", top: 16, width: 38, height: 38, borderRadius: 19, borderWidth: 1, alignItems: "center", justifyContent: "center" },
+  floatBtnLeft: { left: 16 },
+  floatBtnRight: { right: 16 },
+  floatBtnRight2: { right: 62 },
+  modalBody: { padding: 20, gap: 6 },
+  recipeModalTitle: { fontSize: 22, fontFamily: "Inter_700Bold", lineHeight: 28, marginBottom: 4 },
+  metaRow: { flexDirection: "row", gap: 12, marginBottom: 4 },
+  metaChip: { flexDirection: "row", alignItems: "center", gap: 5 },
+  metaText: { fontSize: 13, fontFamily: "Inter_400Regular" },
+  servingsRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", borderRadius: 14, borderWidth: 1, paddingHorizontal: 16, paddingVertical: 12, marginTop: 8, marginBottom: 4 },
+  servingsLabel: { fontSize: 11, fontFamily: "Inter_600SemiBold", letterSpacing: 1.5 },
+  stepper: { flexDirection: "row", alignItems: "center", gap: 16 },
+  stepperBtn: { width: 34, height: 34, borderRadius: 17, borderWidth: 1, alignItems: "center", justifyContent: "center" },
+  stepperValue: { fontSize: 18, fontFamily: "Inter_700Bold", minWidth: 28, textAlign: "center" },
+  groceryBtn: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, borderRadius: 12, paddingVertical: 14, marginTop: 4, marginBottom: 4 },
+  groceryBtnText: { fontSize: 14, fontFamily: "Inter_600SemiBold" },
+  sectionLabel: { fontSize: 10, fontFamily: "Inter_600SemiBold", letterSpacing: 2, marginTop: 16, marginBottom: 8 },
+  sectionCard: { borderRadius: 12, borderWidth: 1, padding: 14, gap: 10 },
+  ingRow: { flexDirection: "row", alignItems: "flex-start", gap: 10 },
+  ingDot: { width: 6, height: 6, borderRadius: 3, marginTop: 7, flexShrink: 0 },
+  ingText: { flex: 1, fontSize: 14, fontFamily: "Inter_400Regular", lineHeight: 20 },
+  stepRow: { flexDirection: "row", alignItems: "flex-start", gap: 12, borderRadius: 12, borderWidth: 1, padding: 14, marginBottom: 8 },
+  stepNum: { width: 24, height: 24, borderRadius: 12, alignItems: "center", justifyContent: "center", flexShrink: 0 },
+  stepNumText: { fontSize: 12, fontFamily: "Inter_700Bold" },
+  stepText: { flex: 1, fontSize: 14, fontFamily: "Inter_400Regular", lineHeight: 20 },
 });
