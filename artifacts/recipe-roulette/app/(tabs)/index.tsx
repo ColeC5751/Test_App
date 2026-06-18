@@ -98,13 +98,30 @@ type WheelData = {
   veggies: string[];
 };
 
-async function fetchRecipes(ingredients: string): Promise<Recipe[]> {
-  const res = await fetch(
-    `https://test-app-api-server.vercel.app/api/recipes/search?ingredients=${encodeURIComponent(ingredients)}`
-  );
-  if (!res.ok) return [];
-  const data = await res.json();
-  return data.recipes ?? [];
+type FetchResult = { recipes: Recipe[]; errorMessage?: string };
+
+async function fetchRecipes(ingredients: string): Promise<FetchResult> {
+  try {
+    const res = await fetch(
+      `https://test-app-api-server.vercel.app/api/recipes/search?ingredients=${encodeURIComponent(ingredients)}`
+    );
+    const data = await res.json();
+    if (!res.ok) {
+      const code = data?.code ?? "";
+      const msg =
+        code === "quota_exceeded"
+          ? "Daily recipe search limit reached — try again tomorrow."
+          : code === "network_error"
+          ? "No connection — check your internet and try again."
+          : code === "api_key_invalid"
+          ? "Recipe search is misconfigured. Please contact support."
+          : data?.error ?? "Couldn't load recipes. Try again.";
+      return { recipes: [], errorMessage: msg };
+    }
+    return { recipes: data.recipes ?? [] };
+  } catch {
+    return { recipes: [], errorMessage: "No connection — check your internet and try again." };
+  }
 }
 
 function MacroBar({ macros, servings, baseServings, colors }: { macros: Macros; servings: number; baseServings: number; colors: ReturnType<typeof useColors> }) {
@@ -542,6 +559,7 @@ export default function SpinScreen() {
   const [recipes, setRecipes] = useState<Recipe[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [isError, setIsError] = useState(false);
+  const [errorMessage, setErrorMessage] = useState("");
   const [selectedRecipe, setSelectedRecipe] = useState<Recipe | null>(null);
   const [currentIngredients, setCurrentIngredients] = useState("");
 
@@ -576,13 +594,20 @@ export default function SpinScreen() {
       setCurrentIngredients(ingredients);
       setIsLoading(true);
       setIsError(false);
+      setErrorMessage("");
       setRecipes([]);
 
       try {
-        const results = await fetchRecipes(ingredients);
-        setRecipes(results);
+        const result = await fetchRecipes(ingredients);
+        if (result.errorMessage) {
+          setIsError(true);
+          setErrorMessage(result.errorMessage);
+        } else {
+          setRecipes(result.recipes);
+        }
       } catch {
         setIsError(true);
+        setErrorMessage("No connection — check your internet and try again.");
       } finally {
         setIsLoading(false);
       }
@@ -632,9 +657,9 @@ export default function SpinScreen() {
         {isError && (
           <View style={styles.center}>
             <Feather name="alert-circle" size={24} color={colors.destructive} />
-            <Text style={[styles.statusText, { color: colors.destructive }]}>Couldn't load recipes. Check your connection.</Text>
+            <Text style={[styles.statusText, { color: colors.destructive }]}>{errorMessage || "Couldn't load recipes. Try again."}</Text>
             <Pressable onPress={spin} style={[styles.retryBtn, { borderColor: colors.primary }]}>
-              <Text style={[styles.retryText, { color: colors.primary }]}>Spin Again</Text>
+              <Text style={[styles.retryText, { color: colors.primary }]}>Try Again</Text>
             </Pressable>
           </View>
         )}
