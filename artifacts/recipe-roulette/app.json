@@ -14,9 +14,23 @@
       "backgroundColor": "#130E0C"
     },
     "ios": {
-      "supportsTablet": false
+      "supportsTablet": false,
+      "bundleIdentifier": "com.colec.thatsdinner",
+      "buildNumber": "1",
+      "infoPlist": {
+        "NSPhotoLibraryUsageDescription": "That's Dinner needs access to your photo library so you can import a recipe by selecting a photo of it.",
+        "NSCameraUsageDescription": "That's Dinner can use your camera to take a photo of a recipe to import.",
+        "ITSAppUsesNonExemptEncryption": false
+      }
     },
-    "android": {},
+    "android": {
+      "package": "com.colec.thatsdinner",
+      "versionCode": 1,
+      "permissions": [
+        "READ_EXTERNAL_STORAGE",
+        "CAMERA"
+      ]
+    },
     "web": {
       "favicon": "./assets/images/icon.png"
     },
@@ -28,11 +42,23 @@
         }
       ],
       "expo-font",
-      "expo-web-browser"
+      "expo-web-browser",
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "That's Dinner needs access to your photo library so you can import a recipe by selecting a photo of it.",
+          "cameraPermission": "That's Dinner can use your camera to take a photo of a recipe to import."
+        }
+      ]
     ],
     "experiments": {
       "typedRoutes": true,
       "reactCompiler": true
+    },
+    "extra": {
+      "eas": {
+        "projectId": "REPLACE_WITH_YOUR_EAS_PROJECT_ID"
+      }
     }
   }
 }
