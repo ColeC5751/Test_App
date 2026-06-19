@@ -21,6 +21,7 @@ import {
 
 import { useColors } from "@/hooks/useColors";
 import { addIngredientsToGrocery } from "@/app/(tabs)/grocery";
+import { SavedToast } from "@/components/SavedToast";
 
 const STORAGE_KEY = "@recipe_roulette_personal";
 const API_BASE = "https://test-app-api-server.vercel.app";
@@ -362,6 +363,7 @@ export default function RouletteScreen() {
   const [spinning, setSpinning] = useState(false);
   const [picked, setPicked] = useState<PersonalRecipe | null>(null);
   const [selectedRecipe, setSelectedRecipe] = useState<PersonalRecipe | null>(null);
+  const [showSavedToast, setShowSavedToast] = useState(false);
 
   useFocusEffect(
     React.useCallback(() => {
@@ -384,6 +386,8 @@ export default function RouletteScreen() {
   const handleSave = async (recipe: PersonalRecipe) => {
     await persist([...recipes, recipe]);
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    setShowSavedToast(true);
+    setTimeout(() => setShowSavedToast(false), 1000);
   };
 
   const deleteRecipe = async (id: string) => {
@@ -409,6 +413,7 @@ export default function RouletteScreen() {
 
   return (
     <>
+      <SavedToast visible={showSavedToast} label="Recipe Saved!" />
       <ScrollView
         style={[styles.root, { backgroundColor: colors.background }]}
         contentContainerStyle={{ paddingTop: topPad + 32, paddingHorizontal: 20, paddingBottom: 120 }}
