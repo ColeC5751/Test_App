@@ -46,12 +46,15 @@ function ImportModal({
   visible,
   onClose,
   onSave,
+  editingRecipe,
 }: {
   visible: boolean;
   onClose: () => void;
   onSave: (recipe: PersonalRecipe) => void;
+  editingRecipe?: PersonalRecipe | null;
 }) {
   const colors = useColors();
+  const isEditMode = !!editingRecipe;
   const [mode, setMode] = useState<"manual" | "photo" | "url">("manual");
   const [isExtracting, setIsExtracting] = useState(false);
   const [extractingStatus, setExtractingStatus] = useState("");
@@ -64,6 +67,18 @@ function ImportModal({
   const [formPhoto, setFormPhoto] = useState("");
   const [urlInput, setUrlInput] = useState("");
 
+  React.useEffect(() => {
+    if (visible && editingRecipe) {
+      setFormName(editingRecipe.name);
+      setFormIngredients(editingRecipe.ingredients);
+      setFormSteps(editingRecipe.steps);
+      setFormPhoto(editingRecipe.photoUrl ?? "");
+      setMode("manual");
+    } else if (visible && !editingRecipe) {
+      setFormName(""); setFormIngredients(""); setFormSteps(""); setFormPhoto("");
+    }
+  }, [visible, editingRecipe?.id]);
+
   const reset = () => {
     setFormName(""); setFormIngredients(""); setFormSteps("");
     setFormPhoto(""); setUrlInput(""); setExtractError("");
@@ -75,13 +90,13 @@ function ImportModal({
   const handleSave = () => {
     if (!formName.trim() || !formIngredients.trim() || !formSteps.trim()) return;
     onSave({
-      id: generateId(),
+      id: editingRecipe ? editingRecipe.id : generateId(),
       name: formName.trim(),
       ingredients: formIngredients.trim(),
       steps: formSteps.trim(),
       photoUrl: formPhoto.trim() || undefined,
-      createdAt: Date.now(),
-      source: mode,
+      createdAt: editingRecipe ? editingRecipe.createdAt : Date.now(),
+      source: editingRecipe ? editingRecipe.source : mode,
     });
     reset();
     onClose();
@@ -158,29 +173,31 @@ function ImportModal({
     <Modal visible={visible} animationType="slide" presentationStyle="pageSheet" onRequestClose={handleClose}>
       <SafeAreaView style={[styles.modalRoot, { backgroundColor: colors.background }]}>
         <View style={[styles.modalHeader, { borderBottomColor: colors.border }]}>
-          <Text style={[styles.modalTitle, { color: colors.foreground }]}>Add Recipe</Text>
+          <Text style={[styles.modalTitle, { color: colors.foreground }]}>{isEditMode ? "Edit Recipe" : "Add Recipe"}</Text>
           <Pressable onPress={handleClose}><Feather name="x" size={22} color={colors.foreground} /></Pressable>
         </View>
 
-        {/* Mode selector */}
-        <View style={[styles.modeRow, { backgroundColor: colors.secondary, borderColor: colors.border }]}>
-          {(["manual", "photo", "url"] as const).map((m) => (
-            <Pressable
-              key={m}
-              onPress={() => { setMode(m); setExtractError(""); }}
-              style={[styles.modeBtn, mode === m && { backgroundColor: colors.primary, borderRadius: 8 }]}
-            >
-              <Feather
-                name={m === "manual" ? "edit-3" : m === "photo" ? "camera" : "link"}
-                size={14}
-                color={mode === m ? colors.primaryForeground : colors.mutedForeground}
-              />
-              <Text style={[styles.modeBtnText, { color: mode === m ? colors.primaryForeground : colors.mutedForeground }]}>
-                {m === "manual" ? "Manual" : m === "photo" ? "Photo" : "URL"}
-              </Text>
-            </Pressable>
-          ))}
-        </View>
+        {/* Mode selector — hidden when editing an existing recipe */}
+        {!isEditMode && (
+          <View style={[styles.modeRow, { backgroundColor: colors.secondary, borderColor: colors.border }]}>
+            {(["manual", "photo", "url"] as const).map((m) => (
+              <Pressable
+                key={m}
+                onPress={() => { setMode(m); setExtractError(""); }}
+                style={[styles.modeBtn, mode === m && { backgroundColor: colors.primary, borderRadius: 8 }]}
+              >
+                <Feather
+                  name={m === "manual" ? "edit-3" : m === "photo" ? "camera" : "link"}
+                  size={14}
+                  color={mode === m ? colors.primaryForeground : colors.mutedForeground}
+                />
+                <Text style={[styles.modeBtnText, { color: mode === m ? colors.primaryForeground : colors.mutedForeground }]}>
+                  {m === "manual" ? "Manual" : m === "photo" ? "Photo" : "URL"}
+                </Text>
+              </Pressable>
+            ))}
+          </View>
+        )}
 
         <ScrollView contentContainerStyle={{ padding: 20, paddingBottom: 48 }} keyboardShouldPersistTaps="handled">
 
@@ -263,7 +280,7 @@ function ImportModal({
                 disabled={!canSave}
                 style={[styles.saveBtn, { backgroundColor: canSave ? colors.primary : colors.muted }]}
               >
-                <Text style={[styles.saveBtnText, { color: canSave ? colors.primaryForeground : colors.mutedForeground }]}>Save Recipe</Text>
+                <Text style={[styles.saveBtnText, { color: canSave ? colors.primaryForeground : colors.mutedForeground }]}>{isEditMode ? "Save Changes" : "Save Recipe"}</Text>
               </Pressable>
             </>
           )}
@@ -275,7 +292,7 @@ function ImportModal({
 
 // ─── Recipe Detail Modal ─────────────────────────────────────────────────────
 
-function RecipeDetailModal({ recipe, onClose, onDelete }: { recipe: PersonalRecipe | null; onClose: () => void; onDelete: (id: string) => void }) {
+function RecipeDetailModal({ recipe, onClose, onDelete, onEdit }: { recipe: PersonalRecipe | null; onClose: () => void; onDelete: (id: string) => void; onEdit: (recipe: PersonalRecipe) => void }) {
   const colors = useColors();
   const [addedToGrocery, setAddedToGrocery] = useState(false);
 
@@ -299,7 +316,10 @@ function RecipeDetailModal({ recipe, onClose, onDelete }: { recipe: PersonalReci
       <SafeAreaView style={[styles.modalRoot, { backgroundColor: colors.background }]}>
         <View style={[styles.modalHeader, { borderBottomColor: colors.border }]}>
           <Text style={[styles.modalTitle, { color: colors.foreground }]} numberOfLines={1}>{recipe.name}</Text>
-          <View style={{ flexDirection: "row", gap: 12, alignItems: "center" }}>
+          <View style={{ flexDirection: "row", gap: 14, alignItems: "center" }}>
+            <Pressable onPress={() => onEdit(recipe)}>
+              <Feather name="edit-3" size={18} color={colors.foreground} />
+            </Pressable>
             <Pressable onPress={() => { onDelete(recipe.id); onClose(); }}>
               <Feather name="trash-2" size={18} color={colors.destructive} />
             </Pressable>
@@ -363,6 +383,7 @@ export default function RouletteScreen() {
   const [spinning, setSpinning] = useState(false);
   const [picked, setPicked] = useState<PersonalRecipe | null>(null);
   const [selectedRecipe, setSelectedRecipe] = useState<PersonalRecipe | null>(null);
+  const [editingRecipe, setEditingRecipe] = useState<PersonalRecipe | null>(null);
   const [showSavedToast, setShowSavedToast] = useState(false);
 
   useFocusEffect(
@@ -384,10 +405,20 @@ export default function RouletteScreen() {
   };
 
   const handleSave = async (recipe: PersonalRecipe) => {
-    await persist([...recipes, recipe]);
+    const existingIdx = recipes.findIndex((r) => r.id === recipe.id);
+    const isUpdate = existingIdx !== -1;
+    const updatedList = isUpdate
+      ? recipes.map((r) => (r.id === recipe.id ? recipe : r))
+      : [...recipes, recipe];
+    await persist(updatedList);
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-    setShowSavedToast(true);
-    setTimeout(() => setShowSavedToast(false), 1000);
+    if (!isUpdate) {
+      setShowSavedToast(true);
+      setTimeout(() => setShowSavedToast(false), 1000);
+    }
+    if (selectedRecipe?.id === recipe.id) setSelectedRecipe(recipe);
+    if (picked?.id === recipe.id) setPicked(recipe);
+    setEditingRecipe(null);
   };
 
   const deleteRecipe = async (id: string) => {
@@ -516,8 +547,18 @@ export default function RouletteScreen() {
         )}
       </ScrollView>
 
-      <ImportModal visible={showImport} onClose={() => setShowImport(false)} onSave={handleSave} />
-      <RecipeDetailModal recipe={selectedRecipe} onClose={() => setSelectedRecipe(null)} onDelete={deleteRecipe} />
+      <ImportModal
+        visible={showImport || !!editingRecipe}
+        onClose={() => { setShowImport(false); setEditingRecipe(null); }}
+        onSave={handleSave}
+        editingRecipe={editingRecipe}
+      />
+      <RecipeDetailModal
+        recipe={selectedRecipe}
+        onClose={() => setSelectedRecipe(null)}
+        onDelete={deleteRecipe}
+        onEdit={(recipe) => { setEditingRecipe(recipe); setSelectedRecipe(null); }}
+      />
     </>
   );
 }
