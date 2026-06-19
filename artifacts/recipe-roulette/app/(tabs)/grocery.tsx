@@ -290,6 +290,7 @@ export default function GroceryScreen() {
   const [loaded, setLoaded] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editValue, setEditValue] = useState("");
+  const [manualInput, setManualInput] = useState("");
 
   useFocusEffect(
     useCallback(() => {
@@ -319,6 +320,16 @@ export default function GroceryScreen() {
     }
     setEditingId(null);
     setEditValue("");
+  };
+
+  const handleManualAdd = async () => {
+    const text = manualInput.trim();
+    if (!text) return;
+    await addIngredientsToGrocery(text);
+    const updated = await loadGroceryList();
+    setItems(updated);
+    setManualInput("");
+    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
   };
 
   const handleCopy = async () => {
@@ -381,13 +392,33 @@ export default function GroceryScreen() {
         )}
       </View>
 
+      {/* Manual add input */}
+      <View style={[styles.manualAddRow, { backgroundColor: colors.card, borderColor: colors.border }]}>
+        <TextInput
+          style={[styles.manualAddInput, { color: colors.foreground }]}
+          value={manualInput}
+          onChangeText={setManualInput}
+          placeholder="Add an item (e.g. 2 lbs ground beef)"
+          placeholderTextColor={colors.mutedForeground}
+          onSubmitEditing={handleManualAdd}
+          returnKeyType="done"
+        />
+        <Pressable
+          onPress={handleManualAdd}
+          disabled={!manualInput.trim()}
+          style={[styles.manualAddBtn, { backgroundColor: manualInput.trim() ? colors.primary : colors.muted }]}
+        >
+          <Feather name="plus" size={18} color={manualInput.trim() ? colors.primaryForeground : colors.mutedForeground} />
+        </Pressable>
+      </View>
+
       {/* Empty state */}
       {loaded && items.length === 0 && (
         <View style={styles.empty}>
           <Feather name="shopping-cart" size={40} color={colors.mutedForeground} />
           <Text style={[styles.emptyTitle, { color: colors.foreground }]}>Your list is empty</Text>
           <Text style={[styles.emptyText, { color: colors.mutedForeground }]}>
-            Tap "Add to Grocery List" inside any recipe to get started
+            Add an item above, or tap "Add to Grocery List" inside any recipe
           </Text>
         </View>
       )}
@@ -541,6 +572,9 @@ const styles = StyleSheet.create({
   sub: { fontSize: 13, fontFamily: "Inter_400Regular" },
   headerActions: { flexDirection: "row", gap: 10, marginTop: 4 },
   headerBtn: { width: 36, height: 36, borderRadius: 18, borderWidth: 1, alignItems: "center", justifyContent: "center" },
+  manualAddRow: { flexDirection: "row", alignItems: "center", gap: 10, borderRadius: 12, borderWidth: 1, paddingHorizontal: 14, paddingVertical: 6, marginBottom: 20 },
+  manualAddInput: { flex: 1, fontSize: 14, fontFamily: "Inter_400Regular", paddingVertical: 12 },
+  manualAddBtn: { width: 32, height: 32, borderRadius: 16, alignItems: "center", justifyContent: "center" },
   empty: { alignItems: "center", paddingVertical: 64, gap: 12 },
   emptyTitle: { fontSize: 17, fontFamily: "Inter_600SemiBold" },
   emptyText: { fontSize: 13, fontFamily: "Inter_400Regular", textAlign: "center", maxWidth: 260, lineHeight: 20 },
