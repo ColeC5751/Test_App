@@ -21,6 +21,7 @@ import {
 
 import { useColors } from "@/hooks/useColors";
 import { addIngredientsToGrocery } from "@/app/(tabs)/grocery";
+import { SavedToast } from "@/components/SavedToast";
 
 const DEFAULT_PROTEINS = ["Fish", "Chicken", "Ground Beef", "Pork"];
 const DEFAULT_CARBS = ["Rice", "Pasta", "Potatoes", "Bread"];
@@ -316,9 +317,10 @@ function RecipeDetailModal({ recipe, onClose }: { recipe: Recipe | null; onClose
   const [currentServings, setCurrentServings] = useState<number | null>(null);
   const [saved, setSaved] = useState(false);
   const [addedToGrocery, setAddedToGrocery] = useState(false);
+  const [showSavedToast, setShowSavedToast] = useState(false);
 
   useEffect(() => {
-    if (!recipe) { setSaved(false); setAddedToGrocery(false); return; }
+    if (!recipe) { setSaved(false); setAddedToGrocery(false); setShowSavedToast(false); return; }
     AsyncStorage.getItem(STORAGE_KEY)
       .then((json) => {
         if (!json) { setSaved(false); return; }
@@ -348,6 +350,8 @@ function RecipeDetailModal({ recipe, onClose }: { recipe: Recipe | null; onClose
         };
         await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify([...list, entry]));
         setSaved(true);
+        setShowSavedToast(true);
+        setTimeout(() => setShowSavedToast(false), 1000);
       }
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     } catch {}
@@ -398,6 +402,7 @@ function RecipeDetailModal({ recipe, onClose }: { recipe: Recipe | null; onClose
   return (
     <Modal visible={!!recipe} animationType="slide" presentationStyle="pageSheet" onRequestClose={handleClose}>
       <SafeAreaView style={[styles.modalRoot, { backgroundColor: colors.background }]}>
+        <SavedToast visible={showSavedToast} label="Saved to My Dinners!" />
         <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 48 }}>
           <Image source={{ uri: recipe.image }} style={styles.recipeModalImage} />
           <Pressable onPress={handleClose} style={[styles.floatBtn, styles.floatBtnRight, { backgroundColor: colors.card, borderColor: colors.border }]}>
