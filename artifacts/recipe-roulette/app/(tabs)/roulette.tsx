@@ -3,10 +3,12 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import { Feather } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
 import * as ImagePicker from "expo-image-picker";
-import React, { useState } from "react";
+import React, { useRef, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
+  Animated,
+  Easing,
   Image,
   Modal,
   Platform,
@@ -25,6 +27,24 @@ import { SavedToast } from "@/components/SavedToast";
 
 const STORAGE_KEY = "@recipe_roulette_personal";
 const API_BASE = "https://test-app-api-server.vercel.app";
+
+// ─── Slot machine constants (single column) ──────────────────────────────────
+const ITEM_HEIGHT = 64;
+const VISIBLE = 3;
+const COPY_COUNT = 10;
+const START_COPY = 2;
+const SPIN_ROUNDS = 4;
+const SPIN_DURATION = 1800;
+
+function initialY(count: number, idx = 0) {
+  return ITEM_HEIGHT * (1 - (START_COPY * count + idx));
+}
+function spinTargetY(count: number, prevIdx: number, newIdx: number) {
+  return ITEM_HEIGHT * (1 - (START_COPY * count + prevIdx + SPIN_ROUNDS * count + newIdx));
+}
+function resetY(count: number, newIdx: number) {
+  return ITEM_HEIGHT * (1 - (START_COPY * count + newIdx));
+}
 
 interface PersonalRecipe {
   id: string;
@@ -371,6 +391,40 @@ function RecipeDetailModal({ recipe, onClose, onDelete, onEdit }: { recipe: Pers
   );
 }
 
+// ─── Recipe Slot Column ───────────────────────────────────────────────────────
+
+function RecipeSlotColumn({
+  recipes,
+  animValue,
+}: {
+  recipes: PersonalRecipe[];
+  animValue: Animated.Value;
+}) {
+  const colors = useColors();
+  const names = recipes.map((r) => r.name);
+  const display = Array.from({ length: COPY_COUNT }, () => names).flat();
+
+  return (
+    <View
+      style={[
+        styles.slotViewport,
+        { height: ITEM_HEIGHT * VISIBLE, backgroundColor: colors.card, borderColor: colors.border },
+      ]}
+    >
+      <View style={[styles.slotSelectionBox, { borderColor: colors.primary, pointerEvents: "none" }]} />
+      <Animated.View style={{ transform: [{ translateY: animValue }] }}>
+        {display.map((name, i) => (
+          <View key={i} style={[styles.slotItem, { height: ITEM_HEIGHT }]}>
+            <Text style={[styles.slotItemText, { color: colors.foreground }]} numberOfLines={1}>
+              {name}
+            </Text>
+          </View>
+        ))}
+      </Animated.View>
+    </View>
+  );
+}
+
 // ─── Main Screen ──────────────────────────────────────────────────────────────
 
 export default function RouletteScreen() {
@@ -381,17 +435,28 @@ export default function RouletteScreen() {
   const [loaded, setLoaded] = useState(false);
   const [showImport, setShowImport] = useState(false);
   const [spinning, setSpinning] = useState(false);
-  const [picked, setPicked] = useState<PersonalRecipe | null>(null);
+  const [selIdx, setSelIdx] = useState(0);
   const [selectedRecipe, setSelectedRecipe] = useState<PersonalRecipe | null>(null);
   const [editingRecipe, setEditingRecipe] = useState<PersonalRecipe | null>(null);
   const [showSavedToast, setShowSavedToast] = useState(false);
+
+  const slotY = useRef(new Animated.Value(0)).current;
+  const prevRecipeCount = useRef(0);
 
   useFocusEffect(
     React.useCallback(() => {
       const loadRecipes = async () => {
         try {
           const json = await AsyncStorage.getItem(STORAGE_KEY);
-          setRecipes(json ? JSON.parse(json) : []);
+          const list: PersonalRecipe[] = json ? JSON.parse(json) : [];
+          setRecipes(list);
+          // Reset slot position if the recipe count changed (e.g. add/delete)
+          // so the column doesn't show stale offsets for a different-length list.
+          if (list.length !== prevRecipeCount.current) {
+            setSelIdx(0);
+            slotY.setValue(initialY(Math.max(list.length, 1)));
+            prevRecipeCount.current = list.length;
+          }
         } catch {}
         setLoaded(true);
       };
@@ -402,6 +467,11 @@ export default function RouletteScreen() {
   const persist = async (updated: PersonalRecipe[]) => {
     setRecipes(updated);
     await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
+    if (updated.length !== prevRecipeCount.current) {
+      setSelIdx(0);
+      slotY.setValue(initialY(Math.max(updated.length, 1)));
+      prevRecipeCount.current = updated.length;
+    }
   };
 
   const handleSave = async (recipe: PersonalRecipe) => {
@@ -417,26 +487,35 @@ export default function RouletteScreen() {
       setTimeout(() => setShowSavedToast(false), 1000);
     }
     if (selectedRecipe?.id === recipe.id) setSelectedRecipe(recipe);
-    if (picked?.id === recipe.id) setPicked(recipe);
     setEditingRecipe(null);
   };
 
   const deleteRecipe = async (id: string) => {
     await persist(recipes.filter((r) => r.id !== id));
-    if (picked?.id === id) setPicked(null);
   };
 
   const spinRecipe = () => {
     if (recipes.length === 0 || spinning) return;
     setSpinning(true);
-    setPicked(null);
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
-    setTimeout(() => {
-      const idx = Math.floor(Math.random() * recipes.length);
-      setPicked(recipes[idx]);
+
+    const count = recipes.length;
+    const newIdx = Math.floor(Math.random() * count);
+    const easing = Easing.out(Easing.cubic);
+
+    Animated.timing(slotY, {
+      toValue: spinTargetY(count, selIdx, newIdx),
+      duration: SPIN_DURATION,
+      easing,
+      useNativeDriver: false,
+    }).start(() => {
+      slotY.setValue(resetY(count, newIdx));
+      setSelIdx(newIdx);
       setSpinning(false);
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-    }, 1200);
+      // Open the detail modal directly when it lands
+      setSelectedRecipe(recipes[newIdx]);
+    });
   };
 
   const sourceIcon = (source?: string) =>
@@ -461,43 +540,36 @@ export default function RouletteScreen() {
           </Pressable>
         </View>
 
-        {/* Spin Button */}
-        <Pressable
-          onPress={spinRecipe}
-          disabled={recipes.length === 0 || spinning}
-          style={({ pressed }) => [
-            styles.spinBtn,
-            { backgroundColor: recipes.length === 0 ? colors.muted : spinning ? colors.secondary : colors.primary },
-            pressed && recipes.length > 0 && { transform: [{ scale: 0.96 }], opacity: 0.9 },
-          ]}
-        >
-          {spinning
-            ? <ActivityIndicator color={colors.primary} />
-            : <Text style={[styles.spinBtnText, { color: recipes.length === 0 ? colors.mutedForeground : colors.primaryForeground }]}>
-                {recipes.length === 0 ? "ADD RECIPES TO SPIN" : "SPIN MY DINNERS"}
-              </Text>
-          }
-        </Pressable>
-
-        {/* Picked Recipe */}
-        {picked && (
-          <Pressable onPress={() => setSelectedRecipe(picked)} style={[styles.pickedCard, { backgroundColor: colors.card, borderColor: colors.primary }]}>
-            <View style={styles.pickedHeader}>
-              <View style={[styles.badge, { backgroundColor: colors.primary }]}>
-                <Text style={[styles.badgeText, { color: colors.primaryForeground }]}>Tonight's Pick</Text>
-              </View>
-              <Pressable onPress={() => setPicked(null)}>
-                <Feather name="x" size={18} color={colors.mutedForeground} />
-              </Pressable>
-            </View>
-            {picked.photoUrl ? <Image source={{ uri: picked.photoUrl }} style={styles.pickedImage} /> : null}
-            <Text style={[styles.pickedName, { color: colors.foreground }]}>{picked.name}</Text>
-            <Text style={[styles.tapHint, { color: colors.primary }]}>Tap to view full recipe ›</Text>
+        {/* Slot Machine Spinner */}
+        {recipes.length > 0 ? (
+          <>
+            <RecipeSlotColumn recipes={recipes} animValue={slotY} />
+            <Pressable
+              onPress={spinRecipe}
+              disabled={spinning}
+              style={({ pressed }) => [
+                styles.spinBtn,
+                { backgroundColor: spinning ? colors.secondary : colors.primary },
+                pressed && !spinning && { transform: [{ scale: 0.96 }], opacity: 0.9 },
+              ]}
+            >
+              {spinning
+                ? <ActivityIndicator color={colors.primary} />
+                : <Text style={[styles.spinBtnText, { color: colors.primaryForeground }]}>SPIN MY DINNERS</Text>
+              }
+            </Pressable>
+          </>
+        ) : (
+          <Pressable
+            disabled
+            style={[styles.spinBtn, { backgroundColor: colors.muted }]}
+          >
+            <Text style={[styles.spinBtnText, { color: colors.mutedForeground }]}>ADD RECIPES TO SPIN</Text>
           </Pressable>
         )}
 
         {/* Recipe List */}
-        <View style={styles.listHeader}>
+        <View style={[styles.listHeader, { marginTop: 28 }]}>
           <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
             <Text style={[styles.listTitle, { color: colors.foreground }]}>My Recipes</Text>
             {recipes.length > 0 && <Text style={[styles.listCount, { color: colors.mutedForeground }]}>{recipes.length}</Text>}
@@ -513,13 +585,13 @@ export default function RouletteScreen() {
             <Text style={[styles.emptyText, { color: colors.mutedForeground }]}>Tap the + button to add your first recipe</Text>
           </View>
         ) : (
-          recipes.map((recipe) => (
+          recipes.map((recipe, idx) => (
             <Pressable
               key={recipe.id}
               onPress={() => setSelectedRecipe(recipe)}
               style={({ pressed }) => [
                 styles.recipeCard,
-                { backgroundColor: picked?.id === recipe.id ? colors.secondary : colors.card, borderColor: picked?.id === recipe.id ? colors.primary : colors.border },
+                { backgroundColor: !spinning && idx === selIdx ? colors.secondary : colors.card, borderColor: !spinning && idx === selIdx ? colors.primary : colors.border },
                 pressed && { opacity: 0.8 },
               ]}
             >
@@ -571,12 +643,10 @@ const styles = StyleSheet.create({
   addBtn:             { width: 36, height: 36, borderRadius: 18, alignItems: "center", justifyContent: "center", marginTop: 4 },
   spinBtn:            { borderRadius: 50, paddingVertical: 18, alignItems: "center", justifyContent: "center", marginBottom: 28, minHeight: 58 },
   spinBtnText:        { fontSize: 16, fontFamily: "Inter_700Bold", letterSpacing: 3 },
-  pickedCard:         { borderRadius: 16, borderWidth: 1.5, padding: 16, marginBottom: 28, gap: 8 },
-  pickedHeader:       { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 4 },
-  badge:              { borderRadius: 50, paddingHorizontal: 10, paddingVertical: 4 },
-  badgeText:          { fontSize: 11, fontFamily: "Inter_600SemiBold", letterSpacing: 0.5 },
-  pickedImage:        { width: "100%", height: 160, borderRadius: 10 },
-  pickedName:         { fontSize: 20, fontFamily: "Inter_700Bold" },
+  slotViewport:       { width: "100%", overflow: "hidden", borderRadius: 14, borderWidth: 1, position: "relative", marginBottom: 16 },
+  slotSelectionBox:   { position: "absolute", top: ITEM_HEIGHT, left: 0, right: 0, height: ITEM_HEIGHT, borderTopWidth: 1.5, borderBottomWidth: 1.5, zIndex: 10 },
+  slotItem:           { justifyContent: "center", alignItems: "center", paddingHorizontal: 16 },
+  slotItemText:       { fontSize: 16, fontFamily: "Inter_700Bold", textAlign: "center" },
   tapHint:            { fontSize: 12, fontFamily: "Inter_600SemiBold" },
   listHeader:         { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 14 },
   listTitle:          { fontSize: 19, fontFamily: "Inter_600SemiBold" },
