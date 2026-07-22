@@ -7,6 +7,8 @@ import React, { useRef, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
+  Animated,
+  Easing,
   Image,
   Modal,
   Platform,
@@ -26,15 +28,26 @@ import { SavedToast } from "@/components/SavedToast";
 const STORAGE_KEY = "@recipe_roulette_personal";
 const API_BASE = "https://test-app-api-server.vercel.app";
 
-// ─── Live-spin cycling constants ─────────────────────────────────────────────
-// The recipe list itself "spins" by rapidly cycling the highlighted card,
-// scrolling it into view each step, then decelerating to a landing index —
-// classic slot-machine deceleration curve applied to real list indices
-// instead of a separate scrolling visual element.
-const SPIN_TOTAL_STEPS = 24; // total highlight jumps before landing
-const SPIN_MIN_DELAY = 60; // fastest step delay (ms)
-const SPIN_MAX_DELAY = 320; // slowest step delay, right before landing (ms)
-const RECIPE_CARD_HEIGHT = 76; // approx height incl. margin, used for scroll-into-view math
+// ─── Slot machine constants ───────────────────────────────────────────────────
+// Identical mechanics to Tab 1's three-wheel spinner — fixed viewport,
+// Animated.Value translating a repeated list, Easing.out deceleration.
+// Screen never moves; only the content inside the viewport scrolls.
+const SLOT_ITEM_HEIGHT = 72;
+const SLOT_VISIBLE = 3;
+const SLOT_COPY_COUNT = 12;
+const SLOT_START_COPY = 3;
+const SLOT_SPIN_ROUNDS = 5;
+const SLOT_SPIN_DURATION = 2200;
+
+function slotInitialY(count: number, idx = 0) {
+  return SLOT_ITEM_HEIGHT * (1 - (SLOT_START_COPY * count + idx));
+}
+function slotSpinTargetY(count: number, prevIdx: number, newIdx: number) {
+  return SLOT_ITEM_HEIGHT * (1 - (SLOT_START_COPY * count + prevIdx + SLOT_SPIN_ROUNDS * count + newIdx));
+}
+function slotResetY(count: number, newIdx: number) {
+  return SLOT_ITEM_HEIGHT * (1 - (SLOT_START_COPY * count + newIdx));
+}
 
 interface PersonalRecipe {
   id: string;
@@ -381,6 +394,54 @@ function RecipeDetailModal({ recipe, onClose, onDelete, onEdit }: { recipe: Pers
   );
 }
 
+// ─── Recipe Slot Column ───────────────────────────────────────────────────────
+
+function RecipeSlotColumn({
+  names,
+  animValue,
+}: {
+  names: string[];
+  animValue: Animated.Value;
+}) {
+  const colors = useColors();
+  // Repeat the list enough times that a multi-round spin never runs out of items
+  const display = Array.from({ length: SLOT_COPY_COUNT }, () => names).flat();
+
+  return (
+    <View
+      style={[
+        styles.slotViewport,
+        {
+          height: SLOT_ITEM_HEIGHT * SLOT_VISIBLE,
+          backgroundColor: colors.card,
+          borderColor: colors.border,
+        },
+      ]}
+    >
+      {/* Selection highlight box — sits on top of the middle row */}
+      <View
+        style={[
+          styles.slotSelectionBox,
+          { top: SLOT_ITEM_HEIGHT, height: SLOT_ITEM_HEIGHT, borderColor: colors.primary },
+        ]}
+        pointerEvents="none"
+      />
+      <Animated.View style={{ transform: [{ translateY: animValue }] }}>
+        {display.map((name, i) => (
+          <View key={i} style={[styles.slotItem, { height: SLOT_ITEM_HEIGHT }]}>
+            <Text
+              style={[styles.slotItemText, { color: colors.foreground }]}
+              numberOfLines={2}
+            >
+              {name}
+            </Text>
+          </View>
+        ))}
+      </Animated.View>
+    </View>
+  );
+}
+
 // ─── Main Screen ──────────────────────────────────────────────────────────────
 
 export default function RouletteScreen() {
@@ -391,14 +452,13 @@ export default function RouletteScreen() {
   const [loaded, setLoaded] = useState(false);
   const [showImport, setShowImport] = useState(false);
   const [spinning, setSpinning] = useState(false);
-  const [highlightIdx, setHighlightIdx] = useState<number | null>(null);
+  const [selIdx, setSelIdx] = useState(0);
   const [tonightsPick, setTonightsPick] = useState<PersonalRecipe | null>(null);
   const [selectedRecipe, setSelectedRecipe] = useState<PersonalRecipe | null>(null);
   const [editingRecipe, setEditingRecipe] = useState<PersonalRecipe | null>(null);
   const [showSavedToast, setShowSavedToast] = useState(false);
 
-  const scrollRef = useRef<ScrollView>(null);
-  const spinTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const slotY = useRef(new Animated.Value(0)).current;
 
   useFocusEffect(
     React.useCallback(() => {
@@ -407,14 +467,13 @@ export default function RouletteScreen() {
           const json = await AsyncStorage.getItem(STORAGE_KEY);
           const list: PersonalRecipe[] = json ? JSON.parse(json) : [];
           setRecipes(list);
+          if (list.length > 0) {
+            slotY.setValue(slotInitialY(list.length, 0));
+          }
         } catch {}
         setLoaded(true);
       };
       loadRecipes();
-      // Cancel any in-flight spin if the user navigates away mid-spin
-      return () => {
-        if (spinTimeoutRef.current) clearTimeout(spinTimeoutRef.current);
-      };
     }, [])
   );
 
@@ -443,16 +502,8 @@ export default function RouletteScreen() {
   const deleteRecipe = async (id: string) => {
     await persist(recipes.filter((r) => r.id !== id));
     if (tonightsPick?.id === id) setTonightsPick(null);
-    if (highlightIdx !== null) setHighlightIdx(null);
-  };
-
-  // Scrolls the currently-highlighted card into view as the cycle runs,
-  // so the "spinning" motion is visible even with a long recipe list.
-  const scrollHighlightIntoView = (idx: number) => {
-    scrollRef.current?.scrollTo({
-      y: Math.max(0, idx * RECIPE_CARD_HEIGHT - RECIPE_CARD_HEIGHT * 1.5),
-      animated: true,
-    });
+    setSelIdx(0);
+    slotY.setValue(0);
   };
 
   const spinRecipe = () => {
@@ -462,39 +513,23 @@ export default function RouletteScreen() {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
 
     const count = recipes.length;
-    const finalIdx = Math.floor(Math.random() * count);
+    const newIdx = Math.floor(Math.random() * count);
 
-    // Build a sequence of indices to flash through, decelerating toward
-    // the landing index — same easing feel as the old slot wheel, but
-    // applied as discrete jumps across the real card list.
-    let step = 0;
-    const runStep = () => {
-      // Progress 0 -> 1 across the whole sequence, eased so steps slow down.
-      const progress = step / SPIN_TOTAL_STEPS;
-      const eased = 1 - Math.pow(1 - progress, 3); // ease-out cubic
-      const delay = SPIN_MIN_DELAY + (SPIN_MAX_DELAY - SPIN_MIN_DELAY) * eased;
-
-      const isLastStep = step >= SPIN_TOTAL_STEPS;
-      const idx = isLastStep ? finalIdx : Math.floor(Math.random() * count);
-
-      setHighlightIdx(idx);
-      scrollHighlightIntoView(idx);
-      Haptics.selectionAsync();
-
-      if (isLastStep) {
-        setSpinning(false);
-        setTonightsPick(recipes[finalIdx]);
-        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-        // Open the detail modal directly when it lands
-        setSelectedRecipe(recipes[finalIdx]);
-        return;
-      }
-
-      step += 1;
-      spinTimeoutRef.current = setTimeout(runStep, delay);
-    };
-
-    runStep();
+    Animated.timing(slotY, {
+      toValue: slotSpinTargetY(count, selIdx, newIdx),
+      duration: SLOT_SPIN_DURATION,
+      easing: Easing.out(Easing.cubic),
+      useNativeDriver: false,
+    }).start(() => {
+      // Reset to the equivalent short-offset position so future spins
+      // don't accumulate an ever-growing translateY value.
+      slotY.setValue(slotResetY(count, newIdx));
+      setSelIdx(newIdx);
+      setSpinning(false);
+      setTonightsPick(recipes[newIdx]);
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      setSelectedRecipe(recipes[newIdx]);
+    });
   };
 
   const sourceIcon = (source?: string) =>
@@ -504,7 +539,6 @@ export default function RouletteScreen() {
     <>
       <SavedToast visible={showSavedToast} label="Recipe Saved!" />
       <ScrollView
-        ref={scrollRef}
         style={[styles.root, { backgroundColor: colors.background }]}
         contentContainerStyle={{ paddingTop: topPad + 32, paddingHorizontal: 20, paddingBottom: 120 }}
         keyboardShouldPersistTaps="handled"
@@ -543,6 +577,14 @@ export default function RouletteScreen() {
           </Pressable>
         )}
 
+        {/* Slot machine viewport — fixed height, content translates inside */}
+        {recipes.length > 0 && (
+          <RecipeSlotColumn
+            names={recipes.map((r) => r.name)}
+            animValue={slotY}
+          />
+        )}
+
         {/* Spin Button */}
         <Pressable
           onPress={spinRecipe}
@@ -554,15 +596,13 @@ export default function RouletteScreen() {
           ]}
         >
           {spinning
-            ? <Text style={[styles.spinBtnText, { color: colors.mutedForeground }]}>SPINNING...</Text>
+            ? <ActivityIndicator color={colors.primaryForeground} />
             : <Text style={[styles.spinBtnText, { color: recipes.length === 0 ? colors.mutedForeground : colors.primaryForeground }]}>
                 {recipes.length === 0 ? "ADD RECIPES TO SPIN" : "SPIN MY DINNERS"}
               </Text>
           }
         </Pressable>
 
-        {/* Recipe List — this list itself is the spinner; the highlighted card */}
-        {/* cycles rapidly through entries while spinning, then settles. */}
         <View style={styles.listHeader}>
           <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
             <Text style={[styles.listTitle, { color: colors.foreground }]}>My Recipes</Text>
@@ -580,17 +620,14 @@ export default function RouletteScreen() {
           </View>
         ) : (
           recipes.map((recipe, idx) => {
-            const isLiveHighlight = highlightIdx === idx;
-            const isPersistentPick = !spinning && !isLiveHighlight && tonightsPick?.id === recipe.id;
-            const isHighlighted = isLiveHighlight || isPersistentPick;
+            const isPick = !spinning && tonightsPick?.id === recipe.id;
             return (
               <Pressable
                 key={recipe.id}
                 onPress={() => setSelectedRecipe(recipe)}
                 style={({ pressed }) => [
                   styles.recipeCard,
-                  { backgroundColor: isHighlighted ? colors.secondary : colors.card, borderColor: isHighlighted ? colors.primary : colors.border },
-                  isLiveHighlight && { transform: [{ scale: 1.02 }] },
+                  { backgroundColor: isPick ? colors.secondary : colors.card, borderColor: isPick ? colors.primary : colors.border },
                   pressed && { opacity: 0.8 },
                 ]}
               >
@@ -608,7 +645,7 @@ export default function RouletteScreen() {
                   </View>
                   <View style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
                     <Feather name={sourceIcon(recipe.source)} size={14} color={colors.mutedForeground} />
-                    <Pressable onPress={() => deleteRecipe(recipe.id)} hitSlop={12} disabled={spinning}>
+                    <Pressable onPress={() => deleteRecipe(recipe.id)} hitSlop={12}>
                       <Feather name="trash-2" size={16} color={colors.mutedForeground} />
                     </Pressable>
                   </View>
@@ -643,7 +680,11 @@ const styles = StyleSheet.create({
   addBtn:             { width: 36, height: 36, borderRadius: 18, alignItems: "center", justifyContent: "center", marginTop: 4 },
   spinBtn:            { borderRadius: 50, paddingVertical: 18, alignItems: "center", justifyContent: "center", marginBottom: 28, minHeight: 58 },
   spinBtnText:        { fontSize: 16, fontFamily: "Inter_700Bold", letterSpacing: 3 },
-  tonightsBanner:     { borderRadius: 16, borderWidth: 1.5, padding: 16, marginBottom: 20, gap: 10 },
+  slotViewport:       { width: "100%", overflow: "hidden", borderRadius: 14, borderWidth: 1, position: "relative", marginBottom: 12 },
+  slotSelectionBox:   { position: "absolute", left: 0, right: 0, borderTopWidth: 1.5, borderBottomWidth: 1.5, zIndex: 10 },
+  slotItem:           { justifyContent: "center", alignItems: "center", paddingHorizontal: 20 },
+  slotItemText:       { fontSize: 15, fontFamily: "Inter_700Bold", textAlign: "center", lineHeight: 20 },
+  tonightsBanner:     { borderRadius: 16, borderWidth: 1.5, padding: 16, marginBottom: 16, gap: 10 },
   tonightsBadge:      { alignSelf: "flex-start", borderRadius: 50, paddingHorizontal: 10, paddingVertical: 4 },
   tonightsBadgeText:  { fontSize: 11, fontFamily: "Inter_600SemiBold", letterSpacing: 0.5 },
   tonightsRow:        { flexDirection: "row", alignItems: "center", gap: 12 },
