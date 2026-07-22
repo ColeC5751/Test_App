@@ -315,20 +315,47 @@ function ImportModal({
 
 // ─── Recipe Detail Modal ─────────────────────────────────────────────────────
 
+// Scales numeric values in a freeform ingredient string by a multiplier.
+// e.g. "2 tbsp butter, 1 cup milk" × 2 → "4 tbsp butter, 2 cup milk"
+// Handles integers, decimals, and simple fractions (1/2, 3/4 etc.)
+function scaleIngredientText(text: string, multiplier: number): string {
+  if (multiplier === 1) return text;
+  return text.replace(
+    /(\d+\/\d+|\d+\.?\d*)/g,
+    (match) => {
+      let val: number;
+      if (match.includes("/")) {
+        const [num, den] = match.split("/").map(Number);
+        val = num / den;
+      } else {
+        val = parseFloat(match);
+      }
+      const scaled = val * multiplier;
+      const rounded = Math.round(scaled * 100) / 100;
+      return rounded % 1 === 0 ? String(Math.round(rounded)) : rounded.toFixed(1);
+    }
+  );
+}
+
 function RecipeDetailModal({ recipe, onClose, onDelete, onEdit }: { recipe: PersonalRecipe | null; onClose: () => void; onDelete: (id: string) => void; onEdit: (recipe: PersonalRecipe) => void }) {
   const colors = useColors();
   const [addedToGrocery, setAddedToGrocery] = useState(false);
+  const [servings, setServings] = useState(1);
+  const baseServings = 1;
 
   React.useEffect(() => {
     setAddedToGrocery(false);
+    setServings(1);
   }, [recipe?.id]);
 
   if (!recipe) return null;
 
   const sourceBadge = recipe.source === "photo" ? "📷 Photo import" : recipe.source === "url" ? "🔗 Link import" : "✍️ Manual";
+  const multiplier = servings / baseServings;
+  const scaledIngredients = scaleIngredientText(recipe.ingredients, multiplier);
 
   const handleAddToGrocery = async () => {
-    await addIngredientsToGrocery(recipe.ingredients);
+    await addIngredientsToGrocery(scaledIngredients);
     setAddedToGrocery(true);
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     setTimeout(() => setAddedToGrocery(false), 2000);
@@ -357,6 +384,26 @@ function RecipeDetailModal({ recipe, onClose, onDelete, onEdit }: { recipe: Pers
             <Text style={[styles.sourceBadgeText, { color: colors.mutedForeground }]}>{sourceBadge}</Text>
           </View>
 
+          {/* Servings stepper */}
+          <View style={[styles.servingsRow, { backgroundColor: colors.card, borderColor: colors.border }]}>
+            <Text style={[styles.servingsLabel, { color: colors.mutedForeground }]}>SERVINGS</Text>
+            <View style={styles.stepper}>
+              <Pressable
+                onPress={() => { setServings((s) => Math.max(1, s - 1)); Haptics.selectionAsync(); }}
+                style={[styles.stepperBtn, { backgroundColor: colors.secondary, borderColor: colors.border }]}
+              >
+                <Feather name="minus" size={16} color={colors.foreground} />
+              </Pressable>
+              <Text style={[styles.stepperValue, { color: colors.foreground }]}>{servings}×</Text>
+              <Pressable
+                onPress={() => { setServings((s) => Math.min(20, s + 1)); Haptics.selectionAsync(); }}
+                style={[styles.stepperBtn, { backgroundColor: colors.secondary, borderColor: colors.border }]}
+              >
+                <Feather name="plus" size={16} color={colors.foreground} />
+              </Pressable>
+            </View>
+          </View>
+
           <Pressable
             onPress={handleAddToGrocery}
             style={({ pressed }) => [
@@ -370,19 +417,14 @@ function RecipeDetailModal({ recipe, onClose, onDelete, onEdit }: { recipe: Pers
               size={16}
               color={addedToGrocery ? colors.foreground : colors.primaryForeground}
             />
-            <Text
-              style={[
-                styles.groceryBtnText,
-                { color: addedToGrocery ? colors.foreground : colors.primaryForeground },
-              ]}
-            >
+            <Text style={[styles.groceryBtnText, { color: addedToGrocery ? colors.foreground : colors.primaryForeground }]}>
               {addedToGrocery ? "Added to Grocery List" : "Add to Grocery List"}
             </Text>
           </Pressable>
 
           <Text style={[styles.sectionLabel, { color: colors.mutedForeground }]}>INGREDIENTS</Text>
           <View style={[styles.sectionCard, { backgroundColor: colors.card, borderColor: colors.border }]}>
-            <Text style={[styles.bodyText, { color: colors.foreground }]}>{recipe.ingredients}</Text>
+            <Text style={[styles.bodyText, { color: colors.foreground }]}>{scaledIngredients}</Text>
           </View>
           <Text style={[styles.sectionLabel, { color: colors.mutedForeground }]}>STEPS</Text>
           <View style={[styles.sectionCard, { backgroundColor: colors.card, borderColor: colors.border }]}>
@@ -724,6 +766,11 @@ const styles = StyleSheet.create({
   detailImage:        { width: "100%", height: 200, borderRadius: 12, marginBottom: 16 },
   sourceBadge:        { alignSelf: "flex-start", borderRadius: 20, paddingHorizontal: 10, paddingVertical: 4, marginBottom: 16 },
   sourceBadgeText:    { fontSize: 11, fontFamily: "Inter_400Regular" },
+  servingsRow:        { flexDirection: "row", alignItems: "center", justifyContent: "space-between", borderRadius: 14, borderWidth: 1, paddingHorizontal: 16, paddingVertical: 12, marginBottom: 12 },
+  servingsLabel:      { fontSize: 11, fontFamily: "Inter_600SemiBold", letterSpacing: 1.5 },
+  stepper:            { flexDirection: "row", alignItems: "center", gap: 16 },
+  stepperBtn:         { width: 34, height: 34, borderRadius: 17, borderWidth: 1, alignItems: "center", justifyContent: "center" },
+  stepperValue:       { fontSize: 18, fontFamily: "Inter_700Bold", minWidth: 32, textAlign: "center" },
   groceryBtn:         { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, borderRadius: 12, paddingVertical: 14, marginBottom: 16 },
   groceryBtnText:     { fontSize: 14, fontFamily: "Inter_600SemiBold" },
   sectionLabel:       { fontSize: 10, fontFamily: "Inter_600SemiBold", letterSpacing: 2, marginBottom: 8, marginTop: 4 },
