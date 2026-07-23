@@ -465,6 +465,12 @@ function RecipeDetailModal({ recipe, onClose, onDelete, onEdit }: { recipe: Pers
           </View>
         </ScrollView>
       </SafeAreaView>
+      <CookMode
+        visible={showCookMode}
+        recipeName={recipe?.name ?? ""}
+        steps={parseSteps(recipe?.steps ?? "")}
+        onClose={() => setShowCookMode(false)}
+      />
     </Modal>
   );
 }
