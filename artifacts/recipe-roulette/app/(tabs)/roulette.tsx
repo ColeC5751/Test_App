@@ -297,8 +297,62 @@ function ImportModal({
               <Text style={[styles.formLabel, { color: colors.mutedForeground }]}>STEPS</Text>
               <TextInput style={[inputStyle, styles.multiInput]} value={formSteps} onChangeText={setFormSteps} placeholder="1. Preheat pan... 2. Season salmon..." placeholderTextColor={colors.mutedForeground} multiline numberOfLines={5} textAlignVertical="top" />
 
-              <Text style={[styles.formLabel, { color: colors.mutedForeground }]}>PHOTO URL (optional)</Text>
-              <TextInput style={inputStyle} value={formPhoto} onChangeText={setFormPhoto} placeholder="https://..." placeholderTextColor={colors.mutedForeground} keyboardType="url" autoCapitalize="none" />
+              <Text style={[styles.formLabel, { color: colors.mutedForeground }]}>PHOTO (optional)</Text>
+
+              {/* Photo preview */}
+              {formPhoto ? (
+                <View style={styles.photoPreviewWrap}>
+                  <Image source={{ uri: formPhoto }} style={styles.photoPreview} />
+                  <Pressable
+                    onPress={() => setFormPhoto("")}
+                    style={[styles.photoRemoveBtn, { backgroundColor: colors.card, borderColor: colors.border }]}
+                    hitSlop={8}
+                  >
+                    <Feather name="x" size={14} color={colors.foreground} />
+                  </Pressable>
+                </View>
+              ) : null}
+
+              {/* Camera + Library buttons */}
+              <View style={styles.photoPickerRow}>
+                <Pressable
+                  onPress={async () => {
+                    const perm = await ImagePicker.requestCameraPermissionsAsync();
+                    if (!perm.granted) { Alert.alert("Permission needed", "Please allow camera access."); return; }
+                    const result = await ImagePicker.launchCameraAsync({ quality: 0.75, allowsEditing: true, aspect: [4, 3] });
+                    if (!result.canceled && result.assets[0]?.uri) setFormPhoto(result.assets[0].uri);
+                  }}
+                  style={[styles.photoPickerBtn, { backgroundColor: colors.secondary, borderColor: colors.border }]}
+                >
+                  <Feather name="camera" size={16} color={colors.foreground} />
+                  <Text style={[styles.photoPickerBtnText, { color: colors.foreground }]}>Camera</Text>
+                </Pressable>
+                <Pressable
+                  onPress={async () => {
+                    const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
+                    if (!perm.granted) { Alert.alert("Permission needed", "Please allow photo library access."); return; }
+                    const result = await ImagePicker.launchImageLibraryAsync({ quality: 0.75, allowsEditing: true, aspect: [4, 3] });
+                    if (!result.canceled && result.assets[0]?.uri) setFormPhoto(result.assets[0].uri);
+                  }}
+                  style={[styles.photoPickerBtn, { backgroundColor: colors.secondary, borderColor: colors.border }]}
+                >
+                  <Feather name="image" size={16} color={colors.foreground} />
+                  <Text style={[styles.photoPickerBtnText, { color: colors.foreground }]}>Library</Text>
+                </Pressable>
+              </View>
+
+              {/* URL fallback — collapsed to a small link when no photo selected, full input otherwise */}
+              {!formPhoto && (
+                <TextInput
+                  style={[inputStyle, { marginTop: 8 }]}
+                  value={formPhoto}
+                  onChangeText={setFormPhoto}
+                  placeholder="Or paste a photo URL…"
+                  placeholderTextColor={colors.mutedForeground}
+                  keyboardType="url"
+                  autoCapitalize="none"
+                />
+              )}
 
               <Pressable
                 onPress={handleSave}
@@ -829,6 +883,12 @@ const styles = StyleSheet.create({
   modeRow:            { flexDirection: "row", margin: 16, borderRadius: 10, borderWidth: 1, padding: 4, gap: 4 },
   modeBtn:            { flex: 1, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6, paddingVertical: 8 },
   modeBtnText:        { fontSize: 13, fontFamily: "Inter_600SemiBold" },
+  photoPreviewWrap:   { position: "relative", marginBottom: 10 },
+  photoPreview:       { width: "100%", height: 180, borderRadius: 10 },
+  photoRemoveBtn:     { position: "absolute", top: 8, right: 8, width: 28, height: 28, borderRadius: 14, borderWidth: 1, alignItems: "center", justifyContent: "center" },
+  photoPickerRow:     { flexDirection: "row", gap: 10, marginBottom: 4 },
+  photoPickerBtn:     { flex: 1, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, borderRadius: 10, borderWidth: 1, paddingVertical: 12 },
+  photoPickerBtnText: { fontSize: 14, fontFamily: "Inter_600SemiBold" },
   importActionBtn:    { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, borderRadius: 12, paddingVertical: 14 },
   importActionBtnText:{ fontSize: 15, fontFamily: "Inter_600SemiBold" },
   extractingText:     { fontSize: 12, fontFamily: "Inter_400Regular", textAlign: "center", marginTop: 10 },
