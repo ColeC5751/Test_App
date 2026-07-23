@@ -22,6 +22,7 @@ import {
 import { useColors } from "@/hooks/useColors";
 import { addIngredientsToGrocery } from "@/app/(tabs)/grocery";
 import { SavedToast } from "@/components/SavedToast";
+import { CookMode } from "@/components/CookMode";
 
 const DEFAULT_PROTEINS = ["Fish", "Chicken", "Ground Beef", "Pork"];
 const DEFAULT_CARBS = ["Rice", "Pasta", "Potatoes", "Bread"];
@@ -318,9 +319,10 @@ function RecipeDetailModal({ recipe, onClose }: { recipe: Recipe | null; onClose
   const [saved, setSaved] = useState(false);
   const [addedToGrocery, setAddedToGrocery] = useState(false);
   const [showSavedToast, setShowSavedToast] = useState(false);
+  const [showCookMode, setShowCookMode] = useState(false);
 
   useEffect(() => {
-    if (!recipe) { setSaved(false); setAddedToGrocery(false); setShowSavedToast(false); return; }
+    if (!recipe) { setSaved(false); setAddedToGrocery(false); setShowSavedToast(false); setShowCookMode(false); return; }
     AsyncStorage.getItem(STORAGE_KEY)
       .then((json) => {
         if (!json) { setSaved(false); return; }
@@ -459,6 +461,22 @@ function RecipeDetailModal({ recipe, onClose }: { recipe: Recipe | null; onClose
               </Text>
             </Pressable>
 
+            {recipe.instructions.length > 0 && (
+              <Pressable
+                onPress={() => setShowCookMode(true)}
+                style={({ pressed }) => [
+                  styles.groceryBtn,
+                  { backgroundColor: colors.secondary, borderWidth: 1.5, borderColor: colors.primary },
+                  pressed && { opacity: 0.9 },
+                ]}
+              >
+                <Feather name="play-circle" size={16} color={colors.primary} />
+                <Text style={[styles.groceryBtnText, { color: colors.primary }]}>
+                  Start Cooking
+                </Text>
+              </Pressable>
+            )}
+
             {recipe.macros && (
               <MacroBar macros={recipe.macros} servings={servings} baseServings={baseServings} colors={colors} />
             )}
@@ -496,6 +514,12 @@ function RecipeDetailModal({ recipe, onClose }: { recipe: Recipe | null; onClose
           </View>
         </ScrollView>
       </SafeAreaView>
+      <CookMode
+        visible={showCookMode}
+        recipeName={recipe?.title ?? ""}
+        steps={recipe?.instructions ?? []}
+        onClose={() => setShowCookMode(false)}
+      />
     </Modal>
   );
 }
