@@ -24,29 +24,31 @@ import {
 import { useColors } from "@/hooks/useColors";
 import { addIngredientsToGrocery } from "@/app/(tabs)/grocery";
 import { SavedToast } from "@/components/SavedToast";
+import { CookMode } from "@/components/CookMode";
 
 const STORAGE_KEY = "@recipe_roulette_personal";
 const API_BASE = "https://test-app-api-server.vercel.app";
 
-// ─── Slot machine constants ───────────────────────────────────────────────────
-// Identical mechanics to Tab 1's three-wheel spinner — fixed viewport,
-// Animated.Value translating a repeated list, Easing.out deceleration.
-// Screen never moves; only the content inside the viewport scrolls.
-const SLOT_ITEM_HEIGHT = 72;
-const SLOT_VISIBLE = 3;
-const SLOT_COPY_COUNT = 12;
-const SLOT_START_COPY = 3;
-const SLOT_SPIN_ROUNDS = 5;
-const SLOT_SPIN_DURATION = 2200;
+// ─── Roulette wheel constants ────────────────────────────────────────────────
+// The actual recipe card list IS the spinner. The full list is rendered
+// inside an Animated.View inside a fixed-height viewport. Spinning
+// translates the list upward, decelerating to land on the winning card.
+// Cards remain tappable throughout — same card, same interaction.
+const CARD_HEIGHT = 84;        // card height + margin, used for offset math
+const WHEEL_VISIBLE = 4;       // number of cards visible in the viewport
+const SPIN_COPIES = 3;         // how many times the list repeats inside the wheel
+const SPIN_START_COPY = 1;     // which copy we start centered on
+const SPIN_ROUNDS = 4;         // full loops before landing
+const SPIN_DURATION = 2400;    // ms
 
-function slotInitialY(count: number, idx = 0) {
-  return SLOT_ITEM_HEIGHT * (1 - (SLOT_START_COPY * count + idx));
+function wheelInitialY(count: number, idx = 0) {
+  return CARD_HEIGHT * (1 - (SPIN_START_COPY * count + idx));
 }
-function slotSpinTargetY(count: number, prevIdx: number, newIdx: number) {
-  return SLOT_ITEM_HEIGHT * (1 - (SLOT_START_COPY * count + prevIdx + SLOT_SPIN_ROUNDS * count + newIdx));
+function wheelSpinTargetY(count: number, prevIdx: number, newIdx: number) {
+  return CARD_HEIGHT * (1 - (SPIN_START_COPY * count + prevIdx + SPIN_ROUNDS * count + newIdx));
 }
-function slotResetY(count: number, newIdx: number) {
-  return SLOT_ITEM_HEIGHT * (1 - (SLOT_START_COPY * count + newIdx));
+function wheelResetY(count: number, newIdx: number) {
+  return CARD_HEIGHT * (1 - (SPIN_START_COPY * count + newIdx));
 }
 
 interface PersonalRecipe {
@@ -315,6 +317,21 @@ function ImportModal({
 
 // ─── Recipe Detail Modal ─────────────────────────────────────────────────────
 
+// Parses a freeform steps string into an array of individual steps.
+// Handles numbered steps ("1. Preheat...", "Step 1:"), newline-separated,
+// and comma-separated as a last resort.
+function parseSteps(text: string): string[] {
+  if (!text.trim()) return [];
+  // Split on numbered step patterns: "1.", "Step 1:", "1)" etc.
+  const numbered = text.split(/(?:^|\n)\s*(?:step\s*)?\d+[.):]\s*/i).map(s => s.trim()).filter(Boolean);
+  if (numbered.length > 1) return numbered;
+  // Fall back to newline splitting
+  const byLine = text.split(/\n+/).map(s => s.trim()).filter(Boolean);
+  if (byLine.length > 1) return byLine;
+  // Single block — return as one step
+  return [text.trim()];
+}
+
 // Scales numeric values in a freeform ingredient string by a multiplier.
 // e.g. "2 tbsp butter, 1 cup milk" × 2 → "4 tbsp butter, 2 cup milk"
 // Handles integers, decimals, and simple fractions (1/2, 3/4 etc.)
@@ -341,11 +358,13 @@ function RecipeDetailModal({ recipe, onClose, onDelete, onEdit }: { recipe: Pers
   const colors = useColors();
   const [addedToGrocery, setAddedToGrocery] = useState(false);
   const [servings, setServings] = useState(1);
+  const [showCookMode, setShowCookMode] = useState(false);
   const baseServings = 1;
 
   React.useEffect(() => {
     setAddedToGrocery(false);
     setServings(1);
+    setShowCookMode(false);
   }, [recipe?.id]);
 
   if (!recipe) return null;
@@ -422,6 +441,20 @@ function RecipeDetailModal({ recipe, onClose, onDelete, onEdit }: { recipe: Pers
             </Text>
           </Pressable>
 
+          {recipe.steps.trim().length > 0 && (
+            <Pressable
+              onPress={() => setShowCookMode(true)}
+              style={({ pressed }) => [
+                styles.groceryBtn,
+                { backgroundColor: colors.secondary, borderWidth: 1.5, borderColor: colors.primary },
+                pressed && { opacity: 0.9 },
+              ]}
+            >
+              <Feather name="play-circle" size={16} color={colors.primary} />
+              <Text style={[styles.groceryBtnText, { color: colors.primary }]}>Start Cooking</Text>
+            </Pressable>
+          )}
+
           <Text style={[styles.sectionLabel, { color: colors.mutedForeground }]}>INGREDIENTS</Text>
           <View style={[styles.sectionCard, { backgroundColor: colors.card, borderColor: colors.border }]}>
             <Text style={[styles.bodyText, { color: colors.foreground }]}>{scaledIngredients}</Text>
@@ -436,49 +469,82 @@ function RecipeDetailModal({ recipe, onClose, onDelete, onEdit }: { recipe: Pers
   );
 }
 
-// ─── Recipe Slot Column ───────────────────────────────────────────────────────
+// ─── Recipe Wheel Viewport ────────────────────────────────────────────────────
+// The full recipe card list, repeated SPIN_COPIES times, rendered inside
+// a fixed-height clipping viewport. The Animated.Value translates the
+// entire list upward as it spins. Cards are full-width with photo + name,
+// identical to the list below — and remain tappable during/after spinning.
 
-function RecipeSlotColumn({
-  names,
+function RecipeWheelViewport({
+  recipes,
   animValue,
+  onCardPress,
+  landedIdx,
 }: {
-  names: string[];
+  recipes: PersonalRecipe[];
   animValue: Animated.Value;
+  onCardPress: (recipe: PersonalRecipe) => void;
+  landedIdx: number;
 }) {
   const colors = useColors();
-  // Repeat the list enough times that a multi-round spin never runs out of items
-  const display = Array.from({ length: SLOT_COPY_COUNT }, () => names).flat();
+  // Repeat the list so multi-round spins never run out of cards
+  const display = Array.from({ length: SPIN_COPIES }, () => recipes).flat();
 
   return (
     <View
       style={[
-        styles.slotViewport,
-        {
-          height: SLOT_ITEM_HEIGHT * SLOT_VISIBLE,
-          backgroundColor: colors.card,
-          borderColor: colors.border,
-        },
+        styles.wheelViewport,
+        { height: CARD_HEIGHT * WHEEL_VISIBLE, borderColor: colors.border },
       ]}
     >
-      {/* Selection highlight box — sits on top of the middle row */}
+      {/* Top + bottom fade overlays to give depth */}
+      <View style={[styles.wheelFadeTop, { backgroundColor: colors.background }]} pointerEvents="none" />
+      <View style={[styles.wheelFadeBottom, { backgroundColor: colors.background }]} pointerEvents="none" />
+      {/* Selection highlight on the center card */}
       <View
         style={[
-          styles.slotSelectionBox,
-          { top: SLOT_ITEM_HEIGHT, height: SLOT_ITEM_HEIGHT, borderColor: colors.primary },
+          styles.wheelSelection,
+          {
+            top: CARD_HEIGHT * Math.floor(WHEEL_VISIBLE / 2),
+            height: CARD_HEIGHT,
+            borderColor: colors.primary,
+          },
         ]}
         pointerEvents="none"
       />
       <Animated.View style={{ transform: [{ translateY: animValue }] }}>
-        {display.map((name, i) => (
-          <View key={i} style={[styles.slotItem, { height: SLOT_ITEM_HEIGHT }]}>
-            <Text
-              style={[styles.slotItemText, { color: colors.foreground }]}
-              numberOfLines={2}
+        {display.map((recipe, i) => {
+          const sourceIdx = i % recipes.length;
+          const isLanded = sourceIdx === landedIdx;
+          return (
+            <Pressable
+              key={i}
+              onPress={() => onCardPress(recipe)}
+              style={({ pressed }) => [
+                styles.wheelCard,
+                { height: CARD_HEIGHT, backgroundColor: colors.card, borderColor: isLanded ? colors.primary : colors.border },
+                pressed && { opacity: 0.85 },
+              ]}
             >
-              {name}
-            </Text>
-          </View>
-        ))}
+              {recipe.photoUrl ? (
+                <Image source={{ uri: recipe.photoUrl }} style={styles.wheelCardThumb} />
+              ) : (
+                <View style={[styles.wheelCardThumbPlaceholder, { backgroundColor: colors.muted }]}>
+                  <Feather name="coffee" size={18} color={colors.mutedForeground} />
+                </View>
+              )}
+              <View style={styles.wheelCardText}>
+                <Text style={[styles.wheelCardName, { color: colors.foreground }]} numberOfLines={2}>
+                  {recipe.name}
+                </Text>
+                <Text style={[styles.wheelCardSub, { color: colors.mutedForeground }]} numberOfLines={1}>
+                  {recipe.ingredients}
+                </Text>
+              </View>
+              <Feather name="chevron-right" size={14} color={colors.mutedForeground} />
+            </Pressable>
+          );
+        })}
       </Animated.View>
     </View>
   );
@@ -510,7 +576,7 @@ export default function RouletteScreen() {
           const list: PersonalRecipe[] = json ? JSON.parse(json) : [];
           setRecipes(list);
           if (list.length > 0) {
-            slotY.setValue(slotInitialY(list.length, 0));
+            slotY.setValue(wheelInitialY(list.length, 0));
           }
         } catch {}
         setLoaded(true);
@@ -545,7 +611,7 @@ export default function RouletteScreen() {
     await persist(recipes.filter((r) => r.id !== id));
     if (tonightsPick?.id === id) setTonightsPick(null);
     setSelIdx(0);
-    slotY.setValue(0);
+    slotY.setValue(wheelInitialY(Math.max(recipes.length - 1, 1)));
   };
 
   const spinRecipe = () => {
@@ -558,14 +624,12 @@ export default function RouletteScreen() {
     const newIdx = Math.floor(Math.random() * count);
 
     Animated.timing(slotY, {
-      toValue: slotSpinTargetY(count, selIdx, newIdx),
-      duration: SLOT_SPIN_DURATION,
+      toValue: wheelSpinTargetY(count, selIdx, newIdx),
+      duration: SPIN_DURATION,
       easing: Easing.out(Easing.cubic),
       useNativeDriver: false,
     }).start(() => {
-      // Reset to the equivalent short-offset position so future spins
-      // don't accumulate an ever-growing translateY value.
-      slotY.setValue(slotResetY(count, newIdx));
+      slotY.setValue(wheelResetY(count, newIdx));
       setSelIdx(newIdx);
       setSpinning(false);
       setTonightsPick(recipes[newIdx]);
@@ -619,11 +683,13 @@ export default function RouletteScreen() {
           </Pressable>
         )}
 
-        {/* Slot machine viewport — fixed height, content translates inside */}
+        {/* Recipe wheel — the actual full card list IS the spinner */}
         {recipes.length > 0 && (
-          <RecipeSlotColumn
-            names={recipes.map((r) => r.name)}
+          <RecipeWheelViewport
+            recipes={recipes}
             animValue={slotY}
+            onCardPress={(r) => setSelectedRecipe(r)}
+            landedIdx={selIdx}
           />
         )}
 
@@ -722,10 +788,16 @@ const styles = StyleSheet.create({
   addBtn:             { width: 36, height: 36, borderRadius: 18, alignItems: "center", justifyContent: "center", marginTop: 4 },
   spinBtn:            { borderRadius: 50, paddingVertical: 18, alignItems: "center", justifyContent: "center", marginBottom: 28, minHeight: 58 },
   spinBtnText:        { fontSize: 16, fontFamily: "Inter_700Bold", letterSpacing: 3 },
-  slotViewport:       { width: "100%", overflow: "hidden", borderRadius: 14, borderWidth: 1, position: "relative", marginBottom: 12 },
-  slotSelectionBox:   { position: "absolute", left: 0, right: 0, borderTopWidth: 1.5, borderBottomWidth: 1.5, zIndex: 10 },
-  slotItem:           { justifyContent: "center", alignItems: "center", paddingHorizontal: 20 },
-  slotItemText:       { fontSize: 15, fontFamily: "Inter_700Bold", textAlign: "center", lineHeight: 20 },
+  wheelViewport:            { width: "100%", overflow: "hidden", borderRadius: 16, borderWidth: 1, position: "relative", marginBottom: 14 },
+  wheelFadeTop:             { position: "absolute", top: 0, left: 0, right: 0, height: CARD_HEIGHT, opacity: 0.55, zIndex: 5 },
+  wheelFadeBottom:          { position: "absolute", bottom: 0, left: 0, right: 0, height: CARD_HEIGHT, opacity: 0.55, zIndex: 5 },
+  wheelSelection:           { position: "absolute", left: 0, right: 0, borderTopWidth: 1.5, borderBottomWidth: 1.5, zIndex: 10 },
+  wheelCard:                { flexDirection: "row", alignItems: "center", paddingHorizontal: 12, gap: 12, borderBottomWidth: 1 },
+  wheelCardThumb:           { width: 56, height: 56, borderRadius: 10, flexShrink: 0 },
+  wheelCardThumbPlaceholder:{ width: 56, height: 56, borderRadius: 10, alignItems: "center", justifyContent: "center", flexShrink: 0 },
+  wheelCardText:            { flex: 1, gap: 3 },
+  wheelCardName:            { fontSize: 14, fontFamily: "Inter_600SemiBold", lineHeight: 18 },
+  wheelCardSub:             { fontSize: 11, fontFamily: "Inter_400Regular" },
   tonightsBanner:     { borderRadius: 16, borderWidth: 1.5, padding: 16, marginBottom: 16, gap: 10 },
   tonightsBadge:      { alignSelf: "flex-start", borderRadius: 50, paddingHorizontal: 10, paddingVertical: 4 },
   tonightsBadgeText:  { fontSize: 11, fontFamily: "Inter_600SemiBold", letterSpacing: 0.5 },
