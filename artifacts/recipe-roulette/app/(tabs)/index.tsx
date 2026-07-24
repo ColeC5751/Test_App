@@ -592,6 +592,14 @@ export default function SpinScreen() {
   const [selectedRecipe, setSelectedRecipe] = useState<Recipe | null>(null);
   const [currentIngredients, setCurrentIngredients] = useState("");
 
+  // Fridge mode
+  const [mode, setMode] = useState<"spin" | "fridge">("spin");
+  const [fridgeInput, setFridgeInput] = useState("");
+  const [fridgeTags, setFridgeTags] = useState<string[]>([]);
+  const [fridgeResults, setFridgeResults] = useState<Recipe[]>([]);
+  const [fridgeLoading, setFridgeLoading] = useState(false);
+  const [fridgeError, setFridgeError] = useState("");
+
   const spin = () => {
     if (spinning) return;
     setSpinning(true);
@@ -643,6 +651,38 @@ export default function SpinScreen() {
     });
   };
 
+  const addFridgeTag = () => {
+    const val = fridgeInput.trim();
+    if (!val || fridgeTags.includes(val.toLowerCase())) return;
+    setFridgeTags((t) => [...t, val]);
+    setFridgeInput("");
+  };
+
+  const removeFridgeTag = (tag: string) => {
+    setFridgeTags((t) => t.filter((x) => x !== tag));
+    setFridgeResults([]);
+    setFridgeError("");
+  };
+
+  const searchFridge = async () => {
+    if (fridgeTags.length === 0) return;
+    setFridgeLoading(true);
+    setFridgeError("");
+    setFridgeResults([]);
+    try {
+      const result = await fetchRecipes(fridgeTags.join(","));
+      if (result.errorMessage) {
+        setFridgeError(result.errorMessage);
+      } else {
+        setFridgeResults(result.recipes);
+      }
+    } catch {
+      setFridgeError("No connection — check your internet and try again.");
+    } finally {
+      setFridgeLoading(false);
+    }
+  };
+
   return (
     <>
       <ScrollView
@@ -651,65 +691,167 @@ export default function SpinScreen() {
         showsVerticalScrollIndicator={false}
       >
         <View style={styles.headerRow}>
-          <View>
-            <Text style={[styles.heading, { color: colors.foreground }]}>That's Dinner</Text>
-            <Text style={[styles.sub, { color: colors.mutedForeground }]}>Spin to find tonight's dinner</Text>
-          </View>
+          <Text style={[styles.heading, { color: colors.foreground }]}>That's Dinner</Text>
           <Pressable onPress={() => setShowSettings(true)} style={[styles.settingsBtn, { backgroundColor: colors.card, borderColor: colors.border }]}>
             <Feather name="settings" size={18} color={colors.foreground} />
           </Pressable>
         </View>
 
-        <View style={styles.machine}>
-          <SlotColumn label="PROTEIN" items={wheels.proteins} animValue={proteinY} />
-          <SlotColumn label="CARBS" items={wheels.carbs} animValue={carbY} />
-          <SlotColumn label="VEGGIE" items={wheels.veggies} animValue={veggieY} />
+        {/* Mode toggle */}
+        <View style={[styles.modeToggle, { backgroundColor: colors.secondary, borderColor: colors.border }]}>
+          <Pressable
+            onPress={() => { setMode("spin"); setFridgeResults([]); setFridgeError(""); }}
+            style={[styles.modeToggleBtn, mode === "spin" && { backgroundColor: colors.primary, borderRadius: 8 }]}
+          >
+            <Feather name="shuffle" size={14} color={mode === "spin" ? colors.primaryForeground : colors.mutedForeground} />
+            <Text style={[styles.modeToggleText, { color: mode === "spin" ? colors.primaryForeground : colors.mutedForeground }]}>Spin</Text>
+          </Pressable>
+          <Pressable
+            onPress={() => { setMode("fridge"); setRecipes([]); setCurrentIngredients(""); setIsError(false); }}
+            style={[styles.modeToggleBtn, mode === "fridge" && { backgroundColor: colors.primary, borderRadius: 8 }]}
+          >
+            <Feather name="package" size={14} color={mode === "fridge" ? colors.primaryForeground : colors.mutedForeground} />
+            <Text style={[styles.modeToggleText, { color: mode === "fridge" ? colors.primaryForeground : colors.mutedForeground }]}>What's in my fridge?</Text>
+          </Pressable>
         </View>
 
-        <Pressable
-          onPress={spin}
-          disabled={spinning}
-          style={({ pressed }) => [styles.spinBtn, { backgroundColor: spinning ? colors.secondary : colors.primary }, pressed && !spinning && { transform: [{ scale: 0.96 }], opacity: 0.9 }]}
-        >
-          <Text style={[styles.spinBtnText, { color: spinning ? colors.mutedForeground : colors.primaryForeground }]}>
-            {spinning ? "SPINNING..." : "SPIN"}
-          </Text>
-        </Pressable>
+        {mode === "fridge" ? (
+          <>
+            {/* Fridge ingredient input */}
+            <View style={[styles.fridgeInputRow, { backgroundColor: colors.card, borderColor: colors.border }]}>
+              <TextInput
+                style={[styles.fridgeInput, { color: colors.foreground }]}
+                value={fridgeInput}
+                onChangeText={setFridgeInput}
+                placeholder="Add an ingredient…"
+                placeholderTextColor={colors.mutedForeground}
+                onSubmitEditing={addFridgeTag}
+                returnKeyType="done"
+                autoCapitalize="words"
+              />
+              <Pressable
+                onPress={addFridgeTag}
+                disabled={!fridgeInput.trim()}
+                style={[styles.fridgeAddBtn, { backgroundColor: fridgeInput.trim() ? colors.primary : colors.muted }]}
+              >
+                <Feather name="plus" size={18} color={fridgeInput.trim() ? colors.primaryForeground : colors.mutedForeground} />
+              </Pressable>
+            </View>
 
-        {isLoading && (
-          <View style={styles.center}>
-            <ActivityIndicator color={colors.primary} size="large" />
-            <Text style={[styles.statusText, { color: colors.mutedForeground }]}>Finding recipes…</Text>
-          </View>
-        )}
+            {/* Ingredient tags */}
+            {fridgeTags.length > 0 && (
+              <View style={styles.fridgeTags}>
+                {fridgeTags.map((tag) => (
+                  <Pressable
+                    key={tag}
+                    onPress={() => removeFridgeTag(tag)}
+                    style={[styles.fridgeTag, { backgroundColor: colors.secondary, borderColor: colors.border }]}
+                  >
+                    <Text style={[styles.fridgeTagText, { color: colors.foreground }]}>{tag}</Text>
+                    <Feather name="x" size={12} color={colors.mutedForeground} />
+                  </Pressable>
+                ))}
+              </View>
+            )}
 
-        {isError && (
-          <View style={styles.center}>
-            <Feather name="alert-circle" size={24} color={colors.destructive} />
-            <Text style={[styles.statusText, { color: colors.destructive }]}>{errorMessage || "Couldn't load recipes. Try again."}</Text>
-            <Pressable onPress={spin} style={[styles.retryBtn, { borderColor: colors.primary }]}>
-              <Text style={[styles.retryText, { color: colors.primary }]}>Try Again</Text>
+            {/* Search button */}
+            <Pressable
+              onPress={searchFridge}
+              disabled={fridgeTags.length === 0 || fridgeLoading}
+              style={({ pressed }) => [
+                styles.spinBtn,
+                { backgroundColor: fridgeTags.length === 0 ? colors.muted : fridgeLoading ? colors.secondary : colors.primary },
+                pressed && fridgeTags.length > 0 && !fridgeLoading && { transform: [{ scale: 0.96 }], opacity: 0.9 },
+              ]}
+            >
+              {fridgeLoading
+                ? <ActivityIndicator color={colors.primaryForeground} />
+                : <Text style={[styles.spinBtnText, { color: fridgeTags.length === 0 ? colors.mutedForeground : colors.primaryForeground }]}>
+                    {fridgeTags.length === 0 ? "ADD INGREDIENTS FIRST" : "FIND RECIPES"}
+                  </Text>
+              }
             </Pressable>
-          </View>
-        )}
 
-        {!isLoading && !isError && recipes.length > 0 && (
-          <View style={styles.results}>
-            <Text style={[styles.resultsTitle, { color: colors.foreground }]}>Suggested Recipes</Text>
-            <Text style={[styles.resultsSub, { color: colors.mutedForeground }]}>
-              Using {wheels.proteins[selProtein]}, {wheels.carbs[selCarb]} and {wheels.veggies[selVeggie]}
-            </Text>
-            {recipes.map((r) => (
-              <RecipeCard key={r.id} recipe={r} onPress={() => setSelectedRecipe(r)} />
-            ))}
-          </View>
-        )}
+            {/* Fridge results */}
+            {fridgeError ? (
+              <View style={styles.center}>
+                <Feather name="alert-circle" size={24} color={colors.destructive} />
+                <Text style={[styles.statusText, { color: colors.destructive }]}>{fridgeError}</Text>
+                <Pressable onPress={searchFridge} style={[styles.retryBtn, { borderColor: colors.primary }]}>
+                  <Text style={[styles.retryText, { color: colors.primary }]}>Try Again</Text>
+                </Pressable>
+              </View>
+            ) : !fridgeLoading && fridgeResults.length > 0 ? (
+              <View style={styles.results}>
+                <Text style={[styles.resultsTitle, { color: colors.foreground }]}>Recipes using your ingredients</Text>
+                <Text style={[styles.resultsSub, { color: colors.mutedForeground }]}>
+                  Using {fridgeTags.join(", ")}
+                </Text>
+                {fridgeResults.map((r) => (
+                  <RecipeCard key={r.id} recipe={r} onPress={() => setSelectedRecipe(r)} />
+                ))}
+              </View>
+            ) : !fridgeLoading && fridgeTags.length > 0 && fridgeResults.length === 0 && !fridgeError ? (
+              <View style={styles.center}>
+                <Feather name="search" size={24} color={colors.mutedForeground} />
+                <Text style={[styles.statusText, { color: colors.mutedForeground }]}>No recipes found — try different ingredients</Text>
+              </View>
+            ) : null}
+          </>
+        ) : (
+          <>
+            <View style={styles.machine}>
+              <SlotColumn label="PROTEIN" items={wheels.proteins} animValue={proteinY} />
+              <SlotColumn label="CARBS" items={wheels.carbs} animValue={carbY} />
+              <SlotColumn label="VEGGIE" items={wheels.veggies} animValue={veggieY} />
+            </View>
 
-        {!isLoading && !isError && recipes.length === 0 && currentIngredients && (
-          <View style={styles.center}>
-            <Feather name="search" size={24} color={colors.mutedForeground} />
-            <Text style={[styles.statusText, { color: colors.mutedForeground }]}>No recipes found for this combination</Text>
-          </View>
+            <Pressable
+              onPress={spin}
+              disabled={spinning}
+              style={({ pressed }) => [styles.spinBtn, { backgroundColor: spinning ? colors.secondary : colors.primary }, pressed && !spinning && { transform: [{ scale: 0.96 }], opacity: 0.9 }]}
+            >
+              <Text style={[styles.spinBtnText, { color: spinning ? colors.mutedForeground : colors.primaryForeground }]}>
+                {spinning ? "SPINNING..." : "SPIN"}
+              </Text>
+            </Pressable>
+
+            {isLoading && (
+              <View style={styles.center}>
+                <ActivityIndicator color={colors.primary} size="large" />
+                <Text style={[styles.statusText, { color: colors.mutedForeground }]}>Finding recipes…</Text>
+              </View>
+            )}
+
+            {isError && (
+              <View style={styles.center}>
+                <Feather name="alert-circle" size={24} color={colors.destructive} />
+                <Text style={[styles.statusText, { color: colors.destructive }]}>{errorMessage || "Couldn't load recipes. Try again."}</Text>
+                <Pressable onPress={spin} style={[styles.retryBtn, { borderColor: colors.primary }]}>
+                  <Text style={[styles.retryText, { color: colors.primary }]}>Try Again</Text>
+                </Pressable>
+              </View>
+            )}
+
+            {!isLoading && !isError && recipes.length > 0 && (
+              <View style={styles.results}>
+                <Text style={[styles.resultsTitle, { color: colors.foreground }]}>Suggested Recipes</Text>
+                <Text style={[styles.resultsSub, { color: colors.mutedForeground }]}>
+                  Using {wheels.proteins[selProtein]}, {wheels.carbs[selCarb]} and {wheels.veggies[selVeggie]}
+                </Text>
+                {recipes.map((r) => (
+                  <RecipeCard key={r.id} recipe={r} onPress={() => setSelectedRecipe(r)} />
+                ))}
+              </View>
+            )}
+
+            {!isLoading && !isError && recipes.length === 0 && currentIngredients && (
+              <View style={styles.center}>
+                <Feather name="search" size={24} color={colors.mutedForeground} />
+                <Text style={[styles.statusText, { color: colors.mutedForeground }]}>No recipes found for this combination</Text>
+              </View>
+            )}
+          </>
         )}
       </ScrollView>
 
@@ -743,6 +885,15 @@ const styles = StyleSheet.create({
   statusText: { fontSize: 14, fontFamily: "Inter_400Regular", textAlign: "center" },
   retryBtn: { borderWidth: 1.5, borderRadius: 10, paddingHorizontal: 20, paddingVertical: 10, marginTop: 4 },
   retryText: { fontSize: 13, fontFamily: "Inter_600SemiBold" },
+  modeToggle: { flexDirection: "row", borderRadius: 10, borderWidth: 1, padding: 4, gap: 4, marginBottom: 20 },
+  modeToggleBtn: { flex: 1, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6, paddingVertical: 8 },
+  modeToggleText: { fontSize: 13, fontFamily: "Inter_600SemiBold" },
+  fridgeInputRow: { flexDirection: "row", alignItems: "center", gap: 10, borderRadius: 12, borderWidth: 1, paddingHorizontal: 14, paddingVertical: 6, marginBottom: 12 },
+  fridgeInput: { flex: 1, fontSize: 14, fontFamily: "Inter_400Regular", paddingVertical: 10 },
+  fridgeAddBtn: { width: 32, height: 32, borderRadius: 16, alignItems: "center", justifyContent: "center" },
+  fridgeTags: { flexDirection: "row", flexWrap: "wrap", gap: 8, marginBottom: 16 },
+  fridgeTag: { flexDirection: "row", alignItems: "center", gap: 6, borderRadius: 20, borderWidth: 1, paddingHorizontal: 12, paddingVertical: 6 },
+  fridgeTagText: { fontSize: 13, fontFamily: "Inter_500Medium" },
   results: { gap: 10 },
   resultsTitle: { fontSize: 19, fontFamily: "Inter_600SemiBold", marginBottom: 2 },
   resultsSub: { fontSize: 12, fontFamily: "Inter_400Regular", marginBottom: 6 },
