@@ -29,6 +29,11 @@ import { CookMode } from "@/components/CookMode";
 const STORAGE_KEY = "@recipe_roulette_personal";
 const API_BASE = "https://test-app-api-server.vercel.app";
 
+// Module-level session state — survives tab switches without Supabase.
+// When Phase 1 lands, useRecipeSync will replace direct AsyncStorage calls
+// and sessionTonightsPick can move into a shared session context.
+let sessionTonightsPick: PersonalRecipe | null = null;
+
 // ─── Roulette wheel constants ────────────────────────────────────────────────
 // The actual recipe card list IS the spinner. The full list is rendered
 // inside an Animated.View inside a fixed-height viewport. Spinning
@@ -36,7 +41,7 @@ const API_BASE = "https://test-app-api-server.vercel.app";
 // Cards remain tappable throughout — same card, same interaction.
 const CARD_HEIGHT = 84;        // card height + margin, used for offset math
 const WHEEL_VISIBLE = 4;       // number of cards visible in the viewport
-const SPIN_COPIES = 8;         // how many times the list repeats inside the wheel
+const SPIN_COPIES = 3;         // how many times the list repeats inside the wheel
 const SPIN_START_COPY = 1;     // which copy we start centered on
 const SPIN_ROUNDS = 4;         // full loops before landing
 const SPIN_DURATION = 2400;    // ms
@@ -424,12 +429,14 @@ function RecipeDetailModal({ recipe, onClose, onDelete, onEdit }: { recipe: Pers
   const [addedToGrocery, setAddedToGrocery] = useState(false);
   const [servings, setServings] = useState(1);
   const [showCookMode, setShowCookMode] = useState(false);
+  const [showStepsPreview, setShowStepsPreview] = useState(false);
   const baseServings = 1;
 
   React.useEffect(() => {
     setAddedToGrocery(false);
     setServings(1);
     setShowCookMode(false);
+    setShowStepsPreview(false);
   }, [recipe?.id]);
 
   if (!recipe) return null;
@@ -524,10 +531,38 @@ function RecipeDetailModal({ recipe, onClose, onDelete, onEdit }: { recipe: Pers
           <View style={[styles.sectionCard, { backgroundColor: colors.card, borderColor: colors.border }]}>
             <Text style={[styles.bodyText, { color: colors.foreground }]}>{scaledIngredients}</Text>
           </View>
-          <Text style={[styles.sectionLabel, { color: colors.mutedForeground }]}>STEPS</Text>
-          <View style={[styles.sectionCard, { backgroundColor: colors.card, borderColor: colors.border }]}>
-            <Text style={[styles.bodyText, { color: colors.foreground }]}>{recipe.steps}</Text>
+          <View style={styles.stepsHeader}>
+            <Text style={[styles.sectionLabel, { color: colors.mutedForeground }]}>STEPS</Text>
+            <Pressable onPress={() => setShowStepsPreview((p) => !p)}>
+              <Text style={[styles.stepsPreviewToggle, { color: colors.primary }]}>
+                {showStepsPreview ? "hide preview" : "preview cook mode"}
+              </Text>
+            </Pressable>
           </View>
+          {showStepsPreview ? (
+            <View style={[styles.stepsPreviewCard, { backgroundColor: colors.secondary, borderColor: colors.border }]}>
+              <Text style={[styles.stepsPreviewLabel, { color: colors.mutedForeground }]}>
+                {parseSteps(recipe.steps).length} step{parseSteps(recipe.steps).length !== 1 ? "s" : ""} detected
+              </Text>
+              {parseSteps(recipe.steps).map((step, i) => (
+                <View key={i} style={styles.stepsPreviewRow}>
+                  <View style={[styles.stepsPreviewNum, { backgroundColor: colors.primary }]}>
+                    <Text style={[styles.stepsPreviewNumText, { color: colors.primaryForeground }]}>{i + 1}</Text>
+                  </View>
+                  <Text style={[styles.stepsPreviewStep, { color: colors.foreground }]}>{step}</Text>
+                </View>
+              ))}
+              {parseSteps(recipe.steps).length <= 1 && (
+                <Text style={[styles.stepsPreviewHint, { color: colors.mutedForeground }]}>
+                  Tip: number your steps (1. 2. 3.) for a better cook mode experience
+                </Text>
+              )}
+            </View>
+          ) : (
+            <View style={[styles.sectionCard, { backgroundColor: colors.card, borderColor: colors.border }]}>
+              <Text style={[styles.bodyText, { color: colors.foreground }]}>{recipe.steps}</Text>
+            </View>
+          )}
         </ScrollView>
       </SafeAreaView>
       <CookMode
@@ -632,7 +667,7 @@ export default function RouletteScreen() {
   const [showImport, setShowImport] = useState(false);
   const [spinning, setSpinning] = useState(false);
   const [selIdx, setSelIdx] = useState(0);
-  const [tonightsPick, setTonightsPick] = useState<PersonalRecipe | null>(null);
+  const [tonightsPick, setTonightsPick] = useState<PersonalRecipe | null>(sessionTonightsPick);
   const [selectedRecipe, setSelectedRecipe] = useState<PersonalRecipe | null>(null);
   const [editingRecipe, setEditingRecipe] = useState<PersonalRecipe | null>(null);
   const [showSavedToast, setShowSavedToast] = useState(false);
@@ -674,13 +709,16 @@ export default function RouletteScreen() {
       setTimeout(() => setShowSavedToast(false), 1000);
     }
     if (selectedRecipe?.id === recipe.id) setSelectedRecipe(recipe);
-    if (tonightsPick?.id === recipe.id) setTonightsPick(recipe);
+    if (tonightsPick?.id === recipe.id) {
+      setTonightsPick(recipe);
+      sessionTonightsPick = recipe;
+    }
     setEditingRecipe(null);
   };
 
   const deleteRecipe = async (id: string) => {
     await persist(recipes.filter((r) => r.id !== id));
-    if (tonightsPick?.id === id) setTonightsPick(null);
+    if (tonightsPick?.id === id) { setTonightsPick(null); sessionTonightsPick = null; }
     setSelIdx(0);
     slotY.setValue(wheelInitialY(Math.max(recipes.length - 1, 1)));
   };
@@ -689,6 +727,7 @@ export default function RouletteScreen() {
     if (recipes.length === 0 || spinning) return;
     setSpinning(true);
     setTonightsPick(null);
+    sessionTonightsPick = null;
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
 
     const count = recipes.length;
@@ -704,6 +743,7 @@ export default function RouletteScreen() {
       setSelIdx(newIdx);
       setSpinning(false);
       setTonightsPick(recipes[newIdx]);
+      sessionTonightsPick = recipes[newIdx];
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       setSelectedRecipe(recipes[newIdx]);
     });
@@ -755,28 +795,35 @@ export default function RouletteScreen() {
         )}
 
         {/* Recipe wheel — the actual full card list IS the spinner */}
-        {recipes.length > 0 && (
+        {recipes.length >= 2 ? (
           <RecipeWheelViewport
             recipes={recipes}
             animValue={slotY}
             onCardPress={(r) => setSelectedRecipe(r)}
             landedIdx={selIdx}
           />
-        )}
+        ) : recipes.length === 1 ? (
+          <View style={[styles.singleRecipeHint, { backgroundColor: colors.card, borderColor: colors.border }]}>
+            <Feather name="info" size={16} color={colors.mutedForeground} />
+            <Text style={[styles.singleRecipeHintText, { color: colors.mutedForeground }]}>
+              Add at least 2 recipes to spin
+            </Text>
+          </View>
+        ) : null}
 
         {/* Spin Button */}
         <Pressable
           onPress={spinRecipe}
-          disabled={recipes.length === 0 || spinning}
+          disabled={recipes.length < 2 || spinning}
           style={({ pressed }) => [
             styles.spinBtn,
-            { backgroundColor: recipes.length === 0 ? colors.muted : spinning ? colors.secondary : colors.primary },
-            pressed && recipes.length > 0 && !spinning && { transform: [{ scale: 0.96 }], opacity: 0.9 },
+            { backgroundColor: recipes.length < 2 ? colors.muted : spinning ? colors.secondary : colors.primary },
+            pressed && recipes.length >= 2 && !spinning && { transform: [{ scale: 0.96 }], opacity: 0.9 },
           ]}
         >
           {spinning
             ? <ActivityIndicator color={colors.primaryForeground} />
-            : <Text style={[styles.spinBtnText, { color: recipes.length === 0 ? colors.mutedForeground : colors.primaryForeground }]}>
+            : <Text style={[styles.spinBtnText, { color: recipes.length < 2 ? colors.mutedForeground : colors.primaryForeground }]}>
                 {recipes.length === 0 ? "ADD RECIPES TO SPIN" : "SPIN MY DINNERS"}
               </Text>
           }
@@ -925,4 +972,15 @@ const styles = StyleSheet.create({
   sectionLabel:       { fontSize: 10, fontFamily: "Inter_600SemiBold", letterSpacing: 2, marginBottom: 8, marginTop: 4 },
   sectionCard:        { borderRadius: 12, borderWidth: 1, padding: 14, marginBottom: 16 },
   bodyText:           { fontSize: 14, fontFamily: "Inter_400Regular", lineHeight: 22 },
+  singleRecipeHint:   { flexDirection: "row", alignItems: "center", gap: 10, borderRadius: 12, borderWidth: 1, paddingHorizontal: 16, paddingVertical: 14, marginBottom: 14 },
+  singleRecipeHintText: { fontSize: 13, fontFamily: "Inter_400Regular" },
+  stepsHeader:        { flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: 8, marginTop: 4 },
+  stepsPreviewToggle: { fontSize: 11, fontFamily: "Inter_600SemiBold" },
+  stepsPreviewCard:   { borderRadius: 12, borderWidth: 1, padding: 14, marginBottom: 16, gap: 12 },
+  stepsPreviewLabel:  { fontSize: 10, fontFamily: "Inter_600SemiBold", letterSpacing: 2, marginBottom: 4 },
+  stepsPreviewRow:    { flexDirection: "row", alignItems: "flex-start", gap: 10 },
+  stepsPreviewNum:    { width: 22, height: 22, borderRadius: 11, alignItems: "center", justifyContent: "center", flexShrink: 0, marginTop: 1 },
+  stepsPreviewNumText:{ fontSize: 11, fontFamily: "Inter_700Bold" },
+  stepsPreviewStep:   { flex: 1, fontSize: 13, fontFamily: "Inter_400Regular", lineHeight: 19 },
+  stepsPreviewHint:   { fontSize: 12, fontFamily: "Inter_400Regular", fontStyle: "italic", marginTop: 4 },
 });
