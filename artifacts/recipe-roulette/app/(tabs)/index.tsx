@@ -31,6 +31,19 @@ const DEFAULT_VEGGIES = ["Broccoli", "Spinach", "Carrots", "Peppers"];
 const STORAGE_KEY = "@recipe_roulette_personal";
 const WHEELS_KEY = "@recipe_roulette_wheels";
 
+const FRIDGE_SUGGESTIONS = [
+  "Chicken", "Beef", "Salmon", "Pork", "Eggs", "Tofu",
+  "Rice", "Pasta", "Potato", "Garlic", "Onion",
+  "Broccoli", "Spinach", "Tomato", "Peppers", "Mushrooms",
+];
+
+// Module-level session state — survives tab switches without Supabase.
+// When Phase 1 wires in, these move into a shared session context.
+let sessionMode: "spin" | "fridge" = "spin";
+let sessionFridgeTags: string[] = [];
+let sessionFridgeResults: Recipe[] = [];
+let sessionFridgeError: string = "";
+
 const ITEM_HEIGHT = 80;
 const VISIBLE = 3;
 const COPY_COUNT = 10;
@@ -592,13 +605,23 @@ export default function SpinScreen() {
   const [selectedRecipe, setSelectedRecipe] = useState<Recipe | null>(null);
   const [currentIngredients, setCurrentIngredients] = useState("");
 
-  // Fridge mode
-  const [mode, setMode] = useState<"spin" | "fridge">("spin");
+  // Fridge mode — initialized from module-level session vars so tab
+  // switches don't reset them. setters update both component and module state.
+  const [mode, _setMode] = useState<"spin" | "fridge">(sessionMode);
+  const setMode = (m: "spin" | "fridge") => { sessionMode = m; _setMode(m); };
+
   const [fridgeInput, setFridgeInput] = useState("");
-  const [fridgeTags, setFridgeTags] = useState<string[]>([]);
-  const [fridgeResults, setFridgeResults] = useState<Recipe[]>([]);
+  const [fridgeTags, _setFridgeTags] = useState<string[]>(sessionFridgeTags);
+  const setFridgeTags = (fn: string[] | ((prev: string[]) => string[])) => {
+    const next = typeof fn === "function" ? fn(sessionFridgeTags) : fn;
+    sessionFridgeTags = next;
+    _setFridgeTags(next);
+  };
+  const [fridgeResults, _setFridgeResults] = useState<Recipe[]>(sessionFridgeResults);
+  const setFridgeResults = (r: Recipe[]) => { sessionFridgeResults = r; _setFridgeResults(r); };
   const [fridgeLoading, setFridgeLoading] = useState(false);
-  const [fridgeError, setFridgeError] = useState("");
+  const [fridgeError, _setFridgeError] = useState(sessionFridgeError);
+  const setFridgeError = (e: string) => { sessionFridgeError = e; _setFridgeError(e); };
 
   const spin = () => {
     if (spinning) return;
@@ -700,14 +723,14 @@ export default function SpinScreen() {
         {/* Mode toggle */}
         <View style={[styles.modeToggle, { backgroundColor: colors.secondary, borderColor: colors.border }]}>
           <Pressable
-            onPress={() => { setMode("spin"); setFridgeResults([]); setFridgeError(""); }}
+            onPress={() => { setMode("spin"); }}
             style={[styles.modeToggleBtn, mode === "spin" && { backgroundColor: colors.primary, borderRadius: 8 }]}
           >
             <Feather name="shuffle" size={14} color={mode === "spin" ? colors.primaryForeground : colors.mutedForeground} />
             <Text style={[styles.modeToggleText, { color: mode === "spin" ? colors.primaryForeground : colors.mutedForeground }]}>Spin</Text>
           </Pressable>
           <Pressable
-            onPress={() => { setMode("fridge"); setRecipes([]); setCurrentIngredients(""); setIsError(false); }}
+            onPress={() => { setMode("fridge"); }}
             style={[styles.modeToggleBtn, mode === "fridge" && { backgroundColor: colors.primary, borderRadius: 8 }]}
           >
             <Feather name="package" size={14} color={mode === "fridge" ? colors.primaryForeground : colors.mutedForeground} />
@@ -737,6 +760,28 @@ export default function SpinScreen() {
                 <Feather name="plus" size={18} color={fridgeInput.trim() ? colors.primaryForeground : colors.mutedForeground} />
               </Pressable>
             </View>
+
+
+            {/* Common ingredient suggestion chips */}
+            <ScrollView
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              contentContainerStyle={styles.chipsRow}
+              style={styles.chipsScroll}
+            >
+              {FRIDGE_SUGGESTIONS.filter((s) => !fridgeTags.map((t) => t.toLowerCase()).includes(s.toLowerCase())).map((suggestion) => (
+                <Pressable
+                  key={suggestion}
+                  onPress={() => {
+                    setFridgeTags((t) => [...t, suggestion]);
+                    Haptics.selectionAsync();
+                  }}
+                  style={[styles.chip, { backgroundColor: colors.secondary, borderColor: colors.border }]}
+                >
+                  <Text style={[styles.chipText, { color: colors.mutedForeground }]}>{suggestion}</Text>
+                </Pressable>
+              ))}
+            </ScrollView>
 
             {/* Ingredient tags */}
             {fridgeTags.length > 0 && (
@@ -894,6 +939,10 @@ const styles = StyleSheet.create({
   fridgeTags: { flexDirection: "row", flexWrap: "wrap", gap: 8, marginBottom: 16 },
   fridgeTag: { flexDirection: "row", alignItems: "center", gap: 6, borderRadius: 20, borderWidth: 1, paddingHorizontal: 12, paddingVertical: 6 },
   fridgeTagText: { fontSize: 13, fontFamily: "Inter_500Medium" },
+  chipsScroll: { marginBottom: 12 },
+  chipsRow: { flexDirection: "row", gap: 8, paddingVertical: 2 },
+  chip: { borderRadius: 20, borderWidth: 1, paddingHorizontal: 12, paddingVertical: 6 },
+  chipText: { fontSize: 12, fontFamily: "Inter_500Medium" },
   results: { gap: 10 },
   resultsTitle: { fontSize: 19, fontFamily: "Inter_600SemiBold", marginBottom: 2 },
   resultsSub: { fontSize: 12, fontFamily: "Inter_400Regular", marginBottom: 6 },
