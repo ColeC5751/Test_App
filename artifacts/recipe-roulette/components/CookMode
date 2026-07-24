@@ -3,7 +3,6 @@ import {
   Animated,
   Dimensions,
   Modal,
-  Platform,
   Pressable,
   SafeAreaView,
   ScrollView,
@@ -13,7 +12,6 @@ import {
 } from "react-native";
 import { Feather } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
-import * as KeepAwake from "expo-keep-awake";
 
 import { useColors } from "@/hooks/useColors";
 
@@ -71,15 +69,10 @@ export function CookMode({ visible, recipeName, steps, onClose }: CookModeProps)
   const slideAnim = useRef(new Animated.Value(0)).current;
   const fadeAnim = useRef(new Animated.Value(1)).current;
 
-  // Keep screen awake while cooking
-  useEffect(() => {
-    if (visible && Platform.OS !== "web") {
-      KeepAwake.activateKeepAwakeAsync("cook-mode");
-      return () => {
-        KeepAwake.deactivateKeepAwake("cook-mode");
-      };
-    }
-  }, [visible]);
+  // Note: screen keep-awake requires expo-keep-awake (~14.0.3) to be added
+  // to package.json and pnpm-lock.yaml. Omitted here to avoid lockfile changes.
+  // To enable: import * as KeepAwake from "expo-keep-awake" and call
+  // KeepAwake.activateKeepAwakeAsync("cook-mode") when visible.
 
   // Reset to first step whenever the modal opens
   useEffect(() => {
