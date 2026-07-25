@@ -24,6 +24,10 @@ function NativeTabLayout() {
         <Icon sf={{ default: "cart", selected: "cart.fill" }} />
         <Label>Grocery List</Label>
       </NativeTabs.Trigger>
+      <NativeTabs.Trigger name="plan">
+        <Icon sf={{ default: "calendar", selected: "calendar" }} />
+        <Label>Plan</Label>
+      </NativeTabs.Trigger>
     </NativeTabs>
   );
 }
@@ -99,6 +103,18 @@ function ClassicTabLayout() {
               <SymbolView name="cart" tintColor={color} size={24} />
             ) : (
               <Feather name="shopping-cart" size={22} color={color} />
+            ),
+        }}
+      />
+      <Tabs.Screen
+        name="plan"
+        options={{
+          title: "Plan",
+          tabBarIcon: ({ color }) =>
+            isIOS ? (
+              <SymbolView name="calendar" tintColor={color} size={24} />
+            ) : (
+              <Feather name="calendar" size={22} color={color} />
             ),
         }}
       />
