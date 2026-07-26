@@ -29,6 +29,9 @@ const queryClient = new QueryClient();
 //   • No session + not on auth screen → redirect to /auth
 //   • Session exists + on auth screen → redirect to /(tabs)
 // "Continue without account" sets a local flag to skip the gate.
+// This is the ONLY place that should decide navigation based on session
+// state — it's path-aware (checks segments) so it never clobbers a user
+// who landed on a shared link.
 
 const SKIP_AUTH_KEY = "@recipe_roulette_skip_auth";
 
@@ -72,13 +75,18 @@ function RootLayoutNav() {
     });
   }, []);
 
-  // Listen for auth state changes (magic link callback fires here)
+  // Listen for auth state changes (magic link callback fires here).
+  // NOTE: this only updates local session state — it must NOT navigate.
+  // onAuthStateChange fires on initial load too (e.g. INITIAL_SESSION)
+  // whenever a session already exists, not just on fresh sign-in. If this
+  // listener redirected on every truthy session, it would yank a
+  // signed-in user off of any route they landed on directly — including
+  // shared plan/grocery links — before that screen ever got to render.
+  // useAuthGate above is the single source of truth for navigation
+  // because it's path-aware (it checks segments before redirecting).
   useEffect(() => {
     const { data: listener } = supabase.auth.onAuthStateChange((_event, newSession) => {
       setSession(newSession);
-      if (newSession) {
-        router.replace("/(tabs)");
-      }
     });
     return () => listener.subscription.unsubscribe();
   }, []);
