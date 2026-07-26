@@ -1,4 +1,3 @@
-cat > /mnt/user-data/outputs/sync.ts << 'ENDOFFILE'
 import { useCallback, useEffect, useRef, useState } from "react";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { supabase } from "./supabase";
