@@ -142,6 +142,85 @@ export function useGrocerySync() {
   return { items, status, shareToken, save, load, loadShared };
 }
 
+// ─── Shared (read-only viewer) Grocery Sync ──────────────────────────────────
+// For the /(shared)/grocery/[token] screen only. Does NOT run the "load my
+// own list" logic or create a new row — it only fetches by share token and
+// subscribes to realtime updates for that specific row. This avoids racing
+// against a signed-in visitor's own grocery_lists row.
+
+export function useSharedGrocerySync(token: string | undefined) {
+  const [items, setItems] = useState<GroceryItem[]>([]);
+  const [status, setStatus] = useState<SyncStatus>("syncing");
+  const [permission, setPermission] = useState<SharePermission>("view");
+  const [notFound, setNotFound] = useState(false);
+  const rowIdRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (!token) return;
+    let cancelled = false;
+
+    (async () => {
+      setStatus("syncing");
+      try {
+        const { data, error } = await supabase
+          .from("grocery_lists")
+          .select("id, items, permission")
+          .eq("share_token", token)
+          .single();
+
+        if (cancelled) return;
+
+        if (error || !data) {
+          setNotFound(true);
+          setStatus("error");
+          return;
+        }
+
+        rowIdRef.current = data.id;
+        setItems(data.items ?? []);
+        setPermission((data.permission ?? "view") as SharePermission);
+        setStatus("synced");
+      } catch {
+        if (!cancelled) {
+          setNotFound(true);
+          setStatus("error");
+        }
+      }
+    })();
+
+    return () => { cancelled = true; };
+  }, [token]);
+
+  useEffect(() => {
+    if (!rowIdRef.current) return;
+    const id = rowIdRef.current;
+    const channel = supabase
+      .channel(`shared_grocery_${id}`)
+      .on("postgres_changes",
+        { event: "UPDATE", schema: "public", table: "grocery_lists", filter: `id=eq.${id}` },
+        (payload) => {
+          const remoteItems: GroceryItem[] = (payload.new as any).items ?? [];
+          setItems(remoteItems);
+        }
+      )
+      .subscribe();
+    return () => { supabase.removeChannel(channel); };
+  }, [rowIdRef.current]);
+
+  const save = useCallback(async (updated: GroceryItem[]) => {
+    setItems(updated);
+    if (!rowIdRef.current || permission !== "edit") return;
+    try {
+      await supabase
+        .from("grocery_lists")
+        .update({ items: updated, updated_at: new Date().toISOString() })
+        .eq("id", rowIdRef.current);
+    } catch {}
+  }, [permission]);
+
+  return { items, status, permission, notFound, save };
+}
+
 // ─── Recipe Sync ──────────────────────────────────────────────────────────────
 
 const RECIPE_LOCAL_KEY = "@recipe_roulette_personal";
@@ -370,4 +449,88 @@ export function usePlanSync() {
   useEffect(() => { load(); }, [load]);
 
   return { plan, status, shareToken, permission, save, load, loadShared, setSharePermission };
+}
+
+// ─── Shared (read-only viewer) Meal Plan Sync ────────────────────────────────
+// For the /(shared)/plan/[token] screen only. This is intentionally separate
+// from usePlanSync — that hook's own useEffect(() => { load(); }, [load])
+// runs unconditionally for the *signed-in visitor's own* plan, and if they
+// don't have one yet it INSERTS a new meal_plans row owned by them. That
+// raced against loadShared() on the shared screen: both ran on mount, both
+// wrote to rowIdRef, and whichever finished last "won" — leaving `plan`
+// state and rowIdRef pointing at two different rows, or a subscription set
+// up against the wrong id. This hook only ever fetches by share_token and
+// subscribes to that one row — it never touches the visitor's own plan.
+
+export function useSharedPlanSync(token: string | undefined) {
+  const [plan, setPlan] = useState<MealPlan>({});
+  const [status, setStatus] = useState<SyncStatus>("syncing");
+  const [permission, setPermission] = useState<SharePermission>("view");
+  const [notFound, setNotFound] = useState(false);
+  const rowIdRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (!token) return;
+    let cancelled = false;
+
+    (async () => {
+      setStatus("syncing");
+      try {
+        const { data, error } = await supabase
+          .from("meal_plans")
+          .select("id, slots, permission")
+          .eq("share_token", token)
+          .single();
+
+        if (cancelled) return;
+
+        if (error || !data) {
+          setNotFound(true);
+          setStatus("error");
+          return;
+        }
+
+        rowIdRef.current = data.id;
+        setPlan(data.slots ?? {});
+        setPermission((data.permission ?? "view") as SharePermission);
+        setStatus("synced");
+      } catch {
+        if (!cancelled) {
+          setNotFound(true);
+          setStatus("error");
+        }
+      }
+    })();
+
+    return () => { cancelled = true; };
+  }, [token]);
+
+  useEffect(() => {
+    if (!rowIdRef.current) return;
+    const id = rowIdRef.current;
+    const channel = supabase
+      .channel(`shared_plan_${id}`)
+      .on("postgres_changes",
+        { event: "UPDATE", schema: "public", table: "meal_plans", filter: `id=eq.${id}` },
+        (payload) => {
+          const remoteSlots: MealPlan = (payload.new as any).slots ?? {};
+          setPlan(remoteSlots);
+        }
+      )
+      .subscribe();
+    return () => { supabase.removeChannel(channel); };
+  }, [rowIdRef.current]);
+
+  const save = useCallback(async (updated: MealPlan) => {
+    setPlan(updated);
+    if (!rowIdRef.current || permission !== "edit") return;
+    try {
+      await supabase
+        .from("meal_plans")
+        .update({ slots: updated, updated_at: new Date().toISOString() })
+        .eq("id", rowIdRef.current);
+    } catch {}
+  }, [permission]);
+
+  return { plan, status, permission, notFound, save };
 }
