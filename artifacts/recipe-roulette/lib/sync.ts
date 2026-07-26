@@ -1,7 +1,7 @@
+cat > /mnt/user-data/outputs/sync.ts << 'ENDOFFILE'
 import { useCallback, useEffect, useRef, useState } from "react";
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import { AppState, AppStateStatus } from "react-native";
-import { supabase, getDeviceId } from "./supabase";
+import { supabase } from "./supabase";
 import type {
   GroceryItem,
   MealPlan,
@@ -9,6 +9,13 @@ import type {
   SharePermission,
   SyncStatus,
 } from "./types";
+
+// ─── Auth helper ──────────────────────────────────────────────────────────────
+
+async function getUserId(): Promise<string | null> {
+  const { data } = await supabase.auth.getUser();
+  return data.user?.id ?? null;
+}
 
 // ─── Grocery List Sync ────────────────────────────────────────────────────────
 
@@ -21,18 +28,19 @@ export function useGrocerySync() {
   const [shareToken, setShareToken] = useState<string | null>(null);
   const rowIdRef = useRef<string | null>(null);
 
-  // Load from AsyncStorage immediately, then sync from Supabase in background
   const load = useCallback(async () => {
-    // 1. Load local first — instant, works offline
+    // 1. Load local immediately
     try {
       const local = await AsyncStorage.getItem(GROCERY_LOCAL_KEY);
       if (local) setItems(JSON.parse(local));
     } catch {}
 
-    // 2. Fetch from Supabase in background
+    // 2. Sync from Supabase in background
     setStatus("syncing");
     try {
-      const deviceId = await getDeviceId();
+      const userId = await getUserId();
+      if (!userId) { setStatus("offline"); return; }
+
       const storedRowId = await AsyncStorage.getItem(GROCERY_ROW_KEY);
       rowIdRef.current = storedRowId;
 
@@ -58,7 +66,7 @@ export function useGrocerySync() {
       const localItems: GroceryItem[] = local ? JSON.parse(local) : [];
       const { data: newRow, error: insertError } = await supabase
         .from("grocery_lists")
-        .insert({ owner_device_id: deviceId, items: localItems })
+        .insert({ owner_id: userId, items: localItems })
         .select("id, share_token")
         .single();
 
@@ -73,11 +81,9 @@ export function useGrocerySync() {
     }
   }, []);
 
-  // Save locally first (instant), then push to Supabase in background
   const save = useCallback(async (updated: GroceryItem[]) => {
     setItems(updated);
     await AsyncStorage.setItem(GROCERY_LOCAL_KEY, JSON.stringify(updated));
-
     if (!rowIdRef.current) return;
     setStatus("syncing");
     try {
@@ -91,7 +97,7 @@ export function useGrocerySync() {
     }
   }, []);
 
-  // Real-time subscription — updates items when another device changes the list
+  // Real-time subscription
   useEffect(() => {
     load();
   }, [load]);
@@ -100,8 +106,7 @@ export function useGrocerySync() {
     if (!rowIdRef.current) return;
     const channel = supabase
       .channel(`grocery_${rowIdRef.current}`)
-      .on(
-        "postgres_changes",
+      .on("postgres_changes",
         { event: "UPDATE", schema: "public", table: "grocery_lists", filter: `id=eq.${rowIdRef.current}` },
         (payload) => {
           const remoteItems: GroceryItem[] = (payload.new as any).items ?? [];
@@ -111,17 +116,15 @@ export function useGrocerySync() {
         }
       )
       .subscribe();
-
     return () => { supabase.removeChannel(channel); };
   }, [rowIdRef.current]);
 
-  // Load shared list by token (for family members opening a share link)
   const loadShared = useCallback(async (token: string) => {
     setStatus("syncing");
     try {
       const { data, error } = await supabase
         .from("grocery_lists")
-        .select("id, items, share_token")
+        .select("id, items, share_token, permission")
         .eq("share_token", token)
         .single();
 
@@ -130,7 +133,7 @@ export function useGrocerySync() {
         setItems(data.items ?? []);
         setShareToken(data.share_token);
         setStatus("synced");
-        return { permission: "edit" as SharePermission };
+        return { permission: (data.permission ?? "view") as SharePermission };
       }
     } catch {}
     setStatus("error");
@@ -150,21 +153,21 @@ export function useRecipeSync() {
   const [status, setStatus] = useState<SyncStatus>("synced");
 
   const load = useCallback(async () => {
-    // Local first
     try {
       const local = await AsyncStorage.getItem(RECIPE_LOCAL_KEY);
       if (local) setRecipes(JSON.parse(local));
     } catch {}
 
-    // Background Supabase sync
     setStatus("syncing");
     try {
-      const deviceId = await getDeviceId();
+      const userId = await getUserId();
+      if (!userId) { setStatus("offline"); return; }
+
       const { data, error } = await supabase
         .from("recipes")
         .select("id, data")
-        .eq("device_id", deviceId)
-        .order("data->createdAt", { ascending: false });
+        .eq("user_id", userId)
+        .order("created_at", { ascending: false });
 
       if (!error && data && data.length > 0) {
         const remoteRecipes: PersonalRecipe[] = data.map((r) => r.data as PersonalRecipe);
@@ -178,7 +181,6 @@ export function useRecipeSync() {
   }, []);
 
   const save = useCallback(async (recipe: PersonalRecipe) => {
-    const deviceId = await getDeviceId();
     const existing = recipes.findIndex((r) => r.id === recipe.id);
     const updated = existing !== -1
       ? recipes.map((r) => (r.id === recipe.id ? recipe : r))
@@ -187,9 +189,11 @@ export function useRecipeSync() {
     setRecipes(updated);
     await AsyncStorage.setItem(RECIPE_LOCAL_KEY, JSON.stringify(updated));
 
-    // Push to Supabase in background
     setStatus("syncing");
     try {
+      const userId = await getUserId();
+      if (!userId) { setStatus("offline"); return; }
+
       const rowKey = RECIPE_ROW_PREFIX + recipe.id;
       const storedRowId = await AsyncStorage.getItem(rowKey);
 
@@ -201,7 +205,7 @@ export function useRecipeSync() {
       } else {
         const { data: newRow } = await supabase
           .from("recipes")
-          .insert({ device_id: deviceId, data: recipe })
+          .insert({ user_id: userId, data: recipe })
           .select("id")
           .single();
         if (newRow) await AsyncStorage.setItem(rowKey, newRow.id);
@@ -256,7 +260,9 @@ export function usePlanSync() {
 
     setStatus("syncing");
     try {
-      const deviceId = await getDeviceId();
+      const userId = await getUserId();
+      if (!userId) { setStatus("offline"); return; }
+
       const storedRowId = await AsyncStorage.getItem(PLAN_ROW_KEY);
       rowIdRef.current = storedRowId;
 
@@ -277,12 +283,11 @@ export function usePlanSync() {
         }
       }
 
-      // Create new plan row
       const local = await AsyncStorage.getItem(PLAN_LOCAL_KEY);
       const localPlan: MealPlan = local ? JSON.parse(local) : {};
       const { data: newRow } = await supabase
         .from("meal_plans")
-        .insert({ owner_device_id: deviceId, slots: localPlan, permission: "view" })
+        .insert({ owner_id: userId, slots: localPlan, permission: "view" })
         .select("id, share_token")
         .single();
 
@@ -300,7 +305,6 @@ export function usePlanSync() {
   const save = useCallback(async (updated: MealPlan) => {
     setPlan(updated);
     await AsyncStorage.setItem(PLAN_LOCAL_KEY, JSON.stringify(updated));
-
     if (!rowIdRef.current) return;
     setStatus("syncing");
     try {
@@ -347,13 +351,11 @@ export function usePlanSync() {
     return null;
   }, []);
 
-  // Real-time subscription for shared plan editing
   useEffect(() => {
     if (!rowIdRef.current) return;
     const channel = supabase
       .channel(`plan_${rowIdRef.current}`)
-      .on(
-        "postgres_changes",
+      .on("postgres_changes",
         { event: "UPDATE", schema: "public", table: "meal_plans", filter: `id=eq.${rowIdRef.current}` },
         (payload) => {
           const remoteSlots: MealPlan = (payload.new as any).slots ?? {};
@@ -363,7 +365,6 @@ export function usePlanSync() {
         }
       )
       .subscribe();
-
     return () => { supabase.removeChannel(channel); };
   }, [rowIdRef.current]);
 
