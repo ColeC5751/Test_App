@@ -1,85 +1,130 @@
-import {
-  Inter_400Regular,
-  Inter_500Medium,
-  Inter_600SemiBold,
-  Inter_700Bold,
-  useFonts,
-} from "@expo-google-fonts/inter";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { Stack, useRouter } from "expo-router";
-import * as SplashScreen from "expo-splash-screen";
-import React, { useEffect } from "react";
-import { Linking } from "react-native";
-import { GestureHandlerRootView } from "react-native-gesture-handler";
-import { KeyboardProvider } from "react-native-keyboard-controller";
-import { SafeAreaProvider } from "react-native-safe-area-context";
+import { BlurView } from "expo-blur";
+import { isLiquidGlassAvailable } from "expo-glass-effect";
+import { Tabs } from "expo-router";
+import { Icon, Label, NativeTabs } from "expo-router/unstable-native-tabs";
+import { SymbolView } from "expo-symbols";
+import { Feather } from "@expo/vector-icons";
+import React from "react";
+import { Platform, StyleSheet, View, useColorScheme } from "react-native";
 
-import { ErrorBoundary } from "@/components/ErrorBoundary";
+import { useColors } from "@/hooks/useColors";
 
-SplashScreen.preventAutoHideAsync();
-
-const queryClient = new QueryClient();
-
-function RootLayoutNav() {
-  const router = useRouter();
-
-  useEffect(() => {
-    // Handle deep links when app is already open
-    const subscription = Linking.addEventListener("url", ({ url }) => {
-      const match = url.match(/\/(grocery|plan)\/([a-zA-Z0-9-]+)/);
-      if (match) {
-        router.push(`/${match[1]}/${match[2]}` as any);
-      }
-    });
-
-    // Handle deep link that launched the app cold
-    Linking.getInitialURL().then((url) => {
-      if (!url) return;
-      const match = url.match(/\/(grocery|plan)\/([a-zA-Z0-9-]+)/);
-      if (match) {
-        router.push(`/${match[1]}/${match[2]}` as any);
-      }
-    });
-
-    return () => subscription.remove();
-  }, []);
-
+function NativeTabLayout() {
   return (
-    <Stack screenOptions={{ headerBackTitle: "Back" }}>
-      <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
-      <Stack.Screen name="grocery/[token]" options={{ headerShown: false }} />
-      <Stack.Screen name="plan/[token]" options={{ headerShown: false }} />
-    </Stack>
+    <NativeTabs>
+      <NativeTabs.Trigger name="index">
+        <Icon sf={{ default: "shuffle", selected: "shuffle" }} />
+        <Label>Spin</Label>
+      </NativeTabs.Trigger>
+      <NativeTabs.Trigger name="roulette">
+        <Icon sf={{ default: "fork.knife", selected: "fork.knife" }} />
+        <Label>My Dinners</Label>
+      </NativeTabs.Trigger>
+      <NativeTabs.Trigger name="grocery">
+        <Icon sf={{ default: "cart", selected: "cart.fill" }} />
+        <Label>Grocery List</Label>
+      </NativeTabs.Trigger>
+      <NativeTabs.Trigger name="plan">
+        <Icon sf={{ default: "calendar", selected: "calendar" }} />
+        <Label>Plan</Label>
+      </NativeTabs.Trigger>
+    </NativeTabs>
   );
 }
 
-export default function RootLayout() {
-  const [fontsLoaded, fontError] = useFonts({
-    Inter_400Regular,
-    Inter_500Medium,
-    Inter_600SemiBold,
-    Inter_700Bold,
-  });
-
-  useEffect(() => {
-    if (fontsLoaded || fontError) {
-      SplashScreen.hideAsync();
-    }
-  }, [fontsLoaded, fontError]);
-
-  if (!fontsLoaded && !fontError) return null;
+function ClassicTabLayout() {
+  const colors = useColors();
+  const colorScheme = useColorScheme();
+  const isDark = colorScheme === "dark";
+  const isIOS = Platform.OS === "ios";
+  const isWeb = Platform.OS === "web";
 
   return (
-    <SafeAreaProvider>
-      <ErrorBoundary>
-        <QueryClientProvider client={queryClient}>
-          <GestureHandlerRootView>
-            <KeyboardProvider>
-              <RootLayoutNav />
-            </KeyboardProvider>
-          </GestureHandlerRootView>
-        </QueryClientProvider>
-      </ErrorBoundary>
-    </SafeAreaProvider>
+    <Tabs
+      screenOptions={{
+        tabBarActiveTintColor: colors.primary,
+        tabBarInactiveTintColor: colors.mutedForeground,
+        headerShown: false,
+        tabBarStyle: {
+          position: "absolute",
+          backgroundColor: isIOS ? "transparent" : colors.card,
+          borderTopWidth: 1,
+          borderTopColor: colors.border,
+          elevation: 0,
+          ...(isWeb ? { height: 84 } : {}),
+        },
+        tabBarBackground: () =>
+          isIOS ? (
+            <BlurView
+              intensity={100}
+              tint={isDark ? "dark" : "light"}
+              style={StyleSheet.absoluteFill}
+            />
+          ) : (
+            <View
+              style={[
+                StyleSheet.absoluteFill,
+                { backgroundColor: colors.card },
+              ]}
+            />
+          ),
+      }}
+    >
+      <Tabs.Screen
+        name="index"
+        options={{
+          title: "Spin",
+          tabBarIcon: ({ color }) =>
+            isIOS ? (
+              <SymbolView name="shuffle" tintColor={color} size={24} />
+            ) : (
+              <Feather name="shuffle" size={22} color={color} />
+            ),
+        }}
+      />
+      <Tabs.Screen
+        name="roulette"
+        options={{
+          title: "My Dinners",
+          tabBarIcon: ({ color }) =>
+            isIOS ? (
+              <SymbolView name="fork.knife" tintColor={color} size={24} />
+            ) : (
+              <Feather name="book-open" size={22} color={color} />
+            ),
+        }}
+      />
+      <Tabs.Screen
+        name="grocery"
+        options={{
+          title: "Grocery List",
+          tabBarIcon: ({ color }) =>
+            isIOS ? (
+              <SymbolView name="cart" tintColor={color} size={24} />
+            ) : (
+              <Feather name="shopping-cart" size={22} color={color} />
+            ),
+        }}
+      />
+      <Tabs.Screen
+        name="plan"
+        options={{
+          title: "Plan",
+          tabBarIcon: ({ color }) =>
+            isIOS ? (
+              <SymbolView name="calendar" tintColor={color} size={24} />
+            ) : (
+              <Feather name="calendar" size={22} color={color} />
+            ),
+        }}
+      />
+    </Tabs>
   );
+}
+
+export default function TabLayout() {
+  if (isLiquidGlassAvailable()) {
+    return <NativeTabLayout />;
+  }
+  return <ClassicTabLayout />;
 }
