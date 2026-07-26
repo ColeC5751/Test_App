@@ -1,64 +1,79 @@
 {
-  "expo": {
-    "name": "That's Dinner",
-    "slug": "recipe-roulette",
-    "version": "1.0.0",
-    "orientation": "portrait",
-    "icon": "./assets/images/icon.png",
-    "scheme": "recipe-roulette",
-    "userInterfaceStyle": "dark",
-    "newArchEnabled": true,
-    "splash": {
-      "image": "./assets/images/icon.png",
-      "resizeMode": "contain",
-      "backgroundColor": "#130E0C"
-    },
-    "ios": {
-      "supportsTablet": false,
-      "bundleIdentifier": "com.colec.thatsdinner",
-      "buildNumber": "1",
-      "infoPlist": {
-        "NSPhotoLibraryUsageDescription": "That's Dinner needs access to your photo library so you can import a recipe by selecting a photo of it.",
-        "NSCameraUsageDescription": "That's Dinner can use your camera to take a photo of a recipe to import.",
-        "ITSAppUsesNonExemptEncryption": false
-      }
-    },
-    "android": {
-      "package": "com.colec.thatsdinner",
-      "versionCode": 1,
-      "permissions": [
-        "READ_EXTERNAL_STORAGE",
-        "CAMERA"
-      ]
-    },
-    "web": {
-      "favicon": "./assets/images/icon.png"
-    },
-    "plugins": [
-      [
-        "expo-router",
-        {
-          "origin": "https://replit.com/"
-        }
-      ],
-      "expo-font",
-      "expo-web-browser",
-      [
-        "expo-image-picker",
-        {
-          "photosPermission": "That's Dinner needs access to your photo library so you can import a recipe by selecting a photo of it.",
-          "cameraPermission": "That's Dinner can use your camera to take a photo of a recipe to import."
-        }
-      ]
-    ],
-    "experiments": {
-      "typedRoutes": true,
-      "reactCompiler": true
-    },
-    "extra": {
-      "eas": {
-        "projectId": "REPLACE_WITH_YOUR_EAS_PROJECT_ID"
-      }
-    }
-  }
+"expo": {
+"name": "That's Dinner",
+"slug": "recipe-roulette",
+"version": "1.0.0",
+"orientation": "portrait",
+"icon": "./assets/images/icon.png",
+"scheme": "recipe-roulette",
+"userInterfaceStyle": "dark",
+"newArchEnabled": true,
+"splash": {
+"image": "./assets/images/icon.png",
+"resizeMode": "contain",
+"backgroundColor": "#130E0C"
+},
+"ios": {
+"supportsTablet": false,
+"bundleIdentifier": "com.colec.thatsdinner",
+"buildNumber": "1",
+"associatedDomains": [
+"applinks:whats-for-dinner-two-tan.vercel.app"
+],
+"infoPlist": {
+"NSPhotoLibraryUsageDescription": "That's Dinner needs access to your photo library so you can import a recipe by selecting a photo of it.",
+"NSCameraUsageDescription": "That's Dinner can use your camera to take a photo of a recipe to import.",
+"ITSAppUsesNonExemptEncryption": false
+}
+},
+"android": {
+"package": "com.colec.thatsdinner",
+"versionCode": 1,
+"permissions": [
+"READ_EXTERNAL_STORAGE",
+"CAMERA"
+],
+"intentFilters": [
+{
+"action": "VIEW",
+"autoVerify": true,
+"data": [
+{
+"scheme": "https",
+"host": "whats-for-dinner-two-tan.vercel.app",
+"pathPrefix": "/join"
+}
+],
+"category": [
+"BROWSABLE",
+"DEFAULT"
+]
+}
+]
+},
+"web": {
+"favicon": "./assets/images/icon.png"
+},
+"plugins": [
+"expo-router",
+"expo-font",
+"expo-web-browser",
+[
+"expo-image-picker",
+{
+"photosPermission": "That's Dinner needs access to your photo library so you can import a recipe by selecting a photo of it.",
+"cameraPermission": "That's Dinner can use your camera to take a photo of a recipe to import."
+}
+]
+],
+"experiments": {
+"typedRoutes": true,
+"reactCompiler": true
+},
+"extra": {
+"eas": {
+"projectId": "REPLACE_WITH_YOUR_EAS_PROJECT_ID"
+}
+}
+}
 }
