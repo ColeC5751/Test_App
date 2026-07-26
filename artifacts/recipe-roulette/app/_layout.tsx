@@ -123,6 +123,7 @@ function RootLayoutNav() {
     <Stack screenOptions={{ headerShown: false }}>
       <Stack.Screen name="(tabs)" />
       <Stack.Screen name="auth" />
+      <Stack.Screen name="auth/callback" />
       <Stack.Screen name="(shared)/grocery/[token]" />
       <Stack.Screen name="(shared)/plan/[token]" />
     </Stack>
