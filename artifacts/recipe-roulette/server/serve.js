@@ -6,6 +6,11 @@
  * - GET / without expo-platform → landing page HTML
  * Everything else falls through to static file serving from ./static-build/.
  *
+ * If a requested path has no matching file on disk and doesn't look like a
+ * static asset (no file extension), it falls back to serving index.html so
+ * Expo Router's client-side router can handle dynamic routes (e.g.
+ * /plan/[id]) even when the link is opened cold, outside the running app.
+ *
  * Zero external dependencies — uses only Node.js built-ins (http, fs, path).
  */
 
@@ -81,6 +86,20 @@ function serveLandingPage(req, res, landingPageTemplate, appName) {
   res.end(html);
 }
 
+function serveIndexFallback(res) {
+  const indexPath = path.join(STATIC_ROOT, "index.html");
+
+  if (!fs.existsSync(indexPath)) {
+    res.writeHead(404);
+    res.end("Not Found");
+    return;
+  }
+
+  const content = fs.readFileSync(indexPath);
+  res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+  res.end(content);
+}
+
 function serveStaticFile(urlPath, res) {
   const safePath = path.normalize(urlPath).replace(/^(\.\.(\/|\\|$))+/, "");
   const filePath = path.join(STATIC_ROOT, safePath);
@@ -91,7 +110,19 @@ function serveStaticFile(urlPath, res) {
     return;
   }
 
-  if (!fs.existsSync(filePath) || fs.statSync(filePath).isDirectory()) {
+  const exists = fs.existsSync(filePath) && !fs.statSync(filePath).isDirectory();
+
+  if (!exists) {
+    // No literal file on disk at this path. If it doesn't look like a
+    // static asset request (no file extension on the last segment — e.g.
+    // "/plan/fd7ff51c" rather than "/assets/app.js"), treat it as a
+    // client-side route and fall back to index.html so Expo Router can
+    // pick it up once the app loads. Genuine missing assets still 404.
+    const hasExtension = path.extname(safePath) !== "";
+    if (!hasExtension) {
+      return serveIndexFallback(res);
+    }
+
     res.writeHead(404);
     res.end("Not Found");
     return;
