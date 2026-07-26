@@ -62,7 +62,7 @@ export async function getDeviceId(): Promise<string> {
 
 export function buildShareUrl(type: "grocery" | "plan", token: string): string {
   // Deep link format — update this once you have a custom domain
-  const base = "https://thatsdinner.app";
+  const base = "https://whats-for-dinner-two-tan.vercel.app";
   return `${base}/${type}/${token}`;
 }
 
