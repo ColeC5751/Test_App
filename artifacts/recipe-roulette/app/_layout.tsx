@@ -1,0 +1,159 @@
+import {
+  Inter_400Regular,
+  Inter_500Medium,
+  Inter_600SemiBold,
+  Inter_700Bold,
+  useFonts,
+} from "@expo-google-fonts/inter";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { Stack, useRouter, useSegments } from "expo-router";
+import * as SplashScreen from "expo-splash-screen";
+import * as WebBrowser from "expo-web-browser";
+import React, { useEffect, useState } from "react";
+import { Linking } from "react-native";
+import { GestureHandlerRootView } from "react-native-gesture-handler";
+import { KeyboardProvider } from "react-native-keyboard-controller";
+import { SafeAreaProvider } from "react-native-safe-area-context";
+import type { Session } from "@supabase/supabase-js";
+
+import { ErrorBoundary } from "@/components/ErrorBoundary";
+import { supabase } from "@/lib/supabase";
+
+WebBrowser.maybeCompleteAuthSession();
+SplashScreen.preventAutoHideAsync();
+
+const queryClient = new QueryClient();
+
+// ─── Auth gate ────────────────────────────────────────────────────────────────
+// Watches the Supabase session and redirects accordingly:
+//   • No session + not on auth screen → redirect to /auth
+//   • Session exists + on auth screen → redirect to /(tabs)
+// "Continue without account" sets a local flag to skip the gate.
+
+const SKIP_AUTH_KEY = "@recipe_roulette_skip_auth";
+
+function useAuthGate(session: Session | null, sessionLoaded: boolean) {
+  const router = useRouter();
+  const segments = useSegments();
+
+  useEffect(() => {
+    if (!sessionLoaded) return;
+
+    const inAuthGroup = segments[0] === "auth";
+    const inSharedGroup = segments[0] === "(shared)";
+
+    // Don't interrupt shared link flows
+    if (inSharedGroup) return;
+
+    if (session) {
+      // Signed in — push to tabs if on auth screen
+      if (inAuthGroup) {
+        router.replace("/(tabs)");
+      }
+    } else {
+      // Not signed in — go to auth unless already there
+      if (!inAuthGroup) {
+        router.replace("/auth");
+      }
+    }
+  }, [session, sessionLoaded, segments]);
+}
+
+function RootLayoutNav() {
+  const router = useRouter();
+  const [session, setSession] = useState<Session | null>(null);
+  const [sessionLoaded, setSessionLoaded] = useState(false);
+
+  // Load initial session
+  useEffect(() => {
+    supabase.auth.getSession().then(({ data }) => {
+      setSession(data.session);
+      setSessionLoaded(true);
+    });
+  }, []);
+
+  // Listen for auth state changes (magic link callback fires here)
+  useEffect(() => {
+    const { data: listener } = supabase.auth.onAuthStateChange((_event, newSession) => {
+      setSession(newSession);
+      if (newSession) {
+        router.replace("/(tabs)");
+      }
+    });
+    return () => listener.subscription.unsubscribe();
+  }, []);
+
+  // Handle deep links — shared grocery/plan links + magic link callback
+  useEffect(() => {
+    const handleUrl = async (url: string) => {
+      // Magic link callback
+      if (url.includes("auth/callback") || url.includes("access_token") || url.includes("code=")) {
+        const { data, error } = await supabase.auth.exchangeCodeForSession(url);
+        if (!error && data.session) {
+          setSession(data.session);
+          router.replace("/(tabs)");
+          return;
+        }
+        // Try setSession from URL directly (implicit flow fallback)
+        await supabase.auth.getSession().then(({ data: d }) => {
+          if (d.session) { setSession(d.session); router.replace("/(tabs)"); }
+        });
+        return;
+      }
+
+      // Shared grocery/plan links
+      const match = url.match(/\/(grocery|plan)\/([a-zA-Z0-9-]+)/);
+      if (match) {
+        router.push(`/(shared)/${match[1]}/${match[2]}` as any);
+      }
+    };
+
+    // App already open
+    const subscription = Linking.addEventListener("url", ({ url }) => handleUrl(url));
+
+    // App launched via link
+    Linking.getInitialURL().then((url) => { if (url) handleUrl(url); });
+
+    return () => subscription.remove();
+  }, []);
+
+  useAuthGate(session, sessionLoaded);
+
+  return (
+    <Stack screenOptions={{ headerShown: false }}>
+      <Stack.Screen name="(tabs)" />
+      <Stack.Screen name="auth" />
+      <Stack.Screen name="(shared)/grocery/[token]" />
+      <Stack.Screen name="(shared)/plan/[token]" />
+    </Stack>
+  );
+}
+
+export default function RootLayout() {
+  const [fontsLoaded, fontError] = useFonts({
+    Inter_400Regular,
+    Inter_500Medium,
+    Inter_600SemiBold,
+    Inter_700Bold,
+  });
+
+  useEffect(() => {
+    if (fontsLoaded || fontError) SplashScreen.hideAsync();
+  }, [fontsLoaded, fontError]);
+
+  if (!fontsLoaded && !fontError) return null;
+
+  return (
+    <SafeAreaProvider>
+      <ErrorBoundary>
+        <QueryClientProvider client={queryClient}>
+          <GestureHandlerRootView>
+            <KeyboardProvider>
+              <RootLayoutNav />
+            </KeyboardProvider>
+          </GestureHandlerRootView>
+        </QueryClientProvider>
+      </ErrorBoundary>
+    </SafeAreaProvider>
+  );
+}
