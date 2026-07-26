@@ -46,9 +46,8 @@ function RootLayoutNav() {
 
   return (
     <Stack screenOptions={{ headerBackTitle: "Back" }}>
-      <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
-      <Stack.Screen name="grocery/[token]" options={{ headerShown: false }} />
-      <Stack.Screen name="plan/[token]" options={{ headerShown: false }} />
+      <Stack.Screen name="(shared)/grocery/[token]" options={{ headerShown: false }} />
+<Stack.Screen name="(shared)/plan/[token]" options={{ headerShown: false }} />
     </Stack>
   );
 }
