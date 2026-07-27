@@ -28,6 +28,10 @@ function NativeTabLayout() {
         <Icon sf={{ default: "calendar", selected: "calendar" }} />
         <Label>Plan</Label>
       </NativeTabs.Trigger>
+      <NativeTabs.Trigger name="shared">
+        <Icon sf={{ default: "person.2", selected: "person.2.fill" }} />
+        <Label>Shared</Label>
+      </NativeTabs.Trigger>
     </NativeTabs>
   );
 }
@@ -118,6 +122,18 @@ function ClassicTabLayout() {
             ),
         }}
       />
+      <Tabs.Screen
+        name="shared"
+        options={{
+          title: "Shared",
+          tabBarIcon: ({ color }) =>
+            isIOS ? (
+              <SymbolView name="person.2" tintColor={color} size={24} />
+            ) : (
+              <Feather name="users" size={22} color={color} />
+            ),
+        }}
+      />
     </Tabs>
   );
 }
@@ -128,3 +144,4 @@ export default function TabLayout() {
   }
   return <ClassicTabLayout />;
 }
+
