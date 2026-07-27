@@ -523,7 +523,7 @@ export default function GroceryScreen() {
           </View>
         ))}
 
-        {/* In cart section */
+        {/* In cart section */}
         {checked.length > 0 && (
           <View style={styles.aisleSection}>
             <View style={styles.aisleHeader}>
