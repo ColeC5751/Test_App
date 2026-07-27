@@ -1,12 +1,11 @@
-// app/plan/[token].tsx
+// app/(shared)/plan/[token].tsx
 // Shared meal plan view — opened when someone taps a shared plan link.
 // Loads the plan by share token, respects view/edit permission.
 
 import { Feather } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
 import { useLocalSearchParams, useRouter } from "expo-router";
-import AsyncStorage from "@react-native-async-storage/async-storage";
-import React, { useEffect, useState } from "react";
+import React, { useState } from "react";
 import {
   ActivityIndicator,
   Alert,
@@ -20,8 +19,8 @@ import {
 } from "react-native";
 
 import { useColors } from "@/hooks/useColors";
-import { usePlanSync } from "@/lib/sync";
-import type { MealPlan, PlanSlot, SharePermission } from "@/lib/types";
+import { useSharedPlanSync } from "@/lib/sync";
+import type { PlanSlot } from "@/lib/types";
 
 // ─── Date helpers (duplicated from plan.tsx for isolation) ────────────────────
 
@@ -70,25 +69,16 @@ export default function SharedPlanScreen() {
   const router = useRouter();
   const topPad = Platform.OS === "web" ? 67 : 0;
 
-  const { plan, status, save, loadShared } = usePlanSync();
-  const [loading, setLoading] = useState(true);
-  const [permission, setPermission] = useState<SharePermission>("view");
-  const [error, setError] = useState("");
+  // Uses the dedicated shared-viewer hook — NOT usePlanSync. usePlanSync's
+  // internal load() effect runs unconditionally for the *signed-in
+  // visitor's own* plan and can insert a new row for them, which raced
+  // against loading this shared plan and caused a crash. See the comment
+  // above useSharedPlanSync in lib/sync.ts for the full explanation.
+  const { plan, status, permission, notFound, save } = useSharedPlanSync(token);
   const [weekOffset, setWeekOffset] = useState(0);
 
-  useEffect(() => {
-    if (!token) return;
-    loadShared(token as string).then((result) => {
-      if (!result) {
-        setError("This plan link is invalid or has expired.");
-      } else {
-        setPermission(result as SharePermission);
-      }
-      setLoading(false);
-    });
-  }, [token]);
-
   const canEdit = permission === "edit";
+  const loading = status === "syncing" && !notFound;
 
   const monday = getMondayOfWeek(new Date());
   monday.setDate(monday.getDate() + weekOffset * 7);
@@ -119,11 +109,13 @@ export default function SharedPlanScreen() {
     );
   }
 
-  if (error) {
+  if (notFound) {
     return (
       <View style={[styles.center, { backgroundColor: colors.background }]}>
         <Feather name="alert-circle" size={32} color={colors.destructive} />
-        <Text style={[styles.errorText, { color: colors.foreground }]}>{error}</Text>
+        <Text style={[styles.errorText, { color: colors.foreground }]}>
+          This plan link is invalid or has expired.
+        </Text>
         <Pressable onPress={() => router.replace("/")} style={[styles.homeBtn, { backgroundColor: colors.primary }]}>
           <Text style={[styles.homeBtnText, { color: colors.primaryForeground }]}>Go to app</Text>
         </Pressable>
