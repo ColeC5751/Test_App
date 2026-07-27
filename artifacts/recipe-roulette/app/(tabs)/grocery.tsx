@@ -1,192 +1,32 @@
-import AsyncStorage from "@react-native-async-storage/async-storage";
+// app/(shared)/grocery/[token].tsx
+// Shared grocery list view — opened when someone taps a shared grocery link.
+// Loads the list by share token from Supabase, respects view/edit permission.
+//
+// Mirrors app/(tabs)/grocery.tsx as closely as possible: same aisle grouping,
+// same manual-add parsing (via combineIngredients + getAisle, imported from
+// the owner's screen rather than duplicated), same delete-item support.
+
 import { Feather } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
-import React, { useCallback, useState } from "react";
+import { useLocalSearchParams, useRouter } from "expo-router";
+import React, { useState } from "react";
 import {
+  ActivityIndicator,
   Alert,
-  Modal,
   Platform,
   Pressable,
-  SafeAreaView,
   ScrollView,
   Share,
   StyleSheet,
-  Switch,
   Text,
   TextInput,
   View,
 } from "react-native";
-import { useFocusEffect } from "expo-router";
 
 import { useColors } from "@/hooks/useColors";
-import { useGrocerySync } from "@/lib/sync";
-import { buildShareUrl } from "@/lib/supabase";
-import type { GroceryItem, SyncStatus } from "@/lib/types";
-
-// ─── Aisle categorization ─────────────────────────────────────────────────────
-
-const AISLE_MAP: { aisle: string; icon: string; keywords: string[] }[] = [
-  {
-    aisle: "Produce", icon: "🥦",
-    keywords: ["apple","apples","avocado","basil","bean","beans","bell pepper","broccoli","cabbage","carrot","carrots","cauliflower","celery","cherry","chili","cilantro","corn","cucumber","eggplant","garlic","ginger","grape","kale","leek","lemon","lettuce","lime","mint","mushroom","mushrooms","onion","onions","orange","parsley","pea","peas","pepper","peppers","potato","potatoes","rosemary","scallion","spinach","squash","sweet potato","thyme","tomato","tomatoes","zucchini","asparagus","fennel","leeks","parsnip","radish","shallot","turnip"],
-  },
-  {
-    aisle: "Meat & Seafood", icon: "🥩",
-    keywords: ["bacon","beef","chicken","chorizo","clam","cod","crab","duck","fish","ground beef","ground turkey","ham","lamb","lobster","pork","prosciutto","salmon","sausage","scallop","shrimp","steak","tilapia","tuna","turkey","venison","anchovy","anchovies","mussels","sardines","squid"],
-  },
-  {
-    aisle: "Dairy & Eggs", icon: "🧀",
-    keywords: ["butter","cheddar","cheese","cottage cheese","cream","cream cheese","egg","eggs","feta","goat cheese","gouda","gruyere","half and half","heavy cream","milk","mozzarella","parmesan","ricotta","sour cream","whipping cream","yogurt","brie","manchego","pecorino"],
-  },
-  {
-    aisle: "Bakery & Bread", icon: "🍞",
-    keywords: ["bagel","baguette","bread","breadcrumbs","brioche","bun","ciabatta","crouton","croutons","english muffin","flatbread","naan","pita","roll","rolls","sourdough","tortilla","wrap"],
-  },
-  {
-    aisle: "Pantry", icon: "🫙",
-    keywords: ["baking powder","baking soda","bay leaf","black beans","bouillon","broth","brown sugar","capers","chickpeas","chili powder","chocolate","cinnamon","clove","cloves","cocoa","coconut milk","cornstarch","cumin","curry","flour","honey","hot sauce","ketchup","kidney beans","lentils","maple syrup","mayonnaise","molasses","mustard","nutritional yeast","oats","oil","olive oil","oregano","oyster sauce","paprika","peanut butter","pepper","quinoa","red pepper flakes","salt","sesame oil","soy sauce","stock","sugar","tahini","tomato paste","tomato sauce","turmeric","vanilla","vegetable oil","vinegar","worcestershire","yeast","coconut oil","fish sauce","hoisin","miso","sriracha","tabasco"],
-  },
-  {
-    aisle: "Pasta, Rice & Grains", icon: "🍝",
-    keywords: ["barley","brown rice","couscous","egg noodles","farro","fettuccine","lasagna","linguine","macaroni","noodles","orzo","pasta","penne","polenta","ramen","rice","rigatoni","risotto","spaghetti","udon","vermicelli","white rice","wild rice"],
-  },
-  {
-    aisle: "Canned & Jarred", icon: "🥫",
-    keywords: ["artichoke","canned corn","canned tomato","canned tuna","cannellini","crushed tomatoes","diced tomatoes","green chile","green olives","jalapeño","jalapeños","kidney beans","olives","pinto beans","roasted peppers","sun-dried tomato","tomato"],
-  },
-  {
-    aisle: "Frozen", icon: "🧊",
-    keywords: ["frozen broccoli","frozen corn","frozen peas","frozen spinach","frozen shrimp","ice cream","edamame","frozen","tater tots"],
-  },
-  {
-    aisle: "Nuts, Seeds & Dried Fruit", icon: "🥜",
-    keywords: ["almond","almonds","cashew","cashews","chia","cranberry","dried fruit","flaxseed","hemp seed","macadamia","peanut","peanuts","pecan","pecans","pistachio","poppy seed","pumpkin seed","raisin","raisins","sesame","sunflower seed","walnut","walnuts","pine nuts"],
-  },
-  {
-    aisle: "Beverages", icon: "🧃",
-    keywords: ["apple juice","beer","broth","coffee","coconut water","juice","lemonade","orange juice","soda","sparkling water","tea","water","wine","champagne","cider","kombucha","milk alternative","oat milk","almond milk","soy milk"],
-  },
-  {
-    aisle: "Condiments & Sauces", icon: "🫙",
-    keywords: ["barbecue sauce","bbq sauce","buffalo sauce","caesar dressing","dijon","dressing","guacamole","hummus","jam","jelly","pesto","pickle","pickles","ranch","relish","salsa","teriyaki","tzatziki"],
-  },
-  {
-    aisle: "Herbs & Spices", icon: "🌿",
-    keywords: ["allspice","anise","cardamom","cayenne","chives","coriander","dill","fennel seed","herbes","marjoram","nutmeg","saffron","sage","smoked paprika","star anise","tarragon","za'atar"],
-  },
-];
-
-const AISLE_ORDER = AISLE_MAP.map((a) => a.aisle).concat(["Other"]);
-
-function getAisle(name: string): string {
-  const lower = name.toLowerCase().trim();
-  let best = { aisle: "Other", len: 0 };
-  for (const { aisle, keywords } of AISLE_MAP) {
-    for (const kw of keywords) {
-      if (lower.includes(kw) && kw.length > best.len) {
-        best = { aisle, len: kw.length };
-      }
-    }
-  }
-  return best.aisle;
-}
-
-// ─── Unit conversion ──────────────────────────────────────────────────────────
-
-const TO_ML: Record<string, number> = {
-  ml: 1, milliliter: 1, milliliters: 1,
-  l: 1000, liter: 1000, liters: 1000,
-  tsp: 4.92, teaspoon: 4.92, teaspoons: 4.92,
-  tbsp: 14.79, tablespoon: 14.79, tablespoons: 14.79,
-  cup: 236.6, cups: 236.6,
-  "fl oz": 29.57, floz: 29.57,
-};
-
-function mlToReadable(ml: number): { amount: number; unit: string } {
-  if (ml >= 900) return { amount: Math.round((ml / 1000) * 10) / 10, unit: "l" };
-  if (ml >= 60) return { amount: Math.round(ml / 14.79 * 10) / 10, unit: "tbsp" };
-  if (ml >= 5) return { amount: Math.round(ml / 4.92 * 10) / 10, unit: "tsp" };
-  return { amount: Math.round(ml), unit: "ml" };
-}
-
-// ─── combineIngredients ───────────────────────────────────────────────────────
-
-export function combineIngredients(existing: GroceryItem[], incoming: GroceryItem[]): GroceryItem[] {
-  const result = [...existing];
-  for (const inc of incoming) {
-    const incLower = inc.name.toLowerCase().trim();
-    const idx = result.findIndex((e) => e.name.toLowerCase().trim() === incLower);
-    if (idx === -1) {
-      result.push({ ...inc });
-    } else {
-      const ex = result[idx];
-      const exUnit = ex.unit.toLowerCase().trim();
-      const incUnit = inc.unit.toLowerCase().trim();
-      if (exUnit === incUnit) {
-        result[idx] = { ...ex, amount: Math.round((ex.amount + inc.amount) * 100) / 100 };
-      } else if (TO_ML[exUnit] && TO_ML[incUnit]) {
-        const totalMl = ex.amount * TO_ML[exUnit] + inc.amount * TO_ML[incUnit];
-        const readable = mlToReadable(totalMl);
-        result[idx] = { ...ex, amount: readable.amount, unit: readable.unit };
-      } else {
-        result.push({ ...inc, id: `${inc.id}_${Date.now()}` });
-      }
-    }
-  }
-  return result;
-}
-
-// ─── Storage (kept for addIngredientsToGrocery which is called from other tabs) ──
-
-export const GROCERY_KEY = "@recipe_roulette_grocery";
-
-export async function loadGroceryList(): Promise<GroceryItem[]> {
-  try {
-    const json = await AsyncStorage.getItem(GROCERY_KEY);
-    return json ? JSON.parse(json) : [];
-  } catch { return []; }
-}
-
-export async function saveGroceryList(items: GroceryItem[]): Promise<void> {
-  try { await AsyncStorage.setItem(GROCERY_KEY, JSON.stringify(items)); } catch {}
-}
-
-export async function addIngredientsToGrocery(
-  rawIngredients: string,
-  opts?: { fromRecipe?: string; servingMultiplier?: number }
-): Promise<void> {
-  const existing = await loadGroceryList();
-  const lines = rawIngredients.split(/,|\n/).map((l) => l.trim()).filter(Boolean);
-  const incoming: GroceryItem[] = lines.map((line, i) => {
-    const match = line.match(/^([\d./]+)\s*([a-zA-Z]+(?:\s+[a-zA-Z]+)?)?\s+(.+)$/);
-    if (match) {
-      const name = match[3]?.trim() || line;
-      return {
-        id: `g_${Date.now()}_${i}`,
-        name,
-        amount: parseFloat(match[1]) || 1,
-        unit: match[2]?.trim() || "",
-        checked: false,
-        aisle: getAisle(name),
-        addedFromRecipe: opts?.fromRecipe,
-        servingMultiplier: opts?.servingMultiplier,
-      };
-    }
-    return {
-      id: `g_${Date.now()}_${i}`,
-      name: line,
-      amount: 1,
-      unit: "",
-      checked: false,
-      aisle: getAisle(line),
-      addedFromRecipe: opts?.fromRecipe,
-      servingMultiplier: opts?.servingMultiplier,
-    };
-  });
-  await saveGroceryList(combineIngredients(existing, incoming));
-}
-
-// ─── Helpers ──────────────────────────────────────────────────────────────────
+import { useSharedGrocerySync } from "@/lib/sync";
+import { combineIngredients, getAisle, groupByAisle } from "@/app/(tabs)/grocery";
+import type { GroceryItem } from "@/lib/types";
 
 function formatItem(item: GroceryItem): string {
   const amt = item.amount === 1 && !item.unit
@@ -195,195 +35,65 @@ function formatItem(item: GroceryItem): string {
   return `${amt}${item.name}`;
 }
 
-function groupByAisle(items: GroceryItem[]): { aisle: string; icon: string; items: GroceryItem[] }[] {
-  const map = new Map<string, GroceryItem[]>();
-  for (const item of items) {
-    if (!map.has(item.aisle)) map.set(item.aisle, []);
-    map.get(item.aisle)!.push(item);
-  }
-  return AISLE_ORDER
-    .filter((a) => map.has(a))
-    .map((a) => ({
-      aisle: a,
-      icon: AISLE_MAP.find((m) => m.aisle === a)?.icon ?? "🛒",
-      items: map.get(a)!,
-    }));
-}
-
-// ─── Sync status dot ──────────────────────────────────────────────────────────
-
-function SyncDot({ status }: { status: SyncStatus }) {
-  const color =
-    status === "synced" ? "#7C8C5E" :
-    status === "syncing" ? "#C8A86B" :
-    status === "offline" ? "#9A9A88" : "#ef4444";
-  return (
-    <View style={[syncDotStyles.dot, { backgroundColor: color }]} />
-  );
-}
-
-const syncDotStyles = StyleSheet.create({
-  dot: { width: 8, height: 8, borderRadius: 4, marginTop: 6 },
-});
-
-// ─── Share Modal ──────────────────────────────────────────────────────────────
-
-function ShareModal({
-  visible,
-  onClose,
-  shareToken,
-  permission,
-  onSetPermission,
-}: {
-  visible: boolean;
-  onClose: () => void;
-  shareToken: string | null;
-  permission: "view" | "edit";
-  onSetPermission: (p: "view" | "edit") => void;
-}) {
+export default function SharedGroceryScreen() {
   const colors = useColors();
-  const shareUrl = shareToken ? buildShareUrl("grocery", shareToken) : null;
-
-  const handleShare = async () => {
-    if (!shareUrl) return;
-    await Share.share({
-      message: `Join my grocery list on That's Dinner:\n${shareUrl}`,
-      url: shareUrl,
-    });
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-  };
-
-  return (
-    <Modal visible={visible} animationType="slide" presentationStyle="pageSheet" onRequestClose={onClose}>
-      <SafeAreaView style={[shareStyles.root, { backgroundColor: colors.background }]}>
-        <View style={[shareStyles.header, { borderBottomColor: colors.border }]}>
-          <Text style={[shareStyles.title, { color: colors.foreground }]}>Share Grocery List</Text>
-          <Pressable onPress={onClose}>
-            <Feather name="x" size={22} color={colors.foreground} />
-          </Pressable>
-        </View>
-        <View style={shareStyles.body}>
-          <Text style={[shareStyles.desc, { color: colors.mutedForeground }]}>
-            Anyone with the link can access your grocery list. Set their permission level below.
-          </Text>
-
-          {/* Permission toggle */}
-          <View style={[shareStyles.permRow, { backgroundColor: colors.card, borderColor: colors.border }]}>
-            <View>
-              <Text style={[shareStyles.permLabel, { color: colors.foreground }]}>Allow editing</Text>
-              <Text style={[shareStyles.permSub, { color: colors.mutedForeground }]}>
-                {permission === "edit" ? "Anyone with link can check off items" : "Anyone with link can view only"}
-              </Text>
-            </View>
-            <Switch
-              value={permission === "edit"}
-              onValueChange={(v) => onSetPermission(v ? "edit" : "view")}
-              trackColor={{ false: colors.muted, true: colors.primary }}
-              thumbColor={colors.primaryForeground}
-            />
-          </View>
-
-          {/* Share URL */}
-          {shareUrl && (
-            <View style={[shareStyles.urlBox, { backgroundColor: colors.secondary, borderColor: colors.border }]}>
-              <Text style={[shareStyles.urlText, { color: colors.mutedForeground }]} numberOfLines={1}>
-                {shareUrl}
-              </Text>
-            </View>
-          )}
-
-          <Pressable
-            onPress={handleShare}
-            style={({ pressed }) => [shareStyles.shareBtn, { backgroundColor: colors.primary }, pressed && { opacity: 0.9 }]}
-          >
-            <Feather name="share" size={16} color={colors.primaryForeground} />
-            <Text style={[shareStyles.shareBtnText, { color: colors.primaryForeground }]}>Share Link</Text>
-          </Pressable>
-        </View>
-      </SafeAreaView>
-    </Modal>
-  );
-}
-
-const shareStyles = StyleSheet.create({
-  root: { flex: 1 },
-  header: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", padding: 20, borderBottomWidth: 1 },
-  title: { fontSize: 20, fontFamily: "Inter_700Bold" },
-  body: { padding: 24, gap: 16 },
-  desc: { fontSize: 14, fontFamily: "Inter_400Regular", lineHeight: 20 },
-  permRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", borderRadius: 14, borderWidth: 1, padding: 16 },
-  permLabel: { fontSize: 15, fontFamily: "Inter_600SemiBold" },
-  permSub: { fontSize: 12, fontFamily: "Inter_400Regular", marginTop: 2 },
-  urlBox: { borderRadius: 10, borderWidth: 1, paddingHorizontal: 14, paddingVertical: 12 },
-  urlText: { fontSize: 12, fontFamily: "Inter_400Regular" },
-  shareBtn: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, borderRadius: 12, paddingVertical: 16 },
-  shareBtnText: { fontSize: 15, fontFamily: "Inter_600SemiBold" },
-});
-
-// ─── Screen ───────────────────────────────────────────────────────────────────
-
-export default function GroceryScreen() {
-  const colors = useColors();
+  const { token } = useLocalSearchParams<{ token: string }>();
+  const router = useRouter();
   const topPad = Platform.OS === "web" ? 67 : 0;
 
-  // useGrocerySync replaces direct AsyncStorage calls.
-  // Local-first: items load from AsyncStorage instantly,
-  // Supabase syncs in background and updates via real-time subscription.
-  const { items, status, shareToken, save, load } = useGrocerySync();
-
-  const [loaded, setLoaded] = useState(false);
+  const { items, status, permission, notFound, name, save, rename } = useSharedGrocerySync(token);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editValue, setEditValue] = useState("");
   const [manualInput, setManualInput] = useState("");
-  const [showShareModal, setShowShareModal] = useState(false);
-  const [sharePermission, setSharePermission] = useState<"view" | "edit">("view");
+  const [editingTitle, setEditingTitle] = useState(false);
+  const [titleInput, setTitleInput] = useState("");
 
-  useFocusEffect(
-    useCallback(() => {
-      load().then(() => setLoaded(true));
-    }, [load])
-  );
-
-  const persist = async (updated: GroceryItem[]) => {
-    await save(updated);
-  };
+  const canEdit = permission === "edit";
+  const loading = status === "syncing" && !notFound;
 
   const toggleItem = async (id: string) => {
+    if (!canEdit) return;
     await Haptics.selectionAsync();
-    await persist(items.map((it) => it.id === id ? { ...it, checked: !it.checked, checkedAt: Date.now() } : it));
+    await save(items.map((it) => it.id === id ? { ...it, checked: !it.checked, checkedAt: Date.now() } : it));
   };
 
   const startEdit = (item: GroceryItem) => {
+    if (!canEdit) return;
     setEditingId(item.id);
     setEditValue(item.amount % 1 === 0 ? String(item.amount) : item.amount.toFixed(1));
   };
 
   const commitEdit = async (id: string) => {
     const parsed = parseFloat(editValue);
-    if (!isNaN(parsed) && parsed > 0) {
-      await persist(items.map((it) => it.id === id ? { ...it, amount: Math.round(parsed * 100) / 100 } : it));
+    if (!isNaN(parsed) && parsed > 0 && canEdit) {
+      await save(items.map((it) => it.id === id ? { ...it, amount: Math.round(parsed * 100) / 100 } : it));
     }
     setEditingId(null);
     setEditValue("");
   };
 
   const handleManualAdd = async () => {
+    if (!canEdit) return;
     const text = manualInput.trim();
     if (!text) return;
-    // Parse and combine with existing, then save via sync hook
     const lines = text.split(/,|\n/).map((l) => l.trim()).filter(Boolean);
     const incoming: GroceryItem[] = lines.map((line, i) => {
       const match = line.match(/^([\d./]+)\s*([a-zA-Z]+(?:\s+[a-zA-Z]+)?)?\s+(.+)$/);
       if (match) {
-        const name = match[3]?.trim() || line;
-        return { id: `g_${Date.now()}_${i}`, name, amount: parseFloat(match[1]) || 1, unit: match[2]?.trim() || "", checked: false, aisle: getAisle(name) };
+        const itemName = match[3]?.trim() || line;
+        return { id: `g_${Date.now()}_${i}`, name: itemName, amount: parseFloat(match[1]) || 1, unit: match[2]?.trim() || "", checked: false, aisle: getAisle(itemName) };
       }
       return { id: `g_${Date.now()}_${i}`, name: line, amount: 1, unit: "", checked: false, aisle: getAisle(line) };
     });
     const combined = combineIngredients(items, incoming);
-    await persist(combined);
+    await save(combined);
     setManualInput("");
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+  };
+
+  const handleDelete = async (id: string) => {
+    if (!canEdit) return;
+    await save(items.filter((it) => it.id !== id));
   };
 
   const handleCopy = async () => {
@@ -395,15 +105,30 @@ export default function GroceryScreen() {
         `${icon} ${aisle}\n` + aisleItems.map((it) => `  • ${formatItem(it)}`).join("\n")
       ).join("\n\n");
     await Share.share({ message: `Shopping List:\n\n${text}` });
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
   };
 
-  const handleClear = () => {
-    Alert.alert("Clear list?", "This will remove all items.", [
-      { text: "Cancel", style: "cancel" },
-      { text: "Clear", style: "destructive", onPress: async () => { await persist([]); Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning); } },
-    ]);
-  };
+  if (loading) {
+    return (
+      <View style={[styles.center, { backgroundColor: colors.background }]}>
+        <ActivityIndicator color={colors.primary} size="large" />
+        <Text style={[styles.loadingText, { color: colors.mutedForeground }]}>Loading shared list…</Text>
+      </View>
+    );
+  }
+
+  if (notFound) {
+    return (
+      <View style={[styles.center, { backgroundColor: colors.background }]}>
+        <Feather name="alert-circle" size={32} color={colors.destructive} />
+        <Text style={[styles.errorText, { color: colors.foreground }]}>
+          This link is invalid or has expired.
+        </Text>
+        <Pressable onPress={() => router.replace("/")} style={[styles.homeBtn, { backgroundColor: colors.primary }]}>
+          <Text style={[styles.homeBtnText, { color: colors.primaryForeground }]}>Go to app</Text>
+        </Pressable>
+      </View>
+    );
+  }
 
   const unchecked = items.filter((it) => !it.checked);
   const checked = items.filter((it) => it.checked);
@@ -411,53 +136,65 @@ export default function GroceryScreen() {
   const checkedGroups = groupByAisle(checked);
 
   return (
-    <>
-      <ScrollView
-        style={[styles.root, { backgroundColor: colors.background }]}
-        contentContainerStyle={{ paddingTop: topPad + 32, paddingHorizontal: 20, paddingBottom: 120 }}
-        showsVerticalScrollIndicator={false}
-        keyboardShouldPersistTaps="handled"
-      >
-        {/* Header */}
-        <View style={styles.headerRow}>
-          <View style={styles.headerLeft}>
-            <Text style={[styles.heading, { color: colors.foreground }]}>Grocery List</Text>
-            <View style={styles.subRow}>
-              <Text style={[styles.sub, { color: colors.mutedForeground }]}>
-                {items.length === 0
-                  ? "Add ingredients from any recipe"
-                  : `${unchecked.length} of ${items.length} remaining`}
-              </Text>
-              <SyncDot status={status} />
-            </View>
-          </View>
-          <View style={styles.headerActions}>
-            {items.length > 0 && (
-              <Pressable
-                onPress={handleCopy}
-                style={({ pressed }) => [styles.headerBtn, { backgroundColor: colors.card, borderColor: colors.border }, pressed && { opacity: 0.7 }]}
-              >
-                <Feather name="copy" size={16} color={colors.foreground} />
-              </Pressable>
-            )}
+    <ScrollView
+      style={[styles.root, { backgroundColor: colors.background }]}
+      contentContainerStyle={{ paddingTop: topPad + 32, paddingHorizontal: 20, paddingBottom: 120 }}
+      showsVerticalScrollIndicator={false}
+      keyboardShouldPersistTaps="handled"
+    >
+      {/* Header */}
+      <View style={styles.headerRow}>
+        <View style={{ flex: 1 }}>
+          {editingTitle ? (
+            <TextInput
+              style={[styles.headingInput, { color: colors.foreground, borderColor: colors.primary }]}
+              value={titleInput}
+              onChangeText={setTitleInput}
+              autoFocus
+              onBlur={() => { rename(titleInput); setEditingTitle(false); }}
+              onSubmitEditing={() => { rename(titleInput); setEditingTitle(false); }}
+              placeholder="Name this list"
+              placeholderTextColor={colors.mutedForeground}
+            />
+          ) : (
             <Pressable
-              onPress={() => setShowShareModal(true)}
-              style={({ pressed }) => [styles.headerBtn, { backgroundColor: colors.card, borderColor: colors.border }, pressed && { opacity: 0.7 }]}
+              onPress={() => { if (canEdit) { setTitleInput(name ?? ""); setEditingTitle(true); } }}
+              disabled={!canEdit}
             >
-              <Feather name="share-2" size={16} color={colors.foreground} />
+              <Text style={[styles.heading, { color: colors.foreground }]}>
+                {name || "Shared List"}
+              </Text>
             </Pressable>
-            {items.length > 0 && (
-              <Pressable
-                onPress={handleClear}
-                style={({ pressed }) => [styles.headerBtn, { backgroundColor: colors.card, borderColor: colors.border }, pressed && { opacity: 0.7 }]}
-              >
-                <Feather name="trash-2" size={16} color={colors.destructive} />
-              </Pressable>
-            )}
-          </View>
+          )}
+          <Text style={[styles.sub, { color: colors.mutedForeground }]}>
+            {canEdit ? "You can check off and add items" : "View only"} · {unchecked.length} remaining
+          </Text>
         </View>
+        <View style={styles.headerActions}>
+          <Pressable
+            onPress={handleCopy}
+            style={[styles.headerBtn, { backgroundColor: colors.card, borderColor: colors.border }]}
+          >
+            <Feather name="copy" size={16} color={colors.foreground} />
+          </Pressable>
+          {!canEdit && (
+            <View style={[styles.viewBadge, { backgroundColor: colors.secondary, borderColor: colors.border }]}>
+              <Feather name="eye" size={12} color={colors.mutedForeground} />
+              <Text style={[styles.viewBadgeText, { color: colors.mutedForeground }]}>View only</Text>
+            </View>
+          )}
+          <Pressable
+            onPress={() => router.replace("/(tabs)")}
+            style={[styles.headerBtn, { backgroundColor: colors.card, borderColor: colors.border }]}
+            hitSlop={8}
+          >
+            <Feather name="x" size={16} color={colors.foreground} />
+          </Pressable>
+        </View>
+      </View>
 
-        {/* Manual add input */}
+      {/* Manual add input — editors only */}
+      {canEdit && (
         <View style={[styles.manualAddRow, { backgroundColor: colors.card, borderColor: colors.border }]}>
           <TextInput
             style={[styles.manualAddInput, { color: colors.foreground }]}
@@ -476,97 +213,80 @@ export default function GroceryScreen() {
             <Feather name="plus" size={18} color={manualInput.trim() ? colors.primaryForeground : colors.mutedForeground} />
           </Pressable>
         </View>
+      )}
 
-        {/* Empty state */}
-        {loaded && items.length === 0 && (
-          <View style={styles.empty}>
-            <Feather name="shopping-cart" size={40} color={colors.mutedForeground} />
-            <Text style={[styles.emptyTitle, { color: colors.foreground }]}>Your list is empty</Text>
-            <Text style={[styles.emptyText, { color: colors.mutedForeground }]}>
-              Add an item above, or tap "Add to Grocery List" inside any recipe
-            </Text>
+      {/* Empty state */}
+      {unchecked.length === 0 && checked.length === 0 && (
+        <View style={styles.empty}>
+          <Feather name="shopping-cart" size={40} color={colors.mutedForeground} />
+          <Text style={[styles.emptyText, { color: colors.mutedForeground }]}>This list is empty</Text>
+        </View>
+      )}
+
+      {/* Unchecked items, grouped by aisle */}
+      {uncheckedGroups.map(({ aisle, icon, items: aisleItems }) => (
+        <View key={aisle} style={styles.aisleSection}>
+          <View style={styles.aisleHeader}>
+            <Text style={styles.aisleIcon}>{icon}</Text>
+            <Text style={[styles.aisleLabel, { color: colors.mutedForeground }]}>{aisle.toUpperCase()}</Text>
+            <View style={[styles.aisleLine, { backgroundColor: colors.border }]} />
           </View>
-        )}
+          {aisleItems.map((item) => (
+            <SharedRow
+              key={item.id}
+              item={item}
+              colors={colors}
+              canEdit={canEdit}
+              isEditing={editingId === item.id}
+              editValue={editValue}
+              onToggle={() => toggleItem(item.id)}
+              onEditStart={() => startEdit(item)}
+              onEditChange={setEditValue}
+              onEditCommit={() => commitEdit(item.id)}
+              onDelete={() => handleDelete(item.id)}
+            />
+          ))}
+        </View>
+      ))}
 
-        {/* Unchecked items grouped by aisle */}
-        {uncheckedGroups.map(({ aisle, icon, items: aisleItems }) => (
-          <View key={aisle} style={styles.aisleSection}>
-            <View style={styles.aisleHeader}>
-              <Text style={styles.aisleIcon}>{icon}</Text>
-              <Text style={[styles.aisleLabel, { color: colors.mutedForeground }]}>{aisle.toUpperCase()}</Text>
-              <View style={[styles.aisleLine, { backgroundColor: colors.border }]} />
-            </View>
-            {aisleItems.map((item) => (
-              <GroceryRow
+      {/* In cart */}
+      {checked.length > 0 && (
+        <View style={styles.aisleSection}>
+          <View style={styles.aisleHeader}>
+            <Text style={styles.aisleIcon}>✅</Text>
+            <Text style={[styles.aisleLabel, { color: colors.mutedForeground }]}>IN CART</Text>
+            <View style={[styles.aisleLine, { backgroundColor: colors.border }]} />
+          </View>
+          {checkedGroups.map(({ items: aisleItems }) =>
+            aisleItems.map((item) => (
+              <SharedRow
                 key={item.id}
                 item={item}
                 colors={colors}
-                isEditing={editingId === item.id}
-                editValue={editValue}
+                canEdit={canEdit}
+                isEditing={false}
+                editValue=""
                 onToggle={() => toggleItem(item.id)}
-                onEditStart={() => startEdit(item)}
-                onEditChange={setEditValue}
-                onEditCommit={() => commitEdit(item.id)}
-                onDelete={() => persist(items.filter((it) => it.id !== item.id))}
+                onEditStart={() => {}}
+                onEditChange={() => {}}
+                onEditCommit={() => {}}
+                onDelete={() => handleDelete(item.id)}
               />
-            ))}
-          </View>
-        ))}
-
-        {/* In cart section */}
-        {checked.length > 0 && (
-          <View style={styles.aisleSection}>
-            <View style={styles.aisleHeader}>
-              <Text style={styles.aisleIcon}>✅</Text>
-              <Text style={[styles.aisleLabel, { color: colors.mutedForeground }]}>IN CART</Text>
-              <View style={[styles.aisleLine, { backgroundColor: colors.border }]} />
-            </View>
-            {checkedGroups.map(({ items: aisleItems }) =>
-              aisleItems.map((item) => (
-                <GroceryRow
-                  key={item.id}
-                  item={item}
-                  colors={colors}
-                  isEditing={false}
-                  editValue=""
-                  onToggle={() => toggleItem(item.id)}
-                  onEditStart={() => {}}
-                  onEditChange={() => {}}
-                  onEditCommit={() => {}}
-                  onDelete={() => persist(items.filter((it) => it.id !== item.id))}
-                />
-              ))
-            )}
-          </View>
-        )}
-      </ScrollView>
-
-      <ShareModal
-        visible={showShareModal}
-        onClose={() => setShowShareModal(false)}
-        shareToken={shareToken}
-        permission={sharePermission}
-        onSetPermission={setSharePermission}
-      />
-    </>
+            ))
+          )}
+        </View>
+      )}
+    </ScrollView>
   );
 }
 
-// ─── Row ──────────────────────────────────────────────────────────────────────
-
-function GroceryRow({
-  item,
-  colors,
-  isEditing,
-  editValue,
-  onToggle,
-  onEditStart,
-  onEditChange,
-  onEditCommit,
-  onDelete,
+function SharedRow({
+  item, colors, canEdit, isEditing, editValue,
+  onToggle, onEditStart, onEditChange, onEditCommit, onDelete,
 }: {
   item: GroceryItem;
   colors: ReturnType<typeof useColors>;
+  canEdit: boolean;
   isEditing: boolean;
   editValue: string;
   onToggle: () => void;
@@ -576,22 +296,18 @@ function GroceryRow({
   onDelete: () => void;
 }) {
   return (
-    <View
-      style={[
-        styles.row,
-        { backgroundColor: colors.card, borderColor: colors.border },
-        item.checked && styles.rowChecked,
-      ]}
-    >
-      {/* Checkbox */}
-      <Pressable onPress={onToggle} hitSlop={8}>
-        <View style={[styles.checkbox, { borderColor: item.checked ? colors.primary : colors.border, backgroundColor: item.checked ? colors.primary : "transparent" }]}>
+    <View style={[styles.row, { backgroundColor: colors.card, borderColor: colors.border }, item.checked && styles.rowChecked]}>
+      <Pressable onPress={onToggle} hitSlop={8} disabled={!canEdit}>
+        <View style={[styles.checkbox, {
+          borderColor: item.checked ? colors.primary : colors.border,
+          backgroundColor: item.checked ? colors.primary : "transparent",
+          opacity: canEdit ? 1 : 0.5,
+        }]}>
           {item.checked && <Feather name="check" size={12} color={colors.primaryForeground} />}
         </View>
       </Pressable>
 
-      {/* Amount */}
-      {item.amount > 0 && item.unit !== "" || item.amount !== 1 ? (
+      {(item.amount > 0 && item.unit !== "") || item.amount !== 1 ? (
         isEditing ? (
           <TextInput
             style={[styles.amountInput, { color: colors.foreground, borderColor: colors.primary, backgroundColor: colors.secondary }]}
@@ -604,7 +320,7 @@ function GroceryRow({
             selectTextOnFocus
           />
         ) : (
-          <Pressable onPress={onEditStart} hitSlop={8}>
+          <Pressable onPress={onEditStart} hitSlop={8} disabled={!canEdit}>
             <Text style={[styles.amountBadge, { backgroundColor: colors.secondary, color: colors.mutedForeground }]}>
               {item.amount % 1 === 0 ? item.amount : item.amount.toFixed(1)}{item.unit ? ` ${item.unit}` : ""}
             </Text>
@@ -612,46 +328,46 @@ function GroceryRow({
         )
       ) : null}
 
-      {/* Name + source metadata */}
       <View style={styles.rowTextWrap}>
-        <Text
-          style={[styles.rowText, { color: colors.foreground }, item.checked && { textDecorationLine: "line-through", color: colors.mutedForeground }]}
-          numberOfLines={2}
-        >
+        <Text style={[styles.rowText, { color: colors.foreground }, item.checked && { textDecorationLine: "line-through", color: colors.mutedForeground }]} numberOfLines={2}>
           {item.name}
         </Text>
         {item.addedFromRecipe && (
           <Text style={[styles.rowSource, { color: colors.mutedForeground }]} numberOfLines={1}>
-            from {item.addedFromRecipe}{item.servingMultiplier && item.servingMultiplier !== 1 ? ` ×${item.servingMultiplier}` : ""}
+            from {item.addedFromRecipe}
           </Text>
         )}
       </View>
 
-      {/* Delete */}
-      <Pressable onPress={onDelete} hitSlop={12}>
-        <Feather name="x" size={16} color={colors.mutedForeground} />
-      </Pressable>
+      {canEdit && (
+        <Pressable onPress={onDelete} hitSlop={12}>
+          <Feather name="x" size={16} color={colors.mutedForeground} />
+        </Pressable>
+      )}
     </View>
   );
 }
 
-// ─── Styles ───────────────────────────────────────────────────────────────────
-
 const styles = StyleSheet.create({
   root: { flex: 1 },
-  headerRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 28 },
-  headerLeft: { flex: 1, gap: 2 },
-  subRow: { flexDirection: "row", alignItems: "center", gap: 6 },
-  heading: { fontSize: 26, fontFamily: "Inter_700Bold", marginBottom: 2 },
+  center: { flex: 1, alignItems: "center", justifyContent: "center", gap: 16, padding: 24 },
+  loadingText: { fontSize: 14, fontFamily: "Inter_400Regular" },
+  errorText: { fontSize: 16, fontFamily: "Inter_600SemiBold", textAlign: "center" },
+  homeBtn: { borderRadius: 12, paddingVertical: 14, paddingHorizontal: 28, marginTop: 8 },
+  homeBtnText: { fontSize: 15, fontFamily: "Inter_600SemiBold" },
+  headerRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 24 },
+  heading: { fontSize: 26, fontFamily: "Inter_700Bold", marginBottom: 4 },
+  headingInput: { fontSize: 26, fontFamily: "Inter_700Bold", marginBottom: 4, borderBottomWidth: 1.5, paddingBottom: 2 },
   sub: { fontSize: 13, fontFamily: "Inter_400Regular" },
-  headerActions: { flexDirection: "row", gap: 8, marginTop: 4 },
+  headerActions: { flexDirection: "row", gap: 8, alignItems: "center", marginTop: 4 },
   headerBtn: { width: 36, height: 36, borderRadius: 18, borderWidth: 1, alignItems: "center", justifyContent: "center" },
+  viewBadge: { flexDirection: "row", alignItems: "center", gap: 4, borderRadius: 12, borderWidth: 1, paddingHorizontal: 10, paddingVertical: 6 },
+  viewBadgeText: { fontSize: 11, fontFamily: "Inter_600SemiBold" },
   manualAddRow: { flexDirection: "row", alignItems: "center", gap: 10, borderRadius: 12, borderWidth: 1, paddingHorizontal: 14, paddingVertical: 6, marginBottom: 20 },
   manualAddInput: { flex: 1, fontSize: 14, fontFamily: "Inter_400Regular", paddingVertical: 12 },
   manualAddBtn: { width: 32, height: 32, borderRadius: 16, alignItems: "center", justifyContent: "center" },
   empty: { alignItems: "center", paddingVertical: 64, gap: 12 },
-  emptyTitle: { fontSize: 17, fontFamily: "Inter_600SemiBold" },
-  emptyText: { fontSize: 13, fontFamily: "Inter_400Regular", textAlign: "center", maxWidth: 260, lineHeight: 20 },
+  emptyText: { fontSize: 14, fontFamily: "Inter_400Regular" },
   aisleSection: { marginBottom: 20 },
   aisleHeader: { flexDirection: "row", alignItems: "center", gap: 8, marginBottom: 10 },
   aisleIcon: { fontSize: 16 },
