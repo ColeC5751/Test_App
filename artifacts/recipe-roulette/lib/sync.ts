@@ -181,6 +181,20 @@ export function useSharedGrocerySync(token: string | undefined) {
         setItems(data.items ?? []);
         setPermission((data.permission ?? "view") as SharePermission);
         setStatus("synced");
+
+        // "Shared with me" — instant join on open, mirrors
+        // useSharedPlanSync above. See that hook's comment for the
+        // full rationale.
+        const userId = await getUserId();
+        if (userId) {
+          supabase
+            .from("grocery_list_members")
+            .upsert(
+              { list_id: data.id, user_id: userId, permission: data.permission ?? "view" },
+              { onConflict: "list_id,user_id" }
+            )
+            .then(() => {});
+        }
       } catch {
         if (!cancelled) {
           setNotFound(true);
@@ -497,6 +511,24 @@ export function useSharedPlanSync(token: string | undefined) {
         setPlan(data.slots ?? {});
         setPermission((data.permission ?? "view") as SharePermission);
         setStatus("synced");
+
+        // "Shared with me" — instant join on open. If the visitor is
+        // signed in, record their membership so this plan becomes
+        // reachable from within the app later, not just via this link.
+        // Anonymous visitors can still view via the token as before;
+        // they just won't get a persistent entry until signed in.
+        // Upsert (not insert) so repeat visits don't error on the
+        // unique(plan_id, user_id) constraint.
+        const userId = await getUserId();
+        if (userId) {
+          supabase
+            .from("plan_members")
+            .upsert(
+              { plan_id: data.id, user_id: userId, permission: data.permission ?? "view" },
+              { onConflict: "plan_id,user_id" }
+            )
+            .then(() => {});
+        }
       } catch {
         if (!cancelled) {
           setNotFound(true);
@@ -536,4 +568,103 @@ export function useSharedPlanSync(token: string | undefined) {
   }, [permission]);
 
   return { plan, status, permission, notFound, save };
+}
+
+// ─── "Shared With Me" ─────────────────────────────────────────────────────────
+// Lists every plan/list a signed-in user has previously joined (via opening
+// a share link — see the join-on-open logic in useSharedPlanSync /
+// useSharedGrocerySync above). Used by the "Shared with me" tab/screen.
+
+export type SharedWithMePlan = {
+  planId: string;
+  shareToken: string;
+  permission: SharePermission;
+  joinedAt: string;
+};
+
+export function useSharedWithMePlans() {
+  const [plans, setPlans] = useState<SharedWithMePlan[]>([]);
+  const [status, setStatus] = useState<SyncStatus>("syncing");
+
+  const load = useCallback(async () => {
+    setStatus("syncing");
+    try {
+      const userId = await getUserId();
+      if (!userId) { setStatus("offline"); return; }
+
+      const { data, error } = await supabase
+        .from("plan_members")
+        .select("plan_id, permission, joined_at, meal_plans(share_token)")
+        .eq("user_id", userId)
+        .order("joined_at", { ascending: false });
+
+      if (!error && data) {
+        const mapped: SharedWithMePlan[] = data
+          .filter((row: any) => row.meal_plans?.share_token)
+          .map((row: any) => ({
+            planId: row.plan_id,
+            shareToken: row.meal_plans.share_token,
+            permission: row.permission as SharePermission,
+            joinedAt: row.joined_at,
+          }));
+        setPlans(mapped);
+        setStatus("synced");
+      } else {
+        setStatus("error");
+      }
+    } catch {
+      setStatus("offline");
+    }
+  }, []);
+
+  useEffect(() => { load(); }, [load]);
+
+  return { plans, status, reload: load };
+}
+
+export type SharedWithMeGroceryList = {
+  listId: string;
+  shareToken: string;
+  permission: SharePermission;
+  joinedAt: string;
+};
+
+export function useSharedWithMeGroceryLists() {
+  const [lists, setLists] = useState<SharedWithMeGroceryList[]>([]);
+  const [status, setStatus] = useState<SyncStatus>("syncing");
+
+  const load = useCallback(async () => {
+    setStatus("syncing");
+    try {
+      const userId = await getUserId();
+      if (!userId) { setStatus("offline"); return; }
+
+      const { data, error } = await supabase
+        .from("grocery_list_members")
+        .select("list_id, permission, joined_at, grocery_lists(share_token)")
+        .eq("user_id", userId)
+        .order("joined_at", { ascending: false });
+
+      if (!error && data) {
+        const mapped: SharedWithMeGroceryList[] = data
+          .filter((row: any) => row.grocery_lists?.share_token)
+          .map((row: any) => ({
+            listId: row.list_id,
+            shareToken: row.grocery_lists.share_token,
+            permission: row.permission as SharePermission,
+            joinedAt: row.joined_at,
+          }));
+        setLists(mapped);
+        setStatus("synced");
+      } else {
+        setStatus("error");
+      }
+    } catch {
+      setStatus("offline");
+    }
+  }, []);
+
+  useEffect(() => { load(); }, [load]);
+
+  return { lists, status, reload: load };
 }
