@@ -168,16 +168,19 @@ export function CookMode({ visible, recipeName, steps, onClose }: CookModeProps)
             </Text>
           </View>
 
-          {/* Step text */}
-          <Animated.Text
+          {/* Step text — keyed on currentStep to force full remount,
+               preventing ghost text artifacts from the previous step */}
+          <Animated.View
+            key={currentStep}
             style={[
-              styles.stepText,
-              { color: colors.foreground },
+              styles.stepTextWrap,
               { opacity: fadeAnim, transform: [{ translateX: slideAnim }] },
             ]}
           >
-            {steps[currentStep]}
-          </Animated.Text>
+            <Text style={[styles.stepText, { color: colors.foreground }]}>
+              {steps[currentStep]}
+            </Text>
+          </Animated.View>
 
           {/* Done state */}
           {isLast && (
@@ -358,6 +361,7 @@ const styles = StyleSheet.create({
     fontSize: 22,
     fontFamily: "Inter_700Bold",
   },
+  stepTextWrap: { width: "100%", alignItems: "center" },
   stepText: {
     fontSize: 20,
     fontFamily: "Inter_400Regular",
