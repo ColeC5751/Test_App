@@ -10,7 +10,7 @@ import { Stack, useRouter, useSegments } from "expo-router";
 import * as SplashScreen from "expo-splash-screen";
 import * as WebBrowser from "expo-web-browser";
 import React, { useEffect, useState } from "react";
-import { Linking } from "react-native";
+import { Linking, Platform } from "react-native";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { KeyboardProvider } from "react-native-keyboard-controller";
 import { SafeAreaProvider } from "react-native-safe-area-context";
@@ -91,8 +91,31 @@ function RootLayoutNav() {
     return () => listener.subscription.unsubscribe();
   }, []);
 
-  // Handle deep links — shared grocery/plan links + magic link callback
+  // Handle deep links — shared grocery/plan links + magic link callback.
+  //
+  // IMPORTANT (web): this effect fires on every app load, and
+  // Linking.getInitialURL() simply returns whatever URL is currently in
+  // the address bar — even for a plain, direct page load. On web, Expo
+  // Router's file-based routing has ALREADY resolved and mounted the
+  // correct screen for that URL by the time this runs (route groups like
+  // "(shared)" are invisible in the URL, so "/plan/abc123" already maps
+  // straight to app/(shared)/plan/[token].tsx on its own). If we ALSO
+  // call router.push() here for the same URL, it mounts a second
+  // instance of that screen. For the shared plan/grocery screens, that
+  // meant two instances each creating a Supabase realtime channel with
+  // the identical name (keyed by row id), and the second subscribe()
+  // collided with the first — causing a hard crash:
+  //   "cannot add postgres_changes callbacks for realtime:shared_plan_...
+  //    after subscribe()"
+  //
+  // This deep-link matching block exists for native app deep linking
+  // (e.g. tapping a link that opens the installed app via a universal
+  // link / custom scheme), where there's no browser URL bar already
+  // driving navigation — so it's still needed there. On web it's
+  // redundant and actively harmful, so we skip it entirely.
   useEffect(() => {
+    if (Platform.OS === "web") return;
+
     const handleUrl = async (url: string) => {
       // Magic link callback
       if (url.includes("auth/callback") || url.includes("access_token") || url.includes("code=")) {
@@ -109,7 +132,7 @@ function RootLayoutNav() {
         return;
       }
 
-      // Shared grocery/plan links
+      // Shared grocery/plan links (native only — see comment above)
       const match = url.match(/\/(grocery|plan)\/([a-zA-Z0-9-]+)/);
       if (match) {
         router.push(`/(shared)/${match[1]}/${match[2]}` as any);
