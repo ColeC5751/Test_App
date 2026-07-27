@@ -4,15 +4,14 @@
 //
 // Editing here mirrors app/(tabs)/plan.tsx as closely as possible: same
 // SlotPickerModal (My Dinners + Spin for me), same PlanSlot shape, same
-// AsyncStorage-backed personal recipe list. Recipes are per-device, not
-// per-account, so an editor picks from their own saved recipes — same
-// as if this were their own plan.
+// account-based recipe list via useRecipeSync. An editor picks from THEIR
+// OWN signed-in account's recipes — same source of truth as if this were
+// their own plan, and consistent across their devices.
 
-import AsyncStorage from "@react-native-async-storage/async-storage";
 import { Feather } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
 import { useLocalSearchParams, useRouter } from "expo-router";
-import React, { useEffect, useState } from "react";
+import React, { useState } from "react";
 import {
   ActivityIndicator,
   Alert,
@@ -29,22 +28,8 @@ import {
 } from "react-native";
 
 import { useColors } from "@/hooks/useColors";
-import { useSharedPlanSync } from "@/lib/sync";
-import type { PlanSlot } from "@/lib/types";
-
-// ─── Personal recipe type (matches roulette.tsx / plan.tsx) ───────────────────
-
-interface PersonalRecipe {
-  id: string;
-  name: string;
-  ingredients: string;
-  steps: string;
-  photoUrl?: string;
-  createdAt: number;
-  source?: "manual" | "photo" | "url";
-}
-
-const STORAGE_KEY = "@recipe_roulette_personal";
+import { useSharedPlanSync, useRecipeSync } from "@/lib/sync";
+import type { PersonalRecipe, PlanSlot } from "@/lib/types";
 
 // ─── Date helpers (duplicated from plan.tsx for isolation) ────────────────────
 
@@ -92,26 +77,20 @@ function getWeekDays(monday: Date): Date[] {
 function SlotPickerModal({
   visible,
   dateLabel,
+  recipes,
   onClose,
   onPickRecipe,
   onSpinRecipe,
 }: {
   visible: boolean;
   dateLabel: string;
+  recipes: PersonalRecipe[];
   onClose: () => void;
   onPickRecipe: (recipe: PersonalRecipe) => void;
   onSpinRecipe: () => void;
 }) {
   const colors = useColors();
-  const [recipes, setRecipes] = useState<PersonalRecipe[]>([]);
   const [tab, setTab] = useState<"pick" | "spin">("pick");
-
-  useEffect(() => {
-    if (!visible) return;
-    AsyncStorage.getItem(STORAGE_KEY).then((json) => {
-      setRecipes(json ? JSON.parse(json) : []);
-    }).catch(() => {});
-  }, [visible]);
 
   return (
     <Modal visible={visible} animationType="slide" presentationStyle="pageSheet" onRequestClose={onClose}>
@@ -208,6 +187,7 @@ export default function SharedPlanScreen() {
   const topPad = Platform.OS === "web" ? 67 : 0;
 
   const { plan, status, permission, notFound, name, save, rename } = useSharedPlanSync(token);
+  const { recipes } = useRecipeSync();
   const [weekOffset, setWeekOffset] = useState(0);
   const [pickerDate, setPickerDate] = useState<Date | null>(null);
   const [editingTitle, setEditingTitle] = useState(false);
@@ -260,17 +240,13 @@ export default function SharedPlanScreen() {
 
   const handleSpinRecipe = async () => {
     if (!pickerDate) return;
-    try {
-      const json = await AsyncStorage.getItem(STORAGE_KEY);
-      const recipes: PersonalRecipe[] = json ? JSON.parse(json) : [];
-      if (recipes.length === 0) {
-        Alert.alert("No recipes", "Add recipes to My Dinners first.");
-        setPickerDate(null);
-        return;
-      }
-      const recipe = recipes[Math.floor(Math.random() * recipes.length)];
-      await handlePickRecipe(recipe);
-    } catch {}
+    if (recipes.length === 0) {
+      Alert.alert("No recipes", "Add recipes to My Dinners first.");
+      setPickerDate(null);
+      return;
+    }
+    const recipe = recipes[Math.floor(Math.random() * recipes.length)];
+    await handlePickRecipe(recipe);
   };
 
   const pickerDateLabel = pickerDate
@@ -430,6 +406,7 @@ export default function SharedPlanScreen() {
       <SlotPickerModal
         visible={!!pickerDate}
         dateLabel={pickerDateLabel}
+        recipes={recipes}
         onClose={() => setPickerDate(null)}
         onPickRecipe={handlePickRecipe}
         onSpinRecipe={handleSpinRecipe}
