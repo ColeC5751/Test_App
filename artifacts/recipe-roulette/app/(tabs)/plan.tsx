@@ -53,7 +53,7 @@ function getMondayOfWeek(date: Date): Date {
 
 function formatWeekLabel(monday: Date): string {
   return monday.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
-
+}
 const planDetailStyles = StyleSheet.create({
   root: { flex: 1 },
   header: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", padding: 16, borderBottomWidth: 1 },
