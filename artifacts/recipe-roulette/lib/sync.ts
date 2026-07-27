@@ -25,6 +25,7 @@ export function useGrocerySync() {
   const [items, setItems] = useState<GroceryItem[]>([]);
   const [status, setStatus] = useState<SyncStatus>("synced");
   const [shareToken, setShareToken] = useState<string | null>(null);
+  const [name, setName] = useState<string | null>(null);
   const rowIdRef = useRef<string | null>(null);
 
   const load = useCallback(async () => {
@@ -46,7 +47,7 @@ export function useGrocerySync() {
       if (storedRowId) {
         const { data, error } = await supabase
           .from("grocery_lists")
-          .select("id, items, share_token")
+          .select("id, items, share_token, name")
           .eq("id", storedRowId)
           .single();
 
@@ -54,6 +55,7 @@ export function useGrocerySync() {
           const remoteItems: GroceryItem[] = data.items ?? [];
           setItems(remoteItems);
           setShareToken(data.share_token);
+          setName(data.name ?? null);
           await AsyncStorage.setItem(GROCERY_LOCAL_KEY, JSON.stringify(remoteItems));
           setStatus("synced");
           return;
@@ -66,12 +68,13 @@ export function useGrocerySync() {
       const { data: newRow, error: insertError } = await supabase
         .from("grocery_lists")
         .insert({ owner_id: userId, items: localItems })
-        .select("id, share_token")
+        .select("id, share_token, name")
         .single();
 
       if (!insertError && newRow) {
         rowIdRef.current = newRow.id;
         setShareToken(newRow.share_token);
+        setName(newRow.name ?? null);
         await AsyncStorage.setItem(GROCERY_ROW_KEY, newRow.id);
       }
       setStatus("synced");
@@ -139,7 +142,19 @@ export function useGrocerySync() {
     return null;
   }, []);
 
-  return { items, status, shareToken, save, load, loadShared };
+  const rename = useCallback(async (newName: string) => {
+    const trimmed = newName.trim();
+    setName(trimmed || null);
+    if (!rowIdRef.current) return;
+    try {
+      await supabase
+        .from("grocery_lists")
+        .update({ name: trimmed || null })
+        .eq("id", rowIdRef.current);
+    } catch {}
+  }, []);
+
+  return { items, status, shareToken, name, save, load, loadShared, rename };
 }
 
 // ─── Shared (read-only viewer) Grocery Sync ──────────────────────────────────
@@ -154,6 +169,7 @@ export function useSharedGrocerySync(token: string | undefined) {
   const [status, setStatus] = useState<SyncStatus>("syncing");
   const [permission, setPermission] = useState<SharePermission>("view");
   const [notFound, setNotFound] = useState(false);
+  const [name, setName] = useState<string | null>(null);
   const rowIdRef = useRef<string | null>(null);
 
   useEffect(() => {
@@ -165,7 +181,7 @@ export function useSharedGrocerySync(token: string | undefined) {
       try {
         const { data, error } = await supabase
           .from("grocery_lists")
-          .select("id, items, permission")
+          .select("id, items, permission, name")
           .eq("share_token", token)
           .single();
 
@@ -180,6 +196,7 @@ export function useSharedGrocerySync(token: string | undefined) {
         rowIdRef.current = data.id;
         setItems(data.items ?? []);
         setPermission((data.permission ?? "view") as SharePermission);
+        setName(data.name ?? null);
         setStatus("synced");
 
         // "Shared with me" — instant join on open, mirrors
@@ -233,7 +250,19 @@ export function useSharedGrocerySync(token: string | undefined) {
     } catch {}
   }, [permission]);
 
-  return { items, status, permission, notFound, save };
+  const rename = useCallback(async (newName: string) => {
+    const trimmed = newName.trim();
+    setName(trimmed || null);
+    if (!rowIdRef.current || permission !== "edit") return;
+    try {
+      await supabase
+        .from("grocery_lists")
+        .update({ name: trimmed || null })
+        .eq("id", rowIdRef.current);
+    } catch {}
+  }, [permission]);
+
+  return { items, status, permission, notFound, name, save, rename };
 }
 
 // ─── Recipe Sync ──────────────────────────────────────────────────────────────
@@ -343,6 +372,7 @@ export function usePlanSync() {
   const [status, setStatus] = useState<SyncStatus>("synced");
   const [shareToken, setShareToken] = useState<string | null>(null);
   const [permission, setPermission] = useState<SharePermission>("view");
+  const [name, setName] = useState<string | null>(null);
   const rowIdRef = useRef<string | null>(null);
 
   const load = useCallback(async () => {
@@ -362,7 +392,7 @@ export function usePlanSync() {
       if (storedRowId) {
         const { data, error } = await supabase
           .from("meal_plans")
-          .select("id, slots, share_token, permission")
+          .select("id, slots, share_token, permission, name")
           .eq("id", storedRowId)
           .single();
 
@@ -370,6 +400,7 @@ export function usePlanSync() {
           setPlan(data.slots ?? {});
           setShareToken(data.share_token);
           setPermission(data.permission as SharePermission);
+          setName(data.name ?? null);
           await AsyncStorage.setItem(PLAN_LOCAL_KEY, JSON.stringify(data.slots ?? {}));
           setStatus("synced");
           return;
@@ -381,12 +412,13 @@ export function usePlanSync() {
       const { data: newRow } = await supabase
         .from("meal_plans")
         .insert({ owner_id: userId, slots: localPlan, permission: "view" })
-        .select("id, share_token")
+        .select("id, share_token, name")
         .single();
 
       if (newRow) {
         rowIdRef.current = newRow.id;
         setShareToken(newRow.share_token);
+        setName(newRow.name ?? null);
         await AsyncStorage.setItem(PLAN_ROW_KEY, newRow.id);
       }
       setStatus("synced");
@@ -463,7 +495,19 @@ export function usePlanSync() {
 
   useEffect(() => { load(); }, [load]);
 
-  return { plan, status, shareToken, permission, save, load, loadShared, setSharePermission };
+  const rename = useCallback(async (newName: string) => {
+    const trimmed = newName.trim();
+    setName(trimmed || null);
+    if (!rowIdRef.current) return;
+    try {
+      await supabase
+        .from("meal_plans")
+        .update({ name: trimmed || null })
+        .eq("id", rowIdRef.current);
+    } catch {}
+  }, []);
+
+  return { plan, status, shareToken, permission, name, save, load, loadShared, setSharePermission, rename };
 }
 
 // ─── Shared (read-only viewer) Meal Plan Sync ────────────────────────────────
@@ -484,6 +528,7 @@ export function useSharedPlanSync(token: string | undefined) {
   const [status, setStatus] = useState<SyncStatus>("syncing");
   const [permission, setPermission] = useState<SharePermission>("view");
   const [notFound, setNotFound] = useState(false);
+  const [name, setName] = useState<string | null>(null);
   const rowIdRef = useRef<string | null>(null);
 
   useEffect(() => {
@@ -495,7 +540,7 @@ export function useSharedPlanSync(token: string | undefined) {
       try {
         const { data, error } = await supabase
           .from("meal_plans")
-          .select("id, slots, permission")
+          .select("id, slots, permission, name")
           .eq("share_token", token)
           .single();
 
@@ -510,6 +555,7 @@ export function useSharedPlanSync(token: string | undefined) {
         rowIdRef.current = data.id;
         setPlan(data.slots ?? {});
         setPermission((data.permission ?? "view") as SharePermission);
+        setName(data.name ?? null);
         setStatus("synced");
 
         // "Shared with me" — instant join on open. If the visitor is
@@ -567,7 +613,19 @@ export function useSharedPlanSync(token: string | undefined) {
     } catch {}
   }, [permission]);
 
-  return { plan, status, permission, notFound, save };
+  const rename = useCallback(async (newName: string) => {
+    const trimmed = newName.trim();
+    setName(trimmed || null);
+    if (!rowIdRef.current || permission !== "edit") return;
+    try {
+      await supabase
+        .from("meal_plans")
+        .update({ name: trimmed || null })
+        .eq("id", rowIdRef.current);
+    } catch {}
+  }, [permission]);
+
+  return { plan, status, permission, notFound, name, save, rename };
 }
 
 // ─── "Shared With Me" ─────────────────────────────────────────────────────────
@@ -580,6 +638,7 @@ export type SharedWithMePlan = {
   shareToken: string;
   permission: SharePermission;
   joinedAt: string;
+  name: string | null;
 };
 
 export function useSharedWithMePlans() {
@@ -594,7 +653,7 @@ export function useSharedWithMePlans() {
 
       const { data, error } = await supabase
         .from("plan_members")
-        .select("plan_id, permission, joined_at, meal_plans(share_token)")
+        .select("plan_id, permission, joined_at, meal_plans(share_token, name)")
         .eq("user_id", userId)
         .order("joined_at", { ascending: false });
 
@@ -606,6 +665,7 @@ export function useSharedWithMePlans() {
             shareToken: row.meal_plans.share_token,
             permission: row.permission as SharePermission,
             joinedAt: row.joined_at,
+            name: row.meal_plans.name ?? null,
           }));
         setPlans(mapped);
         setStatus("synced");
@@ -627,6 +687,7 @@ export type SharedWithMeGroceryList = {
   shareToken: string;
   permission: SharePermission;
   joinedAt: string;
+  name: string | null;
 };
 
 export function useSharedWithMeGroceryLists() {
@@ -641,7 +702,7 @@ export function useSharedWithMeGroceryLists() {
 
       const { data, error } = await supabase
         .from("grocery_list_members")
-        .select("list_id, permission, joined_at, grocery_lists(share_token)")
+        .select("list_id, permission, joined_at, grocery_lists(share_token, name)")
         .eq("user_id", userId)
         .order("joined_at", { ascending: false });
 
@@ -653,6 +714,7 @@ export function useSharedWithMeGroceryLists() {
             shareToken: row.grocery_lists.share_token,
             permission: row.permission as SharePermission,
             joinedAt: row.joined_at,
+            name: row.grocery_lists.name ?? null,
           }));
         setLists(mapped);
         setStatus("synced");
