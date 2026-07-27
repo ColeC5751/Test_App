@@ -53,6 +53,20 @@ function getMondayOfWeek(date: Date): Date {
 
 function formatWeekLabel(monday: Date): string {
   return monday.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+
+const planDetailStyles = StyleSheet.create({
+  root: { flex: 1 },
+  header: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", padding: 16, borderBottomWidth: 1 },
+  swapBtn: { flexDirection: "row", alignItems: "center", gap: 6 },
+  swapText: { fontSize: 14, fontFamily: "Inter_600SemiBold" },
+  title: { flex: 1, fontSize: 16, fontFamily: "Inter_700Bold", textAlign: "center", marginHorizontal: 8 },
+  body: { padding: 20, gap: 16, alignItems: "center" },
+  photo: { width: "100%", height: 220, borderRadius: 14 },
+  photoPlaceholder: { width: "100%", height: 220, borderRadius: 14, alignItems: "center", justifyContent: "center" },
+  recipeName: { fontSize: 22, fontFamily: "Inter_700Bold", textAlign: "center" },
+  removeBtn: { flexDirection: "row", alignItems: "center", gap: 8, borderWidth: 1.5, borderRadius: 12, paddingVertical: 12, paddingHorizontal: 20, marginTop: 8 },
+  removeBtnText: { fontSize: 14, fontFamily: "Inter_600SemiBold" },
+});
 }
 
 function formatDayLabel(date: Date): { day: string; num: string } {
@@ -104,6 +118,8 @@ function SlotPickerModal({
 
   useEffect(() => {
     if (!visible) return;
+    // Always reset to My Dinners tab when modal opens
+    setTab("pick");
     AsyncStorage.getItem(STORAGE_KEY).then((json) => {
       setRecipes(json ? JSON.parse(json) : []);
     }).catch(() => {});
@@ -136,7 +152,7 @@ function SlotPickerModal({
           >
             <Feather name="shuffle" size={14} color={tab === "spin" ? colors.primaryForeground : colors.mutedForeground} />
             <Text style={[pickerStyles.tabText, { color: tab === "spin" ? colors.primaryForeground : colors.mutedForeground }]}>
-              Spin for me
+              Pick for me
             </Text>
           </Pressable>
         </View>
@@ -297,6 +313,7 @@ export default function PlanScreen() {
   const [pickerDate, setPickerDate] = useState<Date | null>(null);
   const [showShareModal, setShowShareModal] = useState(false);
   const [addingToGrocery, setAddingToGrocery] = useState(false);
+  const [viewingSlot, setViewingSlot] = useState<{ slot: PlanSlot; date: Date } | null>(null);
 
   // Slide animation for week transitions
   const slideAnim = useRef(new Animated.Value(0)).current;
@@ -331,29 +348,35 @@ export default function PlanScreen() {
 
   const handleSlotPress = (date: Date) => {
     const key = isoDateKey(date);
-    if (plan[key]) {
-      // Long-press clears; tap opens picker to change
-      setPickerDate(date);
+    const slot = plan[key] as PlanSlot | null | undefined;
+    if (slot) {
+      // Tap filled slot → view recipe detail
+      setViewingSlot({ slot, date });
     } else {
+      // Tap empty slot → open picker
       setPickerDate(date);
     }
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
   };
 
-  const handleSlotLongPress = (date: Date) => {
-    const key = isoDateKey(date);
-    if (!plan[key]) return;
+  const handleRemoveSlot = async (date: Date) => {
     Alert.alert("Remove meal?", `Clear ${formatDayLabel(date).day} from your plan?`, [
       { text: "Cancel", style: "cancel" },
       {
         text: "Remove", style: "destructive",
         onPress: async () => {
-          const updated = { ...plan, [key]: null };
+          const updated = { ...plan, [isoDateKey(date)]: null };
           await save(updated);
+          setViewingSlot(null);
           Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
         },
       },
     ]);
+  };
+
+  const handleSwapSlot = (date: Date) => {
+    setViewingSlot(null);
+    setPickerDate(date);
   };
 
   const handlePickRecipe = async (recipe: PersonalRecipe) => {
@@ -395,6 +418,19 @@ export default function PlanScreen() {
       Alert.alert("No meals planned", "Add some meals to this week first.");
       return;
     }
+
+    // Confirmation alert listing recipes to be added
+    const recipeNames = slots.map((s) => s.recipeName).join(", ");
+    await new Promise<void>((resolve, reject) => {
+      Alert.alert(
+        "Add to grocery list?",
+        `This will add ingredients from: ${recipeNames}`,
+        [
+          { text: "Cancel", style: "cancel", onPress: () => reject() },
+          { text: "Add", onPress: () => resolve() },
+        ]
+      );
+    }).catch(() => { return; });
 
     setAddingToGrocery(true);
     try {
@@ -493,8 +529,6 @@ export default function PlanScreen() {
               <Pressable
                 key={key}
                 onPress={() => handleSlotPress(date)}
-                onLongPress={() => handleSlotLongPress(date)}
-                delayLongPress={400}
                 style={({ pressed }) => [
                   styles.daySlot,
                   {
@@ -544,32 +578,26 @@ export default function PlanScreen() {
           })}
         </Animated.View>
 
-        {/* Add week to grocery list */}
-        <Pressable
-          onPress={handleAddWeekToGrocery}
-          disabled={addingToGrocery || filledSlots.length === 0}
-          style={({ pressed }) => [
-            styles.groceryBtn,
-            {
-              backgroundColor: filledSlots.length === 0 ? colors.muted : colors.primary,
-              opacity: addingToGrocery ? 0.7 : pressed ? 0.9 : 1,
-            },
-          ]}
-        >
-          <Feather
-            name="shopping-cart"
-            size={18}
-            color={filledSlots.length === 0 ? colors.mutedForeground : colors.primaryForeground}
-          />
-          <Text style={[styles.groceryBtnText, { color: filledSlots.length === 0 ? colors.mutedForeground : colors.primaryForeground }]}>
-            {addingToGrocery ? "Adding…" : "Add week to grocery list"}
-          </Text>
-        </Pressable>
-
+        {/* Add week to grocery list — only shown when meals are planned */}
         {filledSlots.length > 0 && (
-          <Text style={[styles.groceryMeta, { color: colors.mutedForeground }]}>
-            {filledSlots.length} recipe{filledSlots.length !== 1 ? "s" : ""} planned this week
-          </Text>
+          <>
+            <Pressable
+              onPress={handleAddWeekToGrocery}
+              disabled={addingToGrocery}
+              style={({ pressed }) => [
+                styles.groceryBtn,
+                { backgroundColor: colors.primary, opacity: addingToGrocery ? 0.7 : pressed ? 0.9 : 1 },
+              ]}
+            >
+              <Feather name="shopping-cart" size={18} color={colors.primaryForeground} />
+              <Text style={[styles.groceryBtnText, { color: colors.primaryForeground }]}>
+                {addingToGrocery ? "Adding…" : "Add week to grocery list"}
+              </Text>
+            </Pressable>
+            <Text style={[styles.groceryMeta, { color: colors.mutedForeground }]}>
+              {filledSlots.length} recipe{filledSlots.length !== 1 ? "s" : ""} planned this week
+            </Text>
+          </>
         )}
       </ScrollView>
 
@@ -580,6 +608,48 @@ export default function PlanScreen() {
         onPickRecipe={handlePickRecipe}
         onSpinRecipe={handleSpinRecipe}
       />
+
+      {/* Recipe detail view from plan slot */}
+      <Modal
+        visible={!!viewingSlot}
+        animationType="slide"
+        presentationStyle="pageSheet"
+        onRequestClose={() => setViewingSlot(null)}
+      >
+        <SafeAreaView style={[planDetailStyles.root, { backgroundColor: colors.background }]}>
+          <View style={[planDetailStyles.header, { borderBottomColor: colors.border }]}>
+            <Pressable onPress={() => viewingSlot && handleSwapSlot(viewingSlot.date)} style={planDetailStyles.swapBtn}>
+              <Feather name="refresh-cw" size={18} color={colors.foreground} />
+              <Text style={[planDetailStyles.swapText, { color: colors.foreground }]}>Change</Text>
+            </Pressable>
+            <Text style={[planDetailStyles.title, { color: colors.foreground }]} numberOfLines={1}>
+              {viewingSlot?.slot.recipeName}
+            </Text>
+            <Pressable onPress={() => setViewingSlot(null)}>
+              <Feather name="x" size={22} color={colors.foreground} />
+            </Pressable>
+          </View>
+          <ScrollView contentContainerStyle={planDetailStyles.body}>
+            {viewingSlot?.slot.recipePhoto ? (
+              <Image source={{ uri: viewingSlot.slot.recipePhoto }} style={planDetailStyles.photo} />
+            ) : (
+              <View style={[planDetailStyles.photoPlaceholder, { backgroundColor: colors.muted }]}>
+                <Feather name="coffee" size={40} color={colors.mutedForeground} />
+              </View>
+            )}
+            <Text style={[planDetailStyles.recipeName, { color: colors.foreground }]}>
+              {viewingSlot?.slot.recipeName}
+            </Text>
+            <Pressable
+              onPress={() => viewingSlot && handleRemoveSlot(viewingSlot.date)}
+              style={[planDetailStyles.removeBtn, { borderColor: colors.destructive }]}
+            >
+              <Feather name="trash-2" size={16} color={colors.destructive} />
+              <Text style={[planDetailStyles.removeBtnText, { color: colors.destructive }]}>Remove from plan</Text>
+            </Pressable>
+          </ScrollView>
+        </SafeAreaView>
+      </Modal>
 
       <PlanShareModal
         visible={showShareModal}
