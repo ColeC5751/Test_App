@@ -341,6 +341,13 @@ export default function SharedPlanScreen() {
               <Text style={[styles.viewBadgeText, { color: colors.mutedForeground }]}>View only</Text>
             </View>
           )}
+          <Pressable
+            onPress={() => router.replace("/(tabs)")}
+            style={[styles.closeBtn, { backgroundColor: colors.card, borderColor: colors.border }]}
+            hitSlop={8}
+          >
+            <Feather name="x" size={18} color={colors.foreground} />
+          </Pressable>
         </View>
 
         {/* Week navigation */}
@@ -444,6 +451,7 @@ const styles = StyleSheet.create({
   sub: { fontSize: 13, fontFamily: "Inter_400Regular" },
   viewBadge: { flexDirection: "row", alignItems: "center", gap: 4, borderRadius: 12, borderWidth: 1, paddingHorizontal: 10, paddingVertical: 6, marginTop: 4 },
   viewBadgeText: { fontSize: 11, fontFamily: "Inter_600SemiBold" },
+  closeBtn: { width: 36, height: 36, borderRadius: 18, borderWidth: 1, alignItems: "center", justifyContent: "center", marginTop: 4, marginLeft: 8 },
   weekNav: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: 20 },
   navBtn: { width: 36, height: 36, borderRadius: 18, borderWidth: 1, alignItems: "center", justifyContent: "center" },
   weekLabelWrap: { alignItems: "center", gap: 4 },
