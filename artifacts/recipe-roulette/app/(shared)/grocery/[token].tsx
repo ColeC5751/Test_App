@@ -1,11 +1,11 @@
-// app/grocery/[token].tsx
+// app/(shared)/grocery/[token].tsx
 // Shared grocery list view — opened when someone taps a shared grocery link.
 // Loads the list by share token from Supabase, respects view/edit permission.
 
 import { Feather } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
 import { useLocalSearchParams, useRouter } from "expo-router";
-import React, { useEffect, useState } from "react";
+import React, { useState } from "react";
 import {
   ActivityIndicator,
   Alert,
@@ -20,8 +20,8 @@ import {
 } from "react-native";
 
 import { useColors } from "@/hooks/useColors";
-import { useGrocerySync } from "@/lib/sync";
-import type { GroceryItem, SharePermission } from "@/lib/types";
+import { useSharedGrocerySync } from "@/lib/sync";
+import type { GroceryItem } from "@/lib/types";
 
 function formatItem(item: GroceryItem): string {
   const amt = item.amount === 1 && !item.unit
@@ -36,26 +36,17 @@ export default function SharedGroceryScreen() {
   const router = useRouter();
   const topPad = Platform.OS === "web" ? 67 : 0;
 
-  const { items, status, save, loadShared } = useGrocerySync();
-  const [loading, setLoading] = useState(true);
-  const [permission, setPermission] = useState<SharePermission>("view");
-  const [error, setError] = useState("");
+  // Uses the dedicated shared-viewer hook — NOT useGrocerySync. That hook's
+  // own useEffect(() => { load(); }, [load]) runs unconditionally for the
+  // *signed-in visitor's own* grocery list and can insert a new row for
+  // them, which races against loading this shared list (the same bug that
+  // hit the shared plan screen). See useSharedGrocerySync in lib/sync.ts.
+  const { items, status, permission, notFound, save } = useSharedGrocerySync(token);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editValue, setEditValue] = useState("");
 
-  useEffect(() => {
-    if (!token) return;
-    loadShared(token as string).then((result) => {
-      if (!result) {
-        setError("This link is invalid or has expired.");
-      } else {
-        setPermission(result.permission);
-      }
-      setLoading(false);
-    });
-  }, [token]);
-
   const canEdit = permission === "edit";
+  const loading = status === "syncing" && !notFound;
 
   const toggleItem = async (id: string) => {
     if (!canEdit) return;
@@ -88,11 +79,13 @@ export default function SharedGroceryScreen() {
     );
   }
 
-  if (error) {
+  if (notFound) {
     return (
       <View style={[styles.center, { backgroundColor: colors.background }]}>
         <Feather name="alert-circle" size={32} color={colors.destructive} />
-        <Text style={[styles.errorText, { color: colors.foreground }]}>{error}</Text>
+        <Text style={[styles.errorText, { color: colors.foreground }]}>
+          This link is invalid or has expired.
+        </Text>
         <Pressable onPress={() => router.replace("/")} style={[styles.homeBtn, { backgroundColor: colors.primary }]}>
           <Text style={[styles.homeBtnText, { color: colors.primaryForeground }]}>Go to app</Text>
         </Pressable>
