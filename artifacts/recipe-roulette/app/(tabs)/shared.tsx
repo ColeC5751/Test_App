@@ -87,7 +87,7 @@ export default function SharedWithMeScreen() {
             <SharedRow
               key={p.planId}
               icon="calendar"
-              title="Shared meal plan"
+              title={p.name || "Untitled meal plan"}
               permission={p.permission}
               joinedAt={p.joinedAt}
               colors={colors}
@@ -106,7 +106,7 @@ export default function SharedWithMeScreen() {
             <SharedRow
               key={l.listId}
               icon="shopping-cart"
-              title="Shared grocery list"
+              title={l.name || "Untitled grocery list"}
               permission={l.permission}
               joinedAt={l.joinedAt}
               colors={colors}
