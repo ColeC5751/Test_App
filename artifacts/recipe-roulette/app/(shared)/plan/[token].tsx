@@ -10,11 +10,13 @@ import {
   ActivityIndicator,
   Alert,
   Image,
+  Modal,
   Platform,
   Pressable,
   ScrollView,
   StyleSheet,
   Text,
+  TextInput,
   View,
 } from "react-native";
 
@@ -77,6 +79,14 @@ export default function SharedPlanScreen() {
   const { plan, status, permission, notFound, save } = useSharedPlanSync(token);
   const [weekOffset, setWeekOffset] = useState(0);
 
+  // Add/edit-meal modal state. This is the piece that was missing before:
+  // there was previously no way for an editor to ADD a meal to a slot —
+  // only a long-press to clear an existing one. Tapping any slot (empty
+  // or filled) now opens this modal.
+  const [editingDate, setEditingDate] = useState<Date | null>(null);
+  const [nameInput, setNameInput] = useState("");
+  const [saving, setSaving] = useState(false);
+
   const canEdit = permission === "edit";
   const loading = status === "syncing" && !notFound;
 
@@ -84,6 +94,43 @@ export default function SharedPlanScreen() {
   monday.setDate(monday.getDate() + weekOffset * 7);
   const weekDays = getWeekDays(monday);
   const weekLabel = `Week of ${formatWeekLabel(monday)}`;
+
+  const openSlotEditor = (date: Date) => {
+    if (!canEdit) return;
+    const key = isoDateKey(date);
+    const existing = plan[key] as PlanSlot | null | undefined;
+    setNameInput(existing?.recipeName ?? "");
+    setEditingDate(date);
+  };
+
+  const closeSlotEditor = () => {
+    setEditingDate(null);
+    setNameInput("");
+  };
+
+  const commitSlotEditor = async () => {
+    if (!editingDate) return;
+    const trimmed = nameInput.trim();
+    const key = isoDateKey(editingDate);
+
+    setSaving(true);
+    try {
+      if (trimmed) {
+        const newSlot: PlanSlot = {
+          recipeName: trimmed,
+          recipePhoto: null,
+        };
+        await save({ ...plan, [key]: newSlot });
+      } else {
+        // Empty name — treat as clearing the slot
+        await save({ ...plan, [key]: null });
+      }
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    } finally {
+      setSaving(false);
+      closeSlotEditor();
+    }
+  };
 
   const handleClearSlot = async (date: Date) => {
     if (!canEdit) return;
@@ -124,100 +171,147 @@ export default function SharedPlanScreen() {
   }
 
   return (
-    <ScrollView
-      style={[styles.root, { backgroundColor: colors.background }]}
-      contentContainerStyle={{ paddingTop: topPad + 32, paddingHorizontal: 16, paddingBottom: 120 }}
-      showsVerticalScrollIndicator={false}
-    >
-      {/* Header */}
-      <View style={styles.headerRow}>
-        <View>
-          <Text style={[styles.heading, { color: colors.foreground }]}>Shared Plan</Text>
-          <Text style={[styles.sub, { color: colors.mutedForeground }]}>
-            {canEdit ? "You can edit this plan" : "View only"}
-          </Text>
-        </View>
-        {!canEdit && (
-          <View style={[styles.viewBadge, { backgroundColor: colors.secondary, borderColor: colors.border }]}>
-            <Feather name="eye" size={12} color={colors.mutedForeground} />
-            <Text style={[styles.viewBadgeText, { color: colors.mutedForeground }]}>View only</Text>
+    <>
+      <ScrollView
+        style={[styles.root, { backgroundColor: colors.background }]}
+        contentContainerStyle={{ paddingTop: topPad + 32, paddingHorizontal: 16, paddingBottom: 120 }}
+        showsVerticalScrollIndicator={false}
+      >
+        {/* Header */}
+        <View style={styles.headerRow}>
+          <View>
+            <Text style={[styles.heading, { color: colors.foreground }]}>Shared Plan</Text>
+            <Text style={[styles.sub, { color: colors.mutedForeground }]}>
+              {canEdit ? "Tap a day to add or change a meal" : "View only"}
+            </Text>
           </View>
-        )}
-      </View>
-
-      {/* Week navigation */}
-      <View style={styles.weekNav}>
-        <Pressable
-          onPress={() => { setWeekOffset((o) => o - 1); Haptics.selectionAsync(); }}
-          style={[styles.navBtn, { backgroundColor: colors.card, borderColor: colors.border }]}
-        >
-          <Feather name="chevron-left" size={18} color={colors.foreground} />
-        </Pressable>
-        <View style={styles.weekLabelWrap}>
-          <Text style={[styles.weekLabel, { color: colors.foreground }]}>{weekLabel}</Text>
-          {weekOffset !== 0 && (
-            <Pressable onPress={() => setWeekOffset(0)}>
-              <Text style={[styles.todayLink, { color: colors.primary }]}>Back to this week</Text>
-            </Pressable>
+          {!canEdit && (
+            <View style={[styles.viewBadge, { backgroundColor: colors.secondary, borderColor: colors.border }]}>
+              <Feather name="eye" size={12} color={colors.mutedForeground} />
+              <Text style={[styles.viewBadgeText, { color: colors.mutedForeground }]}>View only</Text>
+            </View>
           )}
         </View>
-        <Pressable
-          onPress={() => { setWeekOffset((o) => o + 1); Haptics.selectionAsync(); }}
-          style={[styles.navBtn, { backgroundColor: colors.card, borderColor: colors.border }]}
-        >
-          <Feather name="chevron-right" size={18} color={colors.foreground} />
-        </Pressable>
-      </View>
 
-      {/* Day slots */}
-      {weekDays.map((date) => {
-        const key = isoDateKey(date);
-        const slot = plan[key] as PlanSlot | null | undefined;
-        const today = isToday(date);
-        const { day, num } = formatDayLabel(date);
-
-        return (
+        {/* Week navigation */}
+        <View style={styles.weekNav}>
           <Pressable
-            key={key}
-            onLongPress={() => canEdit && handleClearSlot(date)}
-            delayLongPress={400}
-            style={[
-              styles.daySlot,
-              { backgroundColor: colors.card, borderColor: today ? colors.primary : colors.border, borderWidth: today ? 1.5 : 1 },
-            ]}
+            onPress={() => { setWeekOffset((o) => o - 1); Haptics.selectionAsync(); }}
+            style={[styles.navBtn, { backgroundColor: colors.card, borderColor: colors.border }]}
           >
-            {today && (
-              <View style={[styles.todayBadge, { backgroundColor: colors.primary }]}>
-                <Text style={[styles.todayBadgeText, { color: colors.primaryForeground }]}>TODAY</Text>
-              </View>
-            )}
-            <View style={styles.dateCol}>
-              <Text style={[styles.dayText, { color: today ? colors.primary : colors.mutedForeground }]}>{day}</Text>
-              <Text style={[styles.dayNum, { color: today ? colors.primary : colors.foreground }]}>{num}</Text>
-            </View>
-            {slot ? (
-              <View style={[styles.slotFilled, { backgroundColor: colors.background, borderRadius: 10 }]}>
-                {slot.recipePhoto ? (
-                  <Image source={{ uri: slot.recipePhoto }} style={styles.slotThumb} />
-                ) : (
-                  <View style={[styles.slotThumbPlaceholder, { backgroundColor: colors.muted }]}>
-                    <Feather name="coffee" size={16} color={colors.mutedForeground} />
-                  </View>
-                )}
-                <Text style={[styles.slotName, { color: colors.foreground }]} numberOfLines={2}>{slot.recipeName}</Text>
-                {canEdit && <Feather name="x-circle" size={16} color={colors.mutedForeground} />}
-              </View>
-            ) : (
-              <View style={[styles.slotEmpty, { borderColor: colors.border }]}>
-                <Text style={[styles.slotEmptyText, { color: colors.mutedForeground }]}>
-                  {canEdit ? "No meal planned" : "Empty"}
-                </Text>
-              </View>
-            )}
+            <Feather name="chevron-left" size={18} color={colors.foreground} />
           </Pressable>
-        );
-      })}
-    </ScrollView>
+          <View style={styles.weekLabelWrap}>
+            <Text style={[styles.weekLabel, { color: colors.foreground }]}>{weekLabel}</Text>
+            {weekOffset !== 0 && (
+              <Pressable onPress={() => setWeekOffset(0)}>
+                <Text style={[styles.todayLink, { color: colors.primary }]}>Back to this week</Text>
+              </Pressable>
+            )}
+          </View>
+          <Pressable
+            onPress={() => { setWeekOffset((o) => o + 1); Haptics.selectionAsync(); }}
+            style={[styles.navBtn, { backgroundColor: colors.card, borderColor: colors.border }]}
+          >
+            <Feather name="chevron-right" size={18} color={colors.foreground} />
+          </Pressable>
+        </View>
+
+        {/* Day slots */}
+        {weekDays.map((date) => {
+          const key = isoDateKey(date);
+          const slot = plan[key] as PlanSlot | null | undefined;
+          const today = isToday(date);
+          const { day, num } = formatDayLabel(date);
+
+          return (
+            <Pressable
+              key={key}
+              onPress={() => openSlotEditor(date)}
+              onLongPress={() => canEdit && slot && handleClearSlot(date)}
+              delayLongPress={400}
+              disabled={!canEdit}
+              style={[
+                styles.daySlot,
+                { backgroundColor: colors.card, borderColor: today ? colors.primary : colors.border, borderWidth: today ? 1.5 : 1 },
+              ]}
+            >
+              {today && (
+                <View style={[styles.todayBadge, { backgroundColor: colors.primary }]}>
+                  <Text style={[styles.todayBadgeText, { color: colors.primaryForeground }]}>TODAY</Text>
+                </View>
+              )}
+              <View style={styles.dateCol}>
+                <Text style={[styles.dayText, { color: today ? colors.primary : colors.mutedForeground }]}>{day}</Text>
+                <Text style={[styles.dayNum, { color: today ? colors.primary : colors.foreground }]}>{num}</Text>
+              </View>
+              {slot ? (
+                <View style={[styles.slotFilled, { backgroundColor: colors.background, borderRadius: 10 }]}>
+                  {slot.recipePhoto ? (
+                    <Image source={{ uri: slot.recipePhoto }} style={styles.slotThumb} />
+                  ) : (
+                    <View style={[styles.slotThumbPlaceholder, { backgroundColor: colors.muted }]}>
+                      <Feather name="coffee" size={16} color={colors.mutedForeground} />
+                    </View>
+                  )}
+                  <Text style={[styles.slotName, { color: colors.foreground }]} numberOfLines={2}>{slot.recipeName}</Text>
+                  {canEdit && <Feather name="edit-2" size={14} color={colors.mutedForeground} />}
+                </View>
+              ) : (
+                <View style={[styles.slotEmpty, { borderColor: colors.border }]}>
+                  <Text style={[styles.slotEmptyText, { color: colors.mutedForeground }]}>
+                    {canEdit ? "Tap to add a meal" : "Empty"}
+                  </Text>
+                </View>
+              )}
+            </Pressable>
+          );
+        })}
+      </ScrollView>
+
+      {/* Add/edit-meal modal */}
+      <Modal
+        visible={editingDate !== null}
+        animationType="slide"
+        transparent
+        onRequestClose={closeSlotEditor}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={[styles.modalCard, { backgroundColor: colors.card, borderColor: colors.border }]}>
+            <Text style={[styles.modalTitle, { color: colors.foreground }]}>
+              {editingDate ? formatDayLabel(editingDate).day : ""}{" "}
+              {editingDate ? formatWeekLabel(editingDate).split(",")[0] : ""}
+            </Text>
+            <TextInput
+              style={[styles.modalInput, { color: colors.foreground, borderColor: colors.border, backgroundColor: colors.background }]}
+              value={nameInput}
+              onChangeText={setNameInput}
+              placeholder="What's for dinner?"
+              placeholderTextColor={colors.mutedForeground}
+              autoFocus
+              onSubmitEditing={commitSlotEditor}
+              returnKeyType="done"
+            />
+            <View style={styles.modalActions}>
+              <Pressable onPress={closeSlotEditor} style={[styles.modalBtn, { backgroundColor: colors.secondary }]}>
+                <Text style={[styles.modalBtnText, { color: colors.foreground }]}>Cancel</Text>
+              </Pressable>
+              <Pressable
+                onPress={commitSlotEditor}
+                disabled={saving}
+                style={[styles.modalBtn, { backgroundColor: colors.primary }]}
+              >
+                {saving ? (
+                  <ActivityIndicator color={colors.primaryForeground} size="small" />
+                ) : (
+                  <Text style={[styles.modalBtnText, { color: colors.primaryForeground }]}>Save</Text>
+                )}
+              </Pressable>
+            </View>
+          </View>
+        </View>
+      </Modal>
+    </>
   );
 }
 
@@ -250,4 +344,11 @@ const styles = StyleSheet.create({
   slotName: { flex: 1, fontSize: 14, fontFamily: "Inter_600SemiBold", lineHeight: 18 },
   slotEmpty: { flex: 1, borderWidth: 1, borderStyle: "dashed", borderRadius: 10, paddingVertical: 10, paddingHorizontal: 14 },
   slotEmptyText: { fontSize: 13, fontFamily: "Inter_400Regular" },
+  modalOverlay: { flex: 1, backgroundColor: "rgba(0,0,0,0.5)", justifyContent: "flex-end" },
+  modalCard: { borderTopLeftRadius: 20, borderTopRightRadius: 20, borderWidth: 1, borderBottomWidth: 0, padding: 24, gap: 16 },
+  modalTitle: { fontSize: 18, fontFamily: "Inter_700Bold" },
+  modalInput: { borderRadius: 12, borderWidth: 1, paddingHorizontal: 16, paddingVertical: 14, fontSize: 16, fontFamily: "Inter_400Regular" },
+  modalActions: { flexDirection: "row", gap: 12 },
+  modalBtn: { flex: 1, borderRadius: 12, paddingVertical: 14, alignItems: "center", justifyContent: "center" },
+  modalBtnText: { fontSize: 15, fontFamily: "Inter_600SemiBold" },
 });
