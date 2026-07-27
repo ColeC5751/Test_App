@@ -41,7 +41,7 @@ let sessionTonightsPick: PersonalRecipe | null = null;
 // Cards remain tappable throughout — same card, same interaction.
 const CARD_HEIGHT = 84;        // card height + margin, used for offset math
 const WHEEL_VISIBLE = 4;       // number of cards visible in the viewport
-const SPIN_COPIES = 8;         // how many times the list repeats inside the wheel
+const SPIN_COPIES = 3;         // how many times the list repeats inside the wheel
 const SPIN_START_COPY = 1;     // which copy we start centered on
 const SPIN_ROUNDS = 4;         // full loops before landing
 const SPIN_DURATION = 2400;    // ms
@@ -329,10 +329,15 @@ function ImportModal({
                     const perm = await ImagePicker.requestCameraPermissionsAsync();
                     if (!perm.granted) { Alert.alert("Permission needed", "Please allow camera access."); return; }
                     const result = await ImagePicker.launchCameraAsync({ quality: 0.75, allowsEditing: true, aspect: [4, 3], base64: true });
-                    if (!result.canceled && result.assets[0]?.base64) {
-                      setFormPhoto(`data:image/jpeg;base64,${result.assets[0].base64}`);
-                    } else if (!result.canceled && result.assets[0]?.uri) {
-                      setFormPhoto(result.assets[0].uri);
+                    if (!result.canceled) {
+                      const asset = result.assets[0];
+                      if (asset?.base64) {
+                        setFormPhoto(`data:image/jpeg;base64,${asset.base64}`);
+                      } else if (asset?.uri) {
+                        setFormPhoto(asset.uri);
+                      } else {
+                        Alert.alert("Photo error", "Could not load the photo. Please try again.");
+                      }
                     }
                   }}
                   style={[styles.photoPickerBtn, { backgroundColor: colors.secondary, borderColor: colors.border }]}
@@ -345,9 +350,15 @@ function ImportModal({
                     const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
                     if (!perm.granted) { Alert.alert("Permission needed", "Please allow photo library access."); return; }
                     const result = await ImagePicker.launchImageLibraryAsync({ quality: 0.75, allowsEditing: true, aspect: [4, 3], base64: true });
-                    if (!result.canceled && result.assets[0]?.uri) {
-                      const b64 = await FileSystem.readAsStringAsync(result.assets[0].uri, { encoding: FileSystem.EncodingType.Base64 });
-                      setFormPhoto(`data:image/jpeg;base64,${b64}`);
+                    if (!result.canceled) {
+                      const asset = result.assets[0];
+                      if (asset?.base64) {
+                        setFormPhoto(`data:image/jpeg;base64,${asset.base64}`);
+                      } else if (asset?.uri) {
+                        setFormPhoto(asset.uri);
+                      } else {
+                        Alert.alert("Photo error", "Could not load the photo. Please try again.");
+                      }
                     }
                   }}
                   style={[styles.photoPickerBtn, { backgroundColor: colors.secondary, borderColor: colors.border }]}
