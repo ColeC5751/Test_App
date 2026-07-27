@@ -1,11 +1,18 @@
 // app/(shared)/plan/[token].tsx
 // Shared meal plan view — opened when someone taps a shared plan link.
 // Loads the plan by share token, respects view/edit permission.
+//
+// Editing here mirrors app/(tabs)/plan.tsx as closely as possible: same
+// SlotPickerModal (My Dinners + Spin for me), same PlanSlot shape, same
+// AsyncStorage-backed personal recipe list. Recipes are per-device, not
+// per-account, so an editor picks from their own saved recipes — same
+// as if this were their own plan.
 
+import AsyncStorage from "@react-native-async-storage/async-storage";
 import { Feather } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
 import { useLocalSearchParams, useRouter } from "expo-router";
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
@@ -13,6 +20,7 @@ import {
   Modal,
   Platform,
   Pressable,
+  SafeAreaView,
   ScrollView,
   StyleSheet,
   Text,
@@ -23,6 +31,20 @@ import {
 import { useColors } from "@/hooks/useColors";
 import { useSharedPlanSync } from "@/lib/sync";
 import type { PlanSlot } from "@/lib/types";
+
+// ─── Personal recipe type (matches roulette.tsx / plan.tsx) ───────────────────
+
+interface PersonalRecipe {
+  id: string;
+  name: string;
+  ingredients: string;
+  steps: string;
+  photoUrl?: string;
+  createdAt: number;
+  source?: "manual" | "photo" | "url";
+}
+
+const STORAGE_KEY = "@recipe_roulette_personal";
 
 // ─── Date helpers (duplicated from plan.tsx for isolation) ────────────────────
 
@@ -65,27 +87,131 @@ function getWeekDays(monday: Date): Date[] {
   });
 }
 
+// ─── Slot Picker Modal (ported from plan.tsx) ─────────────────────────────────
+
+function SlotPickerModal({
+  visible,
+  dateLabel,
+  onClose,
+  onPickRecipe,
+  onSpinRecipe,
+}: {
+  visible: boolean;
+  dateLabel: string;
+  onClose: () => void;
+  onPickRecipe: (recipe: PersonalRecipe) => void;
+  onSpinRecipe: () => void;
+}) {
+  const colors = useColors();
+  const [recipes, setRecipes] = useState<PersonalRecipe[]>([]);
+  const [tab, setTab] = useState<"pick" | "spin">("pick");
+
+  useEffect(() => {
+    if (!visible) return;
+    AsyncStorage.getItem(STORAGE_KEY).then((json) => {
+      setRecipes(json ? JSON.parse(json) : []);
+    }).catch(() => {});
+  }, [visible]);
+
+  return (
+    <Modal visible={visible} animationType="slide" presentationStyle="pageSheet" onRequestClose={onClose}>
+      <SafeAreaView style={[pickerStyles.root, { backgroundColor: colors.background }]}>
+        <View style={[pickerStyles.header, { borderBottomColor: colors.border }]}>
+          <Text style={[pickerStyles.title, { color: colors.foreground }]}>{dateLabel}</Text>
+          <Pressable onPress={onClose}>
+            <Feather name="x" size={22} color={colors.foreground} />
+          </Pressable>
+        </View>
+
+        <View style={[pickerStyles.tabs, { backgroundColor: colors.secondary, borderColor: colors.border }]}>
+          <Pressable
+            onPress={() => setTab("pick")}
+            style={[pickerStyles.tabBtn, tab === "pick" && { backgroundColor: colors.primary, borderRadius: 8 }]}
+          >
+            <Feather name="book-open" size={14} color={tab === "pick" ? colors.primaryForeground : colors.mutedForeground} />
+            <Text style={[pickerStyles.tabText, { color: tab === "pick" ? colors.primaryForeground : colors.mutedForeground }]}>
+              My Dinners
+            </Text>
+          </Pressable>
+          <Pressable
+            onPress={() => { setTab("spin"); onSpinRecipe(); }}
+            style={[pickerStyles.tabBtn, tab === "spin" && { backgroundColor: colors.primary, borderRadius: 8 }]}
+          >
+            <Feather name="shuffle" size={14} color={tab === "spin" ? colors.primaryForeground : colors.mutedForeground} />
+            <Text style={[pickerStyles.tabText, { color: tab === "spin" ? colors.primaryForeground : colors.mutedForeground }]}>
+              Spin for me
+            </Text>
+          </Pressable>
+        </View>
+
+        <ScrollView contentContainerStyle={pickerStyles.list} showsVerticalScrollIndicator={false}>
+          {recipes.length === 0 ? (
+            <View style={pickerStyles.empty}>
+              <Feather name="book-open" size={32} color={colors.mutedForeground} />
+              <Text style={[pickerStyles.emptyText, { color: colors.mutedForeground }]}>
+                No recipes in My Dinners yet
+              </Text>
+            </View>
+          ) : (
+            recipes.map((recipe) => (
+              <Pressable
+                key={recipe.id}
+                onPress={() => { onPickRecipe(recipe); Haptics.selectionAsync(); }}
+                style={({ pressed }) => [
+                  pickerStyles.recipeRow,
+                  { backgroundColor: colors.card, borderColor: colors.border },
+                  pressed && { opacity: 0.8 },
+                ]}
+              >
+                {recipe.photoUrl ? (
+                  <Image source={{ uri: recipe.photoUrl }} style={pickerStyles.thumb} />
+                ) : (
+                  <View style={[pickerStyles.thumbPlaceholder, { backgroundColor: colors.muted }]}>
+                    <Feather name="coffee" size={18} color={colors.mutedForeground} />
+                  </View>
+                )}
+                <Text style={[pickerStyles.recipeName, { color: colors.foreground }]} numberOfLines={2}>
+                  {recipe.name}
+                </Text>
+                <Feather name="chevron-right" size={16} color={colors.mutedForeground} />
+              </Pressable>
+            ))
+          )}
+        </ScrollView>
+      </SafeAreaView>
+    </Modal>
+  );
+}
+
+const pickerStyles = StyleSheet.create({
+  root: { flex: 1 },
+  header: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", padding: 20, borderBottomWidth: 1 },
+  title: { fontSize: 18, fontFamily: "Inter_700Bold" },
+  tabs: { flexDirection: "row", margin: 16, borderRadius: 10, borderWidth: 1, padding: 4, gap: 4 },
+  tabBtn: { flex: 1, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6, paddingVertical: 9 },
+  tabText: { fontSize: 13, fontFamily: "Inter_600SemiBold" },
+  list: { padding: 16, gap: 10, paddingBottom: 48 },
+  empty: { alignItems: "center", paddingVertical: 48, gap: 12 },
+  emptyText: { fontSize: 14, fontFamily: "Inter_400Regular", textAlign: "center" },
+  recipeRow: { flexDirection: "row", alignItems: "center", gap: 12, borderRadius: 12, borderWidth: 1, padding: 12 },
+  thumb: { width: 48, height: 48, borderRadius: 8 },
+  thumbPlaceholder: { width: 48, height: 48, borderRadius: 8, alignItems: "center", justifyContent: "center" },
+  recipeName: { flex: 1, fontSize: 14, fontFamily: "Inter_600SemiBold", lineHeight: 19 },
+});
+
+// ─── Main Screen ──────────────────────────────────────────────────────────────
+
 export default function SharedPlanScreen() {
   const colors = useColors();
   const { token } = useLocalSearchParams<{ token: string }>();
   const router = useRouter();
   const topPad = Platform.OS === "web" ? 67 : 0;
 
-  // Uses the dedicated shared-viewer hook — NOT usePlanSync. usePlanSync's
-  // internal load() effect runs unconditionally for the *signed-in
-  // visitor's own* plan and can insert a new row for them, which raced
-  // against loading this shared plan and caused a crash. See the comment
-  // above useSharedPlanSync in lib/sync.ts for the full explanation.
-  const { plan, status, permission, notFound, save } = useSharedPlanSync(token);
+  const { plan, status, permission, notFound, name, save, rename } = useSharedPlanSync(token);
   const [weekOffset, setWeekOffset] = useState(0);
-
-  // Add/edit-meal modal state. This is the piece that was missing before:
-  // there was previously no way for an editor to ADD a meal to a slot —
-  // only a long-press to clear an existing one. Tapping any slot (empty
-  // or filled) now opens this modal.
-  const [editingDate, setEditingDate] = useState<Date | null>(null);
-  const [nameInput, setNameInput] = useState("");
-  const [saving, setSaving] = useState(false);
+  const [pickerDate, setPickerDate] = useState<Date | null>(null);
+  const [editingTitle, setEditingTitle] = useState(false);
+  const [titleInput, setTitleInput] = useState("");
 
   const canEdit = permission === "edit";
   const loading = status === "syncing" && !notFound;
@@ -95,46 +221,16 @@ export default function SharedPlanScreen() {
   const weekDays = getWeekDays(monday);
   const weekLabel = `Week of ${formatWeekLabel(monday)}`;
 
-  const openSlotEditor = (date: Date) => {
+  const handleSlotPress = (date: Date) => {
+    if (!canEdit) return;
+    setPickerDate(date);
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+  };
+
+  const handleSlotLongPress = (date: Date) => {
     if (!canEdit) return;
     const key = isoDateKey(date);
-    const existing = plan[key] as PlanSlot | null | undefined;
-    setNameInput(existing?.recipeName ?? "");
-    setEditingDate(date);
-  };
-
-  const closeSlotEditor = () => {
-    setEditingDate(null);
-    setNameInput("");
-  };
-
-  const commitSlotEditor = async () => {
-    if (!editingDate) return;
-    const trimmed = nameInput.trim();
-    const key = isoDateKey(editingDate);
-
-    setSaving(true);
-    try {
-      if (trimmed) {
-        const newSlot: PlanSlot = {
-          recipeName: trimmed,
-          recipePhoto: null,
-        };
-        await save({ ...plan, [key]: newSlot });
-      } else {
-        // Empty name — treat as clearing the slot
-        await save({ ...plan, [key]: null });
-      }
-      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-    } finally {
-      setSaving(false);
-      closeSlotEditor();
-    }
-  };
-
-  const handleClearSlot = async (date: Date) => {
-    if (!canEdit) return;
-    const key = isoDateKey(date);
+    if (!plan[key]) return;
     Alert.alert("Remove meal?", `Clear ${formatDayLabel(date).day} from the plan?`, [
       { text: "Cancel", style: "cancel" },
       {
@@ -146,6 +242,40 @@ export default function SharedPlanScreen() {
       },
     ]);
   };
+
+  const handlePickRecipe = async (recipe: PersonalRecipe) => {
+    if (!pickerDate) return;
+    const key = isoDateKey(pickerDate);
+    const slot: PlanSlot = {
+      recipeId: recipe.id,
+      recipeName: recipe.name,
+      recipePhoto: recipe.photoUrl,
+      source: "personal",
+      addedAt: Date.now(),
+    } as PlanSlot;
+    await save({ ...plan, [key]: slot });
+    setPickerDate(null);
+    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+  };
+
+  const handleSpinRecipe = async () => {
+    if (!pickerDate) return;
+    try {
+      const json = await AsyncStorage.getItem(STORAGE_KEY);
+      const recipes: PersonalRecipe[] = json ? JSON.parse(json) : [];
+      if (recipes.length === 0) {
+        Alert.alert("No recipes", "Add recipes to My Dinners first.");
+        setPickerDate(null);
+        return;
+      }
+      const recipe = recipes[Math.floor(Math.random() * recipes.length)];
+      await handlePickRecipe(recipe);
+    } catch {}
+  };
+
+  const pickerDateLabel = pickerDate
+    ? `${formatDayLabel(pickerDate).day}, ${pickerDate.toLocaleDateString("en-US", { month: "long", day: "numeric" })}`
+    : "";
 
   if (loading) {
     return (
@@ -179,8 +309,28 @@ export default function SharedPlanScreen() {
       >
         {/* Header */}
         <View style={styles.headerRow}>
-          <View>
-            <Text style={[styles.heading, { color: colors.foreground }]}>Shared Plan</Text>
+          <View style={{ flex: 1 }}>
+            {editingTitle ? (
+              <TextInput
+                style={[styles.headingInput, { color: colors.foreground, borderColor: colors.primary }]}
+                value={titleInput}
+                onChangeText={setTitleInput}
+                autoFocus
+                onBlur={() => { rename(titleInput); setEditingTitle(false); }}
+                onSubmitEditing={() => { rename(titleInput); setEditingTitle(false); }}
+                placeholder="Name this plan"
+                placeholderTextColor={colors.mutedForeground}
+              />
+            ) : (
+              <Pressable
+                onPress={() => { if (canEdit) { setTitleInput(name ?? ""); setEditingTitle(true); } }}
+                disabled={!canEdit}
+              >
+                <Text style={[styles.heading, { color: colors.foreground }]}>
+                  {name || "Shared Plan"}
+                </Text>
+              </Pressable>
+            )}
             <Text style={[styles.sub, { color: colors.mutedForeground }]}>
               {canEdit ? "Tap a day to add or change a meal" : "View only"}
             </Text>
@@ -227,8 +377,8 @@ export default function SharedPlanScreen() {
           return (
             <Pressable
               key={key}
-              onPress={() => openSlotEditor(date)}
-              onLongPress={() => canEdit && slot && handleClearSlot(date)}
+              onPress={() => handleSlotPress(date)}
+              onLongPress={() => handleSlotLongPress(date)}
               delayLongPress={400}
               disabled={!canEdit}
               style={[
@@ -255,12 +405,13 @@ export default function SharedPlanScreen() {
                     </View>
                   )}
                   <Text style={[styles.slotName, { color: colors.foreground }]} numberOfLines={2}>{slot.recipeName}</Text>
-                  {canEdit && <Feather name="edit-2" size={14} color={colors.mutedForeground} />}
+                  {canEdit && <Feather name="chevron-right" size={14} color={colors.mutedForeground} />}
                 </View>
               ) : (
                 <View style={[styles.slotEmpty, { borderColor: colors.border }]}>
+                  {canEdit && <Feather name="plus" size={16} color={colors.mutedForeground} />}
                   <Text style={[styles.slotEmptyText, { color: colors.mutedForeground }]}>
-                    {canEdit ? "Tap to add a meal" : "Empty"}
+                    {canEdit ? "Add dinner" : "Empty"}
                   </Text>
                 </View>
               )}
@@ -269,48 +420,13 @@ export default function SharedPlanScreen() {
         })}
       </ScrollView>
 
-      {/* Add/edit-meal modal */}
-      <Modal
-        visible={editingDate !== null}
-        animationType="slide"
-        transparent
-        onRequestClose={closeSlotEditor}
-      >
-        <View style={styles.modalOverlay}>
-          <View style={[styles.modalCard, { backgroundColor: colors.card, borderColor: colors.border }]}>
-            <Text style={[styles.modalTitle, { color: colors.foreground }]}>
-              {editingDate ? formatDayLabel(editingDate).day : ""}{" "}
-              {editingDate ? formatWeekLabel(editingDate).split(",")[0] : ""}
-            </Text>
-            <TextInput
-              style={[styles.modalInput, { color: colors.foreground, borderColor: colors.border, backgroundColor: colors.background }]}
-              value={nameInput}
-              onChangeText={setNameInput}
-              placeholder="What's for dinner?"
-              placeholderTextColor={colors.mutedForeground}
-              autoFocus
-              onSubmitEditing={commitSlotEditor}
-              returnKeyType="done"
-            />
-            <View style={styles.modalActions}>
-              <Pressable onPress={closeSlotEditor} style={[styles.modalBtn, { backgroundColor: colors.secondary }]}>
-                <Text style={[styles.modalBtnText, { color: colors.foreground }]}>Cancel</Text>
-              </Pressable>
-              <Pressable
-                onPress={commitSlotEditor}
-                disabled={saving}
-                style={[styles.modalBtn, { backgroundColor: colors.primary }]}
-              >
-                {saving ? (
-                  <ActivityIndicator color={colors.primaryForeground} size="small" />
-                ) : (
-                  <Text style={[styles.modalBtnText, { color: colors.primaryForeground }]}>Save</Text>
-                )}
-              </Pressable>
-            </View>
-          </View>
-        </View>
-      </Modal>
+      <SlotPickerModal
+        visible={!!pickerDate}
+        dateLabel={pickerDateLabel}
+        onClose={() => setPickerDate(null)}
+        onPickRecipe={handlePickRecipe}
+        onSpinRecipe={handleSpinRecipe}
+      />
     </>
   );
 }
@@ -324,6 +440,7 @@ const styles = StyleSheet.create({
   homeBtnText: { fontSize: 15, fontFamily: "Inter_600SemiBold" },
   headerRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 20 },
   heading: { fontSize: 26, fontFamily: "Inter_700Bold", marginBottom: 4 },
+  headingInput: { fontSize: 26, fontFamily: "Inter_700Bold", marginBottom: 4, borderBottomWidth: 1.5, paddingBottom: 2 },
   sub: { fontSize: 13, fontFamily: "Inter_400Regular" },
   viewBadge: { flexDirection: "row", alignItems: "center", gap: 4, borderRadius: 12, borderWidth: 1, paddingHorizontal: 10, paddingVertical: 6, marginTop: 4 },
   viewBadgeText: { fontSize: 11, fontFamily: "Inter_600SemiBold" },
@@ -342,13 +459,6 @@ const styles = StyleSheet.create({
   slotThumb: { width: 40, height: 40, borderRadius: 8, flexShrink: 0 },
   slotThumbPlaceholder: { width: 40, height: 40, borderRadius: 8, alignItems: "center", justifyContent: "center", flexShrink: 0 },
   slotName: { flex: 1, fontSize: 14, fontFamily: "Inter_600SemiBold", lineHeight: 18 },
-  slotEmpty: { flex: 1, borderWidth: 1, borderStyle: "dashed", borderRadius: 10, paddingVertical: 10, paddingHorizontal: 14 },
+  slotEmpty: { flex: 1, flexDirection: "row", alignItems: "center", gap: 8, borderWidth: 1.5, borderStyle: "dashed", borderRadius: 10, paddingVertical: 10, paddingHorizontal: 14 },
   slotEmptyText: { fontSize: 13, fontFamily: "Inter_400Regular" },
-  modalOverlay: { flex: 1, backgroundColor: "rgba(0,0,0,0.5)", justifyContent: "flex-end" },
-  modalCard: { borderTopLeftRadius: 20, borderTopRightRadius: 20, borderWidth: 1, borderBottomWidth: 0, padding: 24, gap: 16 },
-  modalTitle: { fontSize: 18, fontFamily: "Inter_700Bold" },
-  modalInput: { borderRadius: 12, borderWidth: 1, paddingHorizontal: 16, paddingVertical: 14, fontSize: 16, fontFamily: "Inter_400Regular" },
-  modalActions: { flexDirection: "row", gap: 12 },
-  modalBtn: { flex: 1, borderRadius: 12, paddingVertical: 14, alignItems: "center", justifyContent: "center" },
-  modalBtnText: { fontSize: 15, fontFamily: "Inter_600SemiBold" },
 });
