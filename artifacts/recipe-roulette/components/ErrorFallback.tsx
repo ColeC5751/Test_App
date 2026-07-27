@@ -19,6 +19,11 @@ export type ErrorFallbackProps = {
   resetError: () => void;
 };
 
+// TEMPORARY DEBUG FLAG — set back to __DEV__ once the current bug is fixed.
+// This forces the error-details button/modal to show even in production
+// builds so we can see the real crash message on the deployed site.
+const SHOW_ERROR_DETAILS = true;
+
 export function ErrorFallback({ error, resetError }: ErrorFallbackProps) {
   const colors = useColors();
   const insets = useSafeAreaInsets();
@@ -50,7 +55,7 @@ export function ErrorFallback({ error, resetError }: ErrorFallbackProps) {
 
   return (
     <View style={[styles.container, { backgroundColor: colors.background }]}>
-      {__DEV__ ? (
+      {SHOW_ERROR_DETAILS ? (
         <Pressable
           onPress={() => setIsModalVisible(true)}
           accessibilityLabel="View error details"
@@ -99,7 +104,7 @@ export function ErrorFallback({ error, resetError }: ErrorFallbackProps) {
         </Pressable>
       </View>
 
-      {__DEV__ ? (
+      {SHOW_ERROR_DETAILS ? (
         <Modal
           visible={isModalVisible}
           animationType="slide"
