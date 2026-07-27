@@ -41,9 +41,11 @@ export default function SharedGroceryScreen() {
   // *signed-in visitor's own* grocery list and can insert a new row for
   // them, which races against loading this shared list (the same bug that
   // hit the shared plan screen). See useSharedGrocerySync in lib/sync.ts.
-  const { items, status, permission, notFound, save } = useSharedGrocerySync(token);
+  const { items, status, permission, notFound, name, save, rename } = useSharedGrocerySync(token);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editValue, setEditValue] = useState("");
+  const [editingTitle, setEditingTitle] = useState(false);
+  const [titleInput, setTitleInput] = useState("");
 
   const canEdit = permission === "edit";
   const loading = status === "syncing" && !notFound;
@@ -105,8 +107,28 @@ export default function SharedGroceryScreen() {
     >
       {/* Header */}
       <View style={styles.headerRow}>
-        <View>
-          <Text style={[styles.heading, { color: colors.foreground }]}>Shared List</Text>
+        <View style={{ flex: 1 }}>
+          {editingTitle ? (
+            <TextInput
+              style={[styles.headingInput, { color: colors.foreground, borderColor: colors.primary }]}
+              value={titleInput}
+              onChangeText={setTitleInput}
+              autoFocus
+              onBlur={() => { rename(titleInput); setEditingTitle(false); }}
+              onSubmitEditing={() => { rename(titleInput); setEditingTitle(false); }}
+              placeholder="Name this list"
+              placeholderTextColor={colors.mutedForeground}
+            />
+          ) : (
+            <Pressable
+              onPress={() => { if (canEdit) { setTitleInput(name ?? ""); setEditingTitle(true); } }}
+              disabled={!canEdit}
+            >
+              <Text style={[styles.heading, { color: colors.foreground }]}>
+                {name || "Shared List"}
+              </Text>
+            </Pressable>
+          )}
           <Text style={[styles.sub, { color: colors.mutedForeground }]}>
             {canEdit ? "You can check off items" : "View only"} · {unchecked.length} remaining
           </Text>
@@ -243,6 +265,7 @@ const styles = StyleSheet.create({
   homeBtnText: { fontSize: 15, fontFamily: "Inter_600SemiBold" },
   headerRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 24 },
   heading: { fontSize: 26, fontFamily: "Inter_700Bold", marginBottom: 4 },
+  headingInput: { fontSize: 26, fontFamily: "Inter_700Bold", marginBottom: 4, borderBottomWidth: 1.5, paddingBottom: 2 },
   sub: { fontSize: 13, fontFamily: "Inter_400Regular" },
   headerActions: { flexDirection: "row", gap: 8, alignItems: "center", marginTop: 4 },
   headerBtn: { width: 36, height: 36, borderRadius: 18, borderWidth: 1, alignItems: "center", justifyContent: "center" },
