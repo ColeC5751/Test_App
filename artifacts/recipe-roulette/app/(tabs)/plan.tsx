@@ -16,6 +16,7 @@ import {
   StyleSheet,
   Switch,
   Text,
+  TextInput,
   View,
 } from "react-native";
 import { useFocusEffect } from "expo-router";
@@ -56,6 +57,34 @@ function formatWeekLabel(monday: Date): string {
     month: "short",
     day: "numeric",
     year: "numeric",
+  });
+}
+
+function formatDayLabel(date: Date): { day: string; num: string } {
+  return {
+    day: date.toLocaleDateString("en-US", { weekday: "short" }).toUpperCase(),
+    num: String(date.getDate()),
+  };
+}
+
+function isoDateKey(date: Date): string {
+  return date.toISOString().split("T")[0];
+}
+
+function isToday(date: Date): boolean {
+  const today = new Date();
+  return (
+    date.getDate() === today.getDate() &&
+    date.getMonth() === today.getMonth() &&
+    date.getFullYear() === today.getFullYear()
+  );
+}
+
+function getWeekDays(monday: Date): Date[] {
+  return Array.from({ length: 7 }, (_, i) => {
+    const d = new Date(monday);
+    d.setDate(monday.getDate() + i);
+    return d;
   });
 }
 
@@ -123,34 +152,6 @@ const planDetailStyles = StyleSheet.create({
     fontFamily: "Inter_600SemiBold",
   },
 });
-
-function formatDayLabel(date: Date): { day: string; num: string } {
-  return {
-    day: date.toLocaleDateString("en-US", { weekday: "short" }).toUpperCase(),
-    num: String(date.getDate()),
-  };
-}
-
-function isoDateKey(date: Date): string {
-  return date.toISOString().split("T")[0];
-}
-
-function isToday(date: Date): boolean {
-  const today = new Date();
-  return (
-    date.getDate() === today.getDate() &&
-    date.getMonth() === today.getMonth() &&
-    date.getFullYear() === today.getFullYear()
-  );
-}
-
-function getWeekDays(monday: Date): Date[] {
-  return Array.from({ length: 7 }, (_, i) => {
-    const d = new Date(monday);
-    d.setDate(monday.getDate() + i);
-    return d;
-  });
-}
 
 // ─── Slot Picker Modal ────────────────────────────────────────────────────────
 
@@ -475,15 +476,19 @@ export default function PlanScreen() {
     status,
     shareToken,
     permission,
+    name,
     save,
     load,
     setSharePermission,
+    rename,
   } = usePlanSync();
 
   const [weekOffset, setWeekOffset] = useState(0);
   const [pickerDate, setPickerDate] = useState<Date | null>(null);
   const [showShareModal, setShowShareModal] = useState(false);
   const [addingToGrocery, setAddingToGrocery] = useState(false);
+  const [editingTitle, setEditingTitle] = useState(false);
+  const [titleInput, setTitleInput] = useState("");
   const [viewingSlot, setViewingSlot] = useState<{
     slot: PlanSlot;
     date: Date;
@@ -506,12 +511,6 @@ export default function PlanScreen() {
   const filledSlots = weekDays.filter(
     (d) => plan[isoDateKey(d)] != null
   );
-
-  const ingredientCount = filledSlots.reduce((acc, d) => {
-    const slot = plan[isoDateKey(d)];
-    if (!slot) return acc;
-    return acc + (slot as PlanSlot).recipeName.length > 0 ? acc + 6 : acc;
-  }, 0);
 
   const navigateWeek = (dir: -1 | 1) => {
     Haptics.selectionAsync();
@@ -672,6 +671,11 @@ export default function PlanScreen() {
       })}`
     : "";
 
+  const commitTitle = () => {
+    rename(titleInput);
+    setEditingTitle(false);
+  };
+
   return (
     <>
       <ScrollView
@@ -684,10 +688,30 @@ export default function PlanScreen() {
         showsVerticalScrollIndicator={false}
       >
         <View style={styles.headerRow}>
-          <View>
-            <Text style={[styles.heading, { color: colors.foreground }]}>
-              Meal Plan
-            </Text>
+          <View style={{ flex: 1 }}>
+            {editingTitle ? (
+              <TextInput
+                style={[styles.headingInput, { color: colors.foreground, borderColor: colors.primary }]}
+                value={titleInput}
+                onChangeText={setTitleInput}
+                autoFocus
+                onBlur={commitTitle}
+                onSubmitEditing={commitTitle}
+                placeholder="Name this plan"
+                placeholderTextColor={colors.mutedForeground}
+              />
+            ) : (
+              <Pressable
+                onPress={() => {
+                  setTitleInput(name ?? "");
+                  setEditingTitle(true);
+                }}
+              >
+                <Text style={[styles.heading, { color: colors.foreground }]}>
+                  {name || "Meal Plan"}
+                </Text>
+              </Pressable>
+            )}
             <Text style={[styles.sub, { color: colors.mutedForeground }]}>
               Plan your week ahead
             </Text>
@@ -952,6 +976,13 @@ const styles = StyleSheet.create({
     fontFamily: "Inter_700Bold",
     marginBottom: 4,
   },
+  headingInput: {
+    fontSize: 26,
+    fontFamily: "Inter_700Bold",
+    marginBottom: 4,
+    borderBottomWidth: 1.5,
+    paddingBottom: 2,
+  },
   sub: {
     fontSize: 13,
     fontFamily: "Inter_400Regular",
@@ -1008,7 +1039,6 @@ const styles = StyleSheet.create({
     position: "absolute",
     top: -1,
     right: 14,
-    borderRadius: 0,
     borderBottomLeftRadius: 6,
     borderBottomRightRadius: 6,
     paddingHorizontal: 8,
