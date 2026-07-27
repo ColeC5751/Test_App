@@ -41,7 +41,7 @@ let sessionTonightsPick: PersonalRecipe | null = null;
 // Cards remain tappable throughout — same card, same interaction.
 const CARD_HEIGHT = 84;        // card height + margin, used for offset math
 const WHEEL_VISIBLE = 4;       // number of cards visible in the viewport
-const SPIN_COPIES = 3;         // how many times the list repeats inside the wheel
+const SPIN_COPIES = 8;         // how many times the list repeats inside the wheel
 const SPIN_START_COPY = 1;     // which copy we start centered on
 const SPIN_ROUNDS = 4;         // full loops before landing
 const SPIN_DURATION = 2400;    // ms
