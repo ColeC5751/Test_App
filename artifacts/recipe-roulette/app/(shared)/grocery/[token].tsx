@@ -146,6 +146,13 @@ export default function SharedGroceryScreen() {
               <Text style={[styles.viewBadgeText, { color: colors.mutedForeground }]}>View only</Text>
             </View>
           )}
+          <Pressable
+            onPress={() => router.replace("/(tabs)")}
+            style={[styles.headerBtn, { backgroundColor: colors.card, borderColor: colors.border }]}
+            hitSlop={8}
+          >
+            <Feather name="x" size={16} color={colors.foreground} />
+          </Pressable>
         </View>
       </View>
 
