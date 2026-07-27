@@ -146,7 +146,8 @@ export function useGrocerySync() {
 // For the /(shared)/grocery/[token] screen only. Does NOT run the "load my
 // own list" logic or create a new row — it only fetches by share token and
 // subscribes to realtime updates for that specific row. This avoids racing
-// against a signed-in visitor's own grocery_lists row.
+// against a signed-in visitor's own grocery_lists row (the same bug class
+// that hit the plan screen — see useSharedPlanSync below).
 
 export function useSharedGrocerySync(token: string | undefined) {
   const [items, setItems] = useState<GroceryItem[]>([]);
@@ -458,9 +459,11 @@ export function usePlanSync() {
 // don't have one yet it INSERTS a new meal_plans row owned by them. That
 // raced against loadShared() on the shared screen: both ran on mount, both
 // wrote to rowIdRef, and whichever finished last "won" — leaving `plan`
-// state and rowIdRef pointing at two different rows, or a subscription set
-// up against the wrong id. This hook only ever fetches by share_token and
-// subscribes to that one row — it never touches the visitor's own plan.
+// state and rowIdRef pointing at two different rows, or a realtime
+// subscription set up against the wrong id. This is what was causing the
+// crash on the shared plan screen. This hook only ever fetches by
+// share_token and subscribes to that one row — it never touches the
+// visitor's own plan or inserts anything.
 
 export function useSharedPlanSync(token: string | undefined) {
   const [plan, setPlan] = useState<MealPlan>({});
