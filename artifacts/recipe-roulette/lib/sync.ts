@@ -89,10 +89,21 @@ export function useGrocerySync() {
     if (!rowIdRef.current) return;
     setStatus("syncing");
     try {
-      await supabase
-        .from("grocery_lists")
-        .update({ items: updated, updated_at: new Date().toISOString() })
-        .eq("id", rowIdRef.current);
+      const { error } = await supabase
+  .from("grocery_lists")
+  .update({
+    items: updated,
+    updated_at: new Date().toISOString(),
+  })
+  .eq("id", rowIdRef.current);
+
+if (error) {
+  console.error("Failed to save grocery list:", error);
+  setStatus("offline");
+  return;
+}
+
+setStatus("synced");
       setStatus("synced");
     } catch {
       setStatus("offline");
