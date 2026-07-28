@@ -109,6 +109,125 @@ function mlToReadable(ml: number): { amount: number; unit: string } {
   return { amount: Math.round(ml), unit: "ml" };
 }
 
+// ─── Ingredient line parsing ──────────────────────────────────────────────────
+//
+// A single source of truth for turning a raw ingredient line (e.g. from a
+// recipe or from the manual-add box) into { name, amount, unit }.
+//
+// Previously each parse site used a regex that grabbed 1-2 words after the
+// number and assumed they were the unit, which mangled lines like
+// "6 green onions" (-> unit "green", name "onions") or "4 tablespoons lemon
+// pepper" (-> unit "tablespoons lemon", name "pepper"). Now a word is only
+// treated as a unit if it's in KNOWN_UNITS, so anything else stays part of
+// the name.
+
+const KNOWN_UNITS = new Set([
+  "g", "gram", "grams", "kg", "kilogram", "kilograms",
+  "ml", "l", "liter", "liters", "litre", "litres",
+  "tsp", "teaspoon", "teaspoons",
+  "tbsp", "tablespoon", "tablespoons",
+  "cup", "cups",
+  "oz", "ounce", "ounces", "lb", "lbs", "pound", "pounds",
+  "pinch", "pinches", "dash", "dashes",
+  "clove", "cloves", "can", "cans", "jar", "jars",
+  "package", "packages", "pkg",
+  "bunch", "bunches", "head", "heads",
+  "slice", "slices", "piece", "pieces",
+  "stalk", "stalks", "sprig", "sprigs",
+  "quart", "quarts", "pint", "pints", "gallon", "gallons",
+  "fl oz", "floz",
+]);
+
+// Basic HTML-entity decoding for ingredient text that's occasionally scraped
+// from recipe HTML (e.g. "Salt &amp; pepper").
+function decodeEntities(s: string): string {
+  return s
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&#0?39;/g, "'");
+}
+
+// Parses amounts like "1", "1.5", "1/4", "1 1/4", and unicode fractions
+// like "¼" or "1¼".
+const UNICODE_FRACTIONS: Record<string, number> = {
+  "¼": 1 / 4, "½": 1 / 2, "¾": 3 / 4,
+  "⅓": 1 / 3, "⅔": 2 / 3,
+  "⅕": 1 / 5, "⅖": 2 / 5, "⅗": 3 / 5, "⅘": 4 / 5,
+  "⅛": 1 / 8, "⅜": 3 / 8, "⅝": 5 / 8, "⅞": 7 / 8,
+};
+
+function parseAmountToken(token: string): number {
+  const fracMatch = token.match(/^(\d*)([¼½¾⅓⅔⅕⅖⅗⅘⅛⅜⅝⅞])$/);
+  if (fracMatch) {
+    const whole = fracMatch[1] ? parseInt(fracMatch[1], 10) : 0;
+    return whole + UNICODE_FRACTIONS[fracMatch[2]];
+  }
+  if (token.includes("/")) {
+    const [n, d] = token.split("/").map(Number);
+    return d ? n / d : parseFloat(token) || 0;
+  }
+  return parseFloat(token) || 0;
+}
+
+function parseAmount(raw: string): number {
+  const total = raw
+    .trim()
+    .split(/\s+/)
+    .reduce((sum, tok) => sum + parseAmountToken(tok), 0);
+  return total || 1;
+}
+
+// Matches a leading amount made of digits, ".", "/", and unicode fraction
+// glyphs, optionally as two tokens ("1 1/4"), followed by the rest of the line.
+const AMOUNT_PREFIX = /^([\d./¼½¾⅓⅔⅕⅖⅗⅘⅛⅜⅝⅞]+(?:\s+[\d./¼½¾⅓⅔⅕⅖⅗⅘⅛⅜⅝⅞]+)?)\s+(.+)$/;
+
+export function parseIngredientLine(rawLine: string): { name: string; amount: number; unit: string } {
+  const line = decodeEntities(rawLine).trim();
+  const match = line.match(AMOUNT_PREFIX);
+  if (!match) return { name: line, amount: 1, unit: "" };
+
+  const amount = parseAmount(match[1]);
+  const rest = match[2].trim();
+  const words = rest.split(/\s+/);
+  const firstWord = words[0].toLowerCase();
+  const firstTwoWords = words.slice(0, 2).join(" ").toLowerCase(); // catches "fl oz"
+
+  if (words.length > 2 && KNOWN_UNITS.has(firstTwoWords)) {
+    return { name: words.slice(2).join(" "), amount, unit: words.slice(0, 2).join(" ") };
+  }
+  if (words.length > 1 && KNOWN_UNITS.has(firstWord)) {
+    return { name: words.slice(1).join(" "), amount, unit: words[0] };
+  }
+  // No recognized unit word — keep the whole remainder as the name rather
+  // than guessing, so e.g. "green onions" or "lemon pepper" stay intact.
+  return { name: rest, amount, unit: "" };
+}
+
+function splitIngredientLines(raw: string): string[] {
+  return raw.split(/,|\n/).map((l) => l.trim()).filter(Boolean);
+}
+
+function toGroceryItems(
+  raw: string,
+  opts?: { fromRecipe?: string; servingMultiplier?: number }
+): GroceryItem[] {
+  return splitIngredientLines(raw).map((line, i) => {
+    const { name, amount, unit } = parseIngredientLine(line);
+    return {
+      id: `g_${Date.now()}_${i}`,
+      name,
+      amount,
+      unit,
+      checked: false,
+      aisle: getAisle(name),
+      addedFromRecipe: opts?.fromRecipe,
+      servingMultiplier: opts?.servingMultiplier,
+    };
+  });
+}
+
 // ─── combineIngredients ───────────────────────────────────────────────────────
 
 export function combineIngredients(existing: GroceryItem[], incoming: GroceryItem[]): GroceryItem[] {
@@ -156,33 +275,7 @@ export async function addIngredientsToGrocery(
   opts?: { fromRecipe?: string; servingMultiplier?: number }
 ): Promise<void> {
   const existing = await loadGroceryList();
-  const lines = rawIngredients.split(/,|\n/).map((l) => l.trim()).filter(Boolean);
-  const incoming: GroceryItem[] = lines.map((line, i) => {
-    const match = line.match(/^([\d./]+)\s*([a-zA-Z]+(?:\s+[a-zA-Z]+)?)?\s+(.+)$/);
-    if (match) {
-      const name = match[3]?.trim() || line;
-      return {
-        id: `g_${Date.now()}_${i}`,
-        name,
-        amount: parseFloat(match[1]) || 1,
-        unit: match[2]?.trim() || "",
-        checked: false,
-        aisle: getAisle(name),
-        addedFromRecipe: opts?.fromRecipe,
-        servingMultiplier: opts?.servingMultiplier,
-      };
-    }
-    return {
-      id: `g_${Date.now()}_${i}`,
-      name: line,
-      amount: 1,
-      unit: "",
-      checked: false,
-      aisle: getAisle(line),
-      addedFromRecipe: opts?.fromRecipe,
-      servingMultiplier: opts?.servingMultiplier,
-    };
-  });
+  const incoming = toGroceryItems(rawIngredients, opts);
   await saveGroceryList(combineIngredients(existing, incoming));
 }
 
@@ -381,16 +474,7 @@ export default function GroceryScreen() {
   const handleManualAdd = async () => {
     const text = manualInput.trim();
     if (!text) return;
-    // Parse and combine with existing, then save via sync hook
-    const lines = text.split(/,|\n/).map((l) => l.trim()).filter(Boolean);
-    const incoming: GroceryItem[] = lines.map((line, i) => {
-      const match = line.match(/^([\d./]+)\s*([a-zA-Z]+(?:\s+[a-zA-Z]+)?)?\s+(.+)$/);
-      if (match) {
-        const name = match[3]?.trim() || line;
-        return { id: `g_${Date.now()}_${i}`, name, amount: parseFloat(match[1]) || 1, unit: match[2]?.trim() || "", checked: false, aisle: getAisle(name) };
-      }
-      return { id: `g_${Date.now()}_${i}`, name: line, amount: 1, unit: "", checked: false, aisle: getAisle(line) };
-    });
+    const incoming = toGroceryItems(text);
     const combined = combineIngredients(items, incoming);
     await persist(combined);
     setManualInput("");
