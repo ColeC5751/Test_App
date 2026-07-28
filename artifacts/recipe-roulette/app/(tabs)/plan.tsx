@@ -25,7 +25,6 @@ import {
   usePlanSync,
   useGrocerySync,
 } from "@/lib/sync";
-import { toGroceryItems } from "@/app/(tabs)/grocery";
 
 import { buildShareUrl } from "@/lib/supabase";
 import type { MealPlan, PlanSlot, SharePermission } from "@/lib/types";
