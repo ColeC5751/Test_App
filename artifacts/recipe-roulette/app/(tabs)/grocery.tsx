@@ -566,7 +566,261 @@ export default function GroceryScreen() {
             )}
           </View>
         </View>
+{/* Temporary Supabase diagnostics */}
+<View
+  style={[
+    styles.diagnostics,
+    {
+      backgroundColor: colors.card,
+      borderColor:
+        status === "error"
+          ? colors.destructive
+          : colors.border,
+    },
+  ]}
+>
+  <View style={styles.diagnosticsHeader}>
+    <Feather
+      name={status === "error" ? "alert-triangle" : "activity"}
+      size={16}
+      color={
+        status === "error"
+          ? colors.destructive
+          : colors.foreground
+      }
+    />
 
+    <Text
+      style={[
+        styles.diagnosticsTitle,
+        { color: colors.foreground },
+      ]}
+    >
+      Sync Diagnostics
+    </Text>
+  </View>
+
+  <View style={styles.diagnosticRow}>
+    <Text
+      style={[
+        styles.diagnosticLabel,
+        { color: colors.mutedForeground },
+      ]}
+    >
+      Status
+    </Text>
+
+    <Text
+      style={[
+        styles.diagnosticValue,
+        {
+          color:
+            status === "error"
+              ? colors.destructive
+              : colors.foreground,
+        },
+      ]}
+    >
+      {status}
+    </Text>
+  </View>
+
+  <View style={styles.diagnosticRow}>
+    <Text
+      style={[
+        styles.diagnosticLabel,
+        { color: colors.mutedForeground },
+      ]}
+    >
+      User ID
+    </Text>
+
+    <Text
+      style={[
+        styles.diagnosticValue,
+        { color: colors.foreground },
+      ]}
+      numberOfLines={1}
+    >
+      {userId ?? "No authenticated user"}
+    </Text>
+  </View>
+
+  <View style={styles.diagnosticRow}>
+    <Text
+      style={[
+        styles.diagnosticLabel,
+        { color: colors.mutedForeground },
+      ]}
+    >
+      Grocery Row ID
+    </Text>
+
+    <Text
+      style={[
+        styles.diagnosticValue,
+        { color: colors.foreground },
+      ]}
+      numberOfLines={1}
+    >
+      {rowId ?? "No row ID"}
+    </Text>
+  </View>
+
+  <View style={styles.diagnosticRow}>
+    <Text
+      style={[
+        styles.diagnosticLabel,
+        { color: colors.mutedForeground },
+      ]}
+    >
+      Owner ID
+    </Text>
+
+    <Text
+      style={[
+        styles.diagnosticValue,
+        { color: colors.foreground },
+      ]}
+      numberOfLines={1}
+    >
+      {ownerId ?? "Unknown"}
+    </Text>
+  </View>
+
+  <View style={styles.diagnosticRow}>
+    <Text
+      style={[
+        styles.diagnosticLabel,
+        { color: colors.mutedForeground },
+      ]}
+    >
+      Is Owner
+    </Text>
+
+    <Text
+      style={[
+        styles.diagnosticValue,
+        {
+          color:
+            userId && ownerId
+              ? userId === ownerId
+                ? colors.primary
+                : colors.destructive
+              : colors.mutedForeground,
+        },
+      ]}
+    >
+      {userId && ownerId
+        ? userId === ownerId
+          ? "YES"
+          : "NO"
+        : "UNKNOWN"}
+    </Text>
+  </View>
+
+  <View style={styles.diagnosticRow}>
+    <Text
+      style={[
+        styles.diagnosticLabel,
+        { color: colors.mutedForeground },
+      ]}
+    >
+      Last Operation
+    </Text>
+
+    <Text
+      style={[
+        styles.diagnosticValue,
+        { color: colors.foreground },
+      ]}
+      numberOfLines={2}
+    >
+      {lastOperation ?? "None"}
+    </Text>
+  </View>
+
+  {errorMessage && (
+    <View
+      style={[
+        styles.errorBox,
+        {
+          backgroundColor: colors.secondary,
+          borderColor: colors.destructive,
+        },
+      ]}
+    >
+      <Text
+        style={[
+          styles.errorTitle,
+          { color: colors.destructive },
+        ]}
+      >
+        Supabase Error
+      </Text>
+
+      <Text
+        style={[
+          styles.errorText,
+          { color: colors.foreground },
+        ]}
+      >
+        {errorMessage}
+      </Text>
+
+      {errorCode && (
+        <Text
+          style={[
+            styles.errorMeta,
+            { color: colors.mutedForeground },
+          ]}
+        >
+          Code: {errorCode}
+        </Text>
+      )}
+
+      {errorDetails && (
+        <Text
+          style={[
+            styles.errorMeta,
+            { color: colors.mutedForeground },
+          ]}
+        >
+          Details: {errorDetails}
+        </Text>
+      )}
+    </View>
+  )}
+
+  {/* Test Supabase save */}
+  <Pressable
+    onPress={async () => {
+      await save(items);
+    }}
+    style={({ pressed }) => [
+      styles.testSaveButton,
+      {
+        backgroundColor: colors.primary,
+        opacity: pressed ? 0.7 : 1,
+      },
+    ]}
+  >
+    <Feather
+      name="database"
+      size={15}
+      color={colors.primaryForeground}
+    />
+
+    <Text
+      style={[
+        styles.testSaveButtonText,
+        { color: colors.primaryForeground },
+      ]}
+    >
+      Test Supabase Save
+    </Text>
+  </Pressable>
+</View>
         {/* Manual add input */}
         <View style={[styles.manualAddRow, { backgroundColor: colors.card, borderColor: colors.border }]}>
           <TextInput
