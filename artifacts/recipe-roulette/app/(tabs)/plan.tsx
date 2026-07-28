@@ -21,9 +21,12 @@ import {
 import { useFocusEffect } from "expo-router";
 
 import { useColors } from "@/hooks/useColors";
-import { usePlanSync } from "@/lib/sync";
+import {
+  usePlanSync,
+  useGrocerySync,
+} from "@/lib/sync";
+
 import { buildShareUrl } from "@/lib/supabase";
-import { addIngredientsToGrocery } from "@/app/(tabs)/grocery";
 import type { MealPlan, PlanSlot, SharePermission } from "@/lib/types";
 
 // ─── Personal recipe type (matches roulette.tsx) ──────────────────────────────
