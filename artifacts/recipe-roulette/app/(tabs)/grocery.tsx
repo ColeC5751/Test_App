@@ -426,7 +426,22 @@ export default function GroceryScreen() {
   // useGrocerySync replaces direct AsyncStorage calls.
   // Local-first: items load from AsyncStorage instantly,
   // Supabase syncs in background and updates via real-time subscription.
-  const { items, status, shareToken, save, load } = useGrocerySync();
+  const {
+  items,
+  status,
+  shareToken,
+  save,
+  load,
+
+  // Diagnostics
+  errorMessage,
+  errorCode,
+  errorDetails,
+  userId,
+  ownerId,
+  rowId,
+  lastOperation,
+} = useGrocerySync();
 
   const [loaded, setLoaded] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
