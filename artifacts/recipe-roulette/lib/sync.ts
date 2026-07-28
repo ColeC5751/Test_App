@@ -255,16 +255,45 @@ export function useSharedGrocerySync(token: string | undefined) {
   }, [rowIdRef.current]);
 
   const save = useCallback(async (updated: GroceryItem[]) => {
-    setItems(updated);
-    if (!rowIdRef.current || permission !== "edit") return;
-    try {
-      await supabase
-        .from("grocery_lists")
-        .update({ items: updated, updated_at: new Date().toISOString() })
-        .eq("id", rowIdRef.current);
-    } catch {}
-  }, [permission]);
+  setItems(updated);
 
+  try {
+    await AsyncStorage.setItem(
+      GROCERY_LOCAL_KEY,
+      JSON.stringify(updated)
+    );
+  } catch (localError) {
+    console.error("Failed to save grocery list locally:", localError);
+  }
+
+  if (!rowIdRef.current) {
+    console.warn("No grocery row ID available. Saved locally only.");
+    return;
+  }
+
+  setStatus("syncing");
+
+  try {
+    const { error } = await supabase
+      .from("grocery_lists")
+      .update({
+        items: updated,
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", rowIdRef.current);
+
+    if (error) {
+      console.error("Failed to save grocery list to Supabase:", error);
+      setStatus("error");
+      return;
+    }
+
+    setStatus("synced");
+  } catch (error) {
+    console.error("Unexpected grocery sync error:", error);
+    setStatus("offline");
+  }
+}, []);
   const rename = useCallback(async (newName: string) => {
     const trimmed = newName.trim();
     setName(trimmed || null);
