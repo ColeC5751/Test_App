@@ -456,10 +456,7 @@ export default function PlanScreen() {
   const recipeNames = slots
     .map((s) => s.recipeName)
     .join(", ");
-const {
-  items: groceryItems,
-  save: saveGrocery,
-} = useGrocerySync();
+
   const confirmed =
     Platform.OS === "web"
       ? window.confirm(
@@ -482,6 +479,75 @@ const {
             ]
           );
         });
+
+  if (!confirmed) {
+    return;
+  }
+
+  setAddingToGrocery(true);
+
+  try {
+    const json = await AsyncStorage.getItem(STORAGE_KEY);
+
+    const recipes: PersonalRecipe[] = json
+      ? JSON.parse(json)
+      : [];
+
+    // Start with the grocery list currently loaded
+    // by the shared grocery sync hook.
+    let updatedItems = [...groceryItems];
+
+    for (const slot of slots) {
+      const recipe = recipes.find(
+        (r) => r.id === slot.recipeId
+      );
+
+      if (!recipe?.ingredients) {
+        continue;
+      }
+
+      const incomingItems = toGroceryItems(
+        recipe.ingredients,
+        {
+          fromRecipe: slot.recipeName,
+          servingMultiplier: 1,
+        }
+      );
+
+      updatedItems = combineIngredients(
+        updatedItems,
+        incomingItems
+      );
+    }
+
+    // Save through useGrocerySync.
+    // This is the important part: the same sync path
+    // used by the Grocery tab.
+    await saveGrocery(updatedItems);
+
+    await Haptics.notificationAsync(
+      Haptics.NotificationFeedbackType.Success
+    );
+
+    Alert.alert(
+      "Added to grocery list",
+      "The ingredients from this week's meals were added."
+    );
+  } catch (error) {
+    console.error(
+      "ADD WEEK TO GROCERY ERROR:",
+      error
+    );
+
+    Alert.alert(
+      "Error",
+      "Could not add ingredients to the grocery list. Please try again."
+    );
+  } finally {
+    setAddingToGrocery(false);
+  }
+};
+
 
   if (!confirmed) {
     return;
