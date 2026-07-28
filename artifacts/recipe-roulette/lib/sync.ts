@@ -17,9 +17,239 @@ async function getUserId(): Promise<string | null> {
 }
 
 // ─── Grocery List Sync ────────────────────────────────────────────────────────
+//
+// Canonical grocery data flow. This file is the ONLY place that:
+//   - parses raw ingredient text into GroceryItem objects
+//   - merges/combines ingredient lists
+//   - categorizes items into aisles
+//   - persists grocery items locally and to Supabase
+//
+// grocery.tsx (display/editing) and plan.tsx (meal-plan → grocery) both
+// call useGrocerySync() and use its `addIngredients` method rather than
+// keeping their own storage or parsing logic.
 
 const GROCERY_LOCAL_KEY = "@recipe_roulette_grocery";
 const GROCERY_ROW_KEY = "@recipe_roulette_grocery_row_id";
+
+// ─── Aisle categorization ─────────────────────────────────────────────────────
+
+export const AISLE_MAP: { aisle: string; icon: string; keywords: string[] }[] = [
+  {
+    aisle: "Produce", icon: "🥦",
+    keywords: ["apple","apples","avocado","basil","bean","beans","bell pepper","broccoli","cabbage","carrot","carrots","cauliflower","celery","cherry","chili","cilantro","corn","cucumber","eggplant","garlic","ginger","grape","kale","leek","lemon","lettuce","lime","mint","mushroom","mushrooms","onion","onions","orange","parsley","pea","peas","pepper","peppers","potato","potatoes","rosemary","scallion","spinach","squash","sweet potato","thyme","tomato","tomatoes","zucchini","asparagus","fennel","leeks","parsnip","radish","shallot","turnip"],
+  },
+  {
+    aisle: "Meat & Seafood", icon: "🥩",
+    keywords: ["bacon","beef","chicken","chorizo","clam","cod","crab","duck","fish","ground beef","ground turkey","ham","lamb","lobster","pork","prosciutto","salmon","sausage","scallop","shrimp","steak","tilapia","tuna","turkey","venison","anchovy","anchovies","mussels","sardines","squid"],
+  },
+  {
+    aisle: "Dairy & Eggs", icon: "🧀",
+    keywords: ["butter","cheddar","cheese","cottage cheese","cream","cream cheese","egg","eggs","feta","goat cheese","gouda","gruyere","half and half","heavy cream","milk","mozzarella","parmesan","ricotta","sour cream","whipping cream","yogurt","brie","manchego","pecorino"],
+  },
+  {
+    aisle: "Bakery & Bread", icon: "🍞",
+    keywords: ["bagel","baguette","bread","breadcrumbs","brioche","bun","ciabatta","crouton","croutons","english muffin","flatbread","naan","pita","roll","rolls","sourdough","tortilla","wrap"],
+  },
+  {
+    aisle: "Pantry", icon: "🫙",
+    keywords: ["baking powder","baking soda","bay leaf","black beans","bouillon","broth","brown sugar","capers","chickpeas","chili powder","chocolate","cinnamon","clove","cloves","cocoa","coconut milk","cornstarch","cumin","curry","flour","honey","hot sauce","ketchup","kidney beans","lentils","maple syrup","mayonnaise","molasses","mustard","nutritional yeast","oats","oil","olive oil","oregano","oyster sauce","paprika","peanut butter","pepper","quinoa","red pepper flakes","salt","sesame oil","soy sauce","stock","sugar","tahini","tomato paste","tomato sauce","turmeric","vanilla","vegetable oil","vinegar","worcestershire","yeast","coconut oil","fish sauce","hoisin","miso","sriracha","tabasco"],
+  },
+  {
+    aisle: "Pasta, Rice & Grains", icon: "🍝",
+    keywords: ["barley","brown rice","couscous","egg noodles","farro","fettuccine","lasagna","linguine","macaroni","noodles","orzo","pasta","penne","polenta","ramen","rice","rigatoni","risotto","spaghetti","udon","vermicelli","white rice","wild rice"],
+  },
+  {
+    aisle: "Canned & Jarred", icon: "🥫",
+    keywords: ["artichoke","canned corn","canned tomato","canned tuna","cannellini","crushed tomatoes","diced tomatoes","green chile","green olives","jalapeño","jalapeños","kidney beans","olives","pinto beans","roasted peppers","sun-dried tomato","tomato"],
+  },
+  {
+    aisle: "Frozen", icon: "🧊",
+    keywords: ["frozen broccoli","frozen corn","frozen peas","frozen spinach","frozen shrimp","ice cream","edamame","frozen","tater tots"],
+  },
+  {
+    aisle: "Nuts, Seeds & Dried Fruit", icon: "🥜",
+    keywords: ["almond","almonds","cashew","cashews","chia","cranberry","dried fruit","flaxseed","hemp seed","macadamia","peanut","peanuts","pecan","pecans","pistachio","poppy seed","pumpkin seed","raisin","raisins","sesame","sunflower seed","walnut","walnuts","pine nuts"],
+  },
+  {
+    aisle: "Beverages", icon: "🧃",
+    keywords: ["apple juice","beer","broth","coffee","coconut water","juice","lemonade","orange juice","soda","sparkling water","tea","water","wine","champagne","cider","kombucha","milk alternative","oat milk","almond milk","soy milk"],
+  },
+  {
+    aisle: "Condiments & Sauces", icon: "🫙",
+    keywords: ["barbecue sauce","bbq sauce","buffalo sauce","caesar dressing","dijon","dressing","guacamole","hummus","jam","jelly","pesto","pickle","pickles","ranch","relish","salsa","teriyaki","tzatziki"],
+  },
+  {
+    aisle: "Herbs & Spices", icon: "🌿",
+    keywords: ["allspice","anise","cardamom","cayenne","chives","coriander","dill","fennel seed","herbes","marjoram","nutmeg","saffron","sage","smoked paprika","star anise","tarragon","za'atar"],
+  },
+];
+
+export const AISLE_ORDER = AISLE_MAP.map((a) => a.aisle).concat(["Other"]);
+
+export function getAisle(name: string): string {
+  const lower = name.toLowerCase().trim();
+  let best = { aisle: "Other", len: 0 };
+  for (const { aisle, keywords } of AISLE_MAP) {
+    for (const kw of keywords) {
+      if (lower.includes(kw) && kw.length > best.len) {
+        best = { aisle, len: kw.length };
+      }
+    }
+  }
+  return best.aisle;
+}
+
+// ─── Unit conversion ──────────────────────────────────────────────────────────
+
+const TO_ML: Record<string, number> = {
+  ml: 1, milliliter: 1, milliliters: 1,
+  l: 1000, liter: 1000, liters: 1000,
+  tsp: 4.92, teaspoon: 4.92, teaspoons: 4.92,
+  tbsp: 14.79, tablespoon: 14.79, tablespoons: 14.79,
+  cup: 236.6, cups: 236.6,
+  "fl oz": 29.57, floz: 29.57,
+};
+
+function mlToReadable(ml: number): { amount: number; unit: string } {
+  if (ml >= 900) return { amount: Math.round((ml / 1000) * 10) / 10, unit: "l" };
+  if (ml >= 60) return { amount: Math.round(ml / 14.79 * 10) / 10, unit: "tbsp" };
+  if (ml >= 5) return { amount: Math.round(ml / 4.92 * 10) / 10, unit: "tsp" };
+  return { amount: Math.round(ml), unit: "ml" };
+}
+
+// ─── Ingredient line parsing ──────────────────────────────────────────────────
+//
+// Single source of truth for turning a raw ingredient line (from a recipe or
+// from manual entry) into { name, amount, unit }. A word is only treated as
+// a unit if it's in KNOWN_UNITS, so lines like "6 green onions" or
+// "4 tablespoons lemon pepper" keep their full name instead of having a word
+// misread as the unit.
+
+const KNOWN_UNITS = new Set([
+  "g", "gram", "grams", "kg", "kilogram", "kilograms",
+  "ml", "l", "liter", "liters", "litre", "litres",
+  "tsp", "teaspoon", "teaspoons",
+  "tbsp", "tablespoon", "tablespoons",
+  "cup", "cups",
+  "oz", "ounce", "ounces", "lb", "lbs", "pound", "pounds",
+  "pinch", "pinches", "dash", "dashes",
+  "clove", "cloves", "can", "cans", "jar", "jars",
+  "package", "packages", "pkg",
+  "bunch", "bunches", "head", "heads",
+  "slice", "slices", "piece", "pieces",
+  "stalk", "stalks", "sprig", "sprigs",
+  "quart", "quarts", "pint", "pints", "gallon", "gallons",
+  "fl oz", "floz",
+]);
+
+function decodeEntities(s: string): string {
+  return s
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&#0?39;/g, "'");
+}
+
+const UNICODE_FRACTIONS: Record<string, number> = {
+  "¼": 1 / 4, "½": 1 / 2, "¾": 3 / 4,
+  "⅓": 1 / 3, "⅔": 2 / 3,
+  "⅕": 1 / 5, "⅖": 2 / 5, "⅗": 3 / 5, "⅘": 4 / 5,
+  "⅛": 1 / 8, "⅜": 3 / 8, "⅝": 5 / 8, "⅞": 7 / 8,
+};
+
+function parseAmountToken(token: string): number {
+  const fracMatch = token.match(/^(\d*)([¼½¾⅓⅔⅕⅖⅗⅘⅛⅜⅝⅞])$/);
+  if (fracMatch) {
+    const whole = fracMatch[1] ? parseInt(fracMatch[1], 10) : 0;
+    return whole + UNICODE_FRACTIONS[fracMatch[2]];
+  }
+  if (token.includes("/")) {
+    const [n, d] = token.split("/").map(Number);
+    return d ? n / d : parseFloat(token) || 0;
+  }
+  return parseFloat(token) || 0;
+}
+
+function parseAmount(raw: string): number {
+  const total = raw
+    .trim()
+    .split(/\s+/)
+    .reduce((sum, tok) => sum + parseAmountToken(tok), 0);
+  return total || 1;
+}
+
+const AMOUNT_PREFIX = /^([\d./¼½¾⅓⅔⅕⅖⅗⅘⅛⅜⅝⅞]+(?:\s+[\d./¼½¾⅓⅔⅕⅖⅗⅘⅛⅜⅝⅞]+)?)\s+(.+)$/;
+
+export function parseIngredientLine(rawLine: string): { name: string; amount: number; unit: string } {
+  const line = decodeEntities(rawLine).trim();
+  const match = line.match(AMOUNT_PREFIX);
+  if (!match) return { name: line, amount: 1, unit: "" };
+
+  const amount = parseAmount(match[1]);
+  const rest = match[2].trim();
+  const words = rest.split(/\s+/);
+  const firstWord = words[0].toLowerCase();
+  const firstTwoWords = words.slice(0, 2).join(" ").toLowerCase(); // catches "fl oz"
+
+  if (words.length > 2 && KNOWN_UNITS.has(firstTwoWords)) {
+    return { name: words.slice(2).join(" "), amount, unit: words.slice(0, 2).join(" ") };
+  }
+  if (words.length > 1 && KNOWN_UNITS.has(firstWord)) {
+    return { name: words.slice(1).join(" "), amount, unit: words[0] };
+  }
+  return { name: rest, amount, unit: "" };
+}
+
+function splitIngredientLines(raw: string): string[] {
+  return raw.split(/,|\n/).map((l) => l.trim()).filter(Boolean);
+}
+
+export function toGroceryItems(
+  raw: string,
+  opts?: { fromRecipe?: string; servingMultiplier?: number }
+): GroceryItem[] {
+  return splitIngredientLines(raw).map((line, i) => {
+    const { name, amount, unit } = parseIngredientLine(line);
+    return {
+      id: `g_${Date.now()}_${i}`,
+      name,
+      amount,
+      unit,
+      checked: false,
+      aisle: getAisle(name),
+      addedFromRecipe: opts?.fromRecipe,
+      servingMultiplier: opts?.servingMultiplier,
+    };
+  });
+}
+
+export function combineIngredients(existing: GroceryItem[], incoming: GroceryItem[]): GroceryItem[] {
+  const result = [...existing];
+  for (const inc of incoming) {
+    const incLower = inc.name.toLowerCase().trim();
+    const idx = result.findIndex((e) => e.name.toLowerCase().trim() === incLower);
+    if (idx === -1) {
+      result.push({ ...inc });
+    } else {
+      const ex = result[idx];
+      const exUnit = ex.unit.toLowerCase().trim();
+      const incUnit = inc.unit.toLowerCase().trim();
+      if (exUnit === incUnit) {
+        result[idx] = { ...ex, amount: Math.round((ex.amount + inc.amount) * 100) / 100 };
+      } else if (TO_ML[exUnit] && TO_ML[incUnit]) {
+        const totalMl = ex.amount * TO_ML[exUnit] + inc.amount * TO_ML[incUnit];
+        const readable = mlToReadable(totalMl);
+        result[idx] = { ...ex, amount: readable.amount, unit: readable.unit };
+      } else {
+        result.push({ ...inc, id: `${inc.id}_${Date.now()}` });
+      }
+    }
+  }
+  return result;
+}
+
+// ─── useGrocerySync (canonical grocery state manager) ────────────────────────
 
 export function useGrocerySync() {
   const [items, setItems] = useState<GroceryItem[]>([]);
@@ -38,8 +268,11 @@ export function useGrocerySync() {
   const [lastOperation, setLastOperation] = useState<string | null>(null);
 
   const rowIdRef = useRef<string | null>(null);
+  // Mirrors `items` synchronously (not subject to React batching), so
+  // addIngredients() can be called back-to-back (e.g. in a loop from
+  // plan.tsx) without racing against stale closures.
+  const itemsRef = useRef<GroceryItem[]>([]);
 
-  // Keep ref and state synchronized
   const setActiveRowId = useCallback((id: string | null) => {
     rowIdRef.current = id;
     setRowId(id);
@@ -78,12 +311,12 @@ export function useGrocerySync() {
     clearError();
     setLastOperation("Loading grocery list");
 
-    // 1. Load local data immediately
     try {
       const local = await AsyncStorage.getItem(GROCERY_LOCAL_KEY);
 
       if (local) {
         const parsed: GroceryItem[] = JSON.parse(local);
+        itemsRef.current = parsed;
         setItems(parsed);
       }
     } catch (error: any) {
@@ -96,7 +329,6 @@ export function useGrocerySync() {
       );
     }
 
-    // 2. Try to get authenticated user
     setStatus("syncing");
 
     try {
@@ -106,10 +338,7 @@ export function useGrocerySync() {
       } = await supabase.auth.getUser();
 
       if (authError) {
-        recordSupabaseError(
-          "Get authenticated user",
-          authError
-        );
+        recordSupabaseError("Get authenticated user", authError);
         return;
       }
 
@@ -128,166 +357,87 @@ export function useGrocerySync() {
         return;
       }
 
-      // 3. Get previously stored row ID
-      const storedRowId = await AsyncStorage.getItem(
-        GROCERY_ROW_KEY
-      );
+      const storedRowId = await AsyncStorage.getItem(GROCERY_ROW_KEY);
 
       setActiveRowId(storedRowId);
 
-      // 4. Load existing grocery row
       if (storedRowId) {
-        setLastOperation(
-          `Loading grocery row ${storedRowId}`
-        );
+        setLastOperation(`Loading grocery row ${storedRowId}`);
 
-        const {
-          data,
-          error,
-        } = await supabase
+        const { data, error } = await supabase
           .from("grocery_lists")
-          .select(
-            "id, items, share_token, name, owner_id, permission"
-          )
+          .select("id, items, share_token, name, owner_id, permission")
           .eq("id", storedRowId)
           .single();
 
         if (error) {
-          recordSupabaseError(
-            "Load existing grocery list",
-            error
-          );
-
-          // Important:
-          // Do NOT create another grocery list here.
-          // The stored row may exist but be blocked by RLS.
+          recordSupabaseError("Load existing grocery list", error);
+          // Do NOT create another grocery list here — the stored row may
+          // exist but be blocked by RLS.
           return;
         }
 
         if (data) {
-          const remoteItems: GroceryItem[] =
-            data.items ?? [];
+          const remoteItems: GroceryItem[] = data.items ?? [];
 
+          itemsRef.current = remoteItems;
           setItems(remoteItems);
           setShareToken(data.share_token ?? null);
           setName(data.name ?? null);
           setOwnerId(data.owner_id ?? null);
 
-          const owner =
-            data.owner_id === currentUserId;
+          const owner = data.owner_id === currentUserId;
 
           setIsOwner(owner);
 
-          await AsyncStorage.setItem(
-            GROCERY_LOCAL_KEY,
-            JSON.stringify(remoteItems)
-          );
+          await AsyncStorage.setItem(GROCERY_LOCAL_KEY, JSON.stringify(remoteItems));
 
           setStatus("synced");
-          setLastOperation(
-            "Loaded grocery list successfully"
-          );
+          setLastOperation("Loaded grocery list successfully");
 
           return;
         }
       }
 
-      // 5. No row ID exists, so create a new grocery list
-      setLastOperation(
-        "Creating new grocery list"
-      );
+      setLastOperation("Creating new grocery list");
 
-      const local = await AsyncStorage.getItem(
-        GROCERY_LOCAL_KEY
-      );
+      const local = await AsyncStorage.getItem(GROCERY_LOCAL_KEY);
+      const localItems: GroceryItem[] = local ? JSON.parse(local) : [];
 
-      const localItems: GroceryItem[] = local
-        ? JSON.parse(local)
-        : [];
-
-      const {
-        data: newRow,
-        error: insertError,
-      } = await supabase
+      const { data: newRow, error: insertError } = await supabase
         .from("grocery_lists")
-        .insert({
-          owner_id: currentUserId,
-          items: localItems,
-        })
-        .select(
-          "id, share_token, name, owner_id, permission"
-        )
+        .insert({ owner_id: currentUserId, items: localItems })
+        .select("id, share_token, name, owner_id, permission")
         .single();
 
       if (insertError) {
-        recordSupabaseError(
-          "Create new grocery list",
-          insertError
-        );
-
+        recordSupabaseError("Create new grocery list", insertError);
         return;
       }
 
       if (newRow) {
         setActiveRowId(newRow.id);
+        setShareToken(newRow.share_token ?? null);
+        setName(newRow.name ?? null);
+        setOwnerId(newRow.owner_id ?? null);
+        setIsOwner(newRow.owner_id === currentUserId);
 
-        setShareToken(
-          newRow.share_token ?? null
-        );
+        await AsyncStorage.setItem(GROCERY_ROW_KEY, newRow.id);
 
-        setName(
-          newRow.name ?? null
-        );
-
-        setOwnerId(
-          newRow.owner_id ?? null
-        );
-
-        setIsOwner(
-          newRow.owner_id === currentUserId
-        );
-
-        await AsyncStorage.setItem(
-          GROCERY_ROW_KEY,
-          newRow.id
-        );
-
-        setLastOperation(
-          `Created grocery list ${newRow.id}`
-        );
+        setLastOperation(`Created grocery list ${newRow.id}`);
       }
 
       setStatus("synced");
     } catch (error: any) {
-      console.error(
-        "GROCERY LOAD EXCEPTION:",
-        error
-      );
+      console.error("GROCERY LOAD EXCEPTION:", error);
 
       setStatus("offline");
-
-      setLastOperation(
-        "Unexpected grocery sync error"
-      );
-
-      setErrorMessage(
-        error?.message ??
-          "Unexpected error while syncing grocery list"
-      );
-
-      setErrorCode(
-        error?.code ?? null
-      );
-
-      setErrorDetails(
-        error?.details ?? null
-      );
+      setLastOperation("Unexpected grocery sync error");
+      setErrorMessage(error?.message ?? "Unexpected error while syncing grocery list");
+      setErrorCode(error?.code ?? null);
+      setErrorDetails(error?.details ?? null);
     }
-  }, [
-    clearError,
-    recordSupabaseError,
-    setActiveRowId,
-  ]);
+  }, [clearError, recordSupabaseError, setActiveRowId]);
 
   // ─────────────────────────────────────────────────────────────
   // SAVE GROCERY LIST
@@ -295,242 +445,138 @@ export function useGrocerySync() {
 
   const save = useCallback(
     async (updated: GroceryItem[]) => {
-      // Update UI immediately
+      // Update the ref synchronously so a subsequent addIngredients() call
+      // (even before this render commits) sees the up-to-date list.
+      itemsRef.current = updated;
       setItems(updated);
 
-      // Always save locally first
       try {
-        await AsyncStorage.setItem(
-          GROCERY_LOCAL_KEY,
-          JSON.stringify(updated)
-        );
+        await AsyncStorage.setItem(GROCERY_LOCAL_KEY, JSON.stringify(updated));
       } catch (localError) {
-        console.error(
-          "GROCERY LOCAL SAVE ERROR:",
-          localError
-        );
+        console.error("GROCERY LOCAL SAVE ERROR:", localError);
       }
 
-      const activeRowId =
-        rowIdRef.current;
+      const activeRowId = rowIdRef.current;
 
-      // No Supabase row yet
       if (!activeRowId) {
-        setLastOperation(
-          "Saved locally — no Supabase row ID available"
-        );
-
+        setLastOperation("Saved locally — no Supabase row ID available");
         setStatus("offline");
-
         return;
       }
 
       setStatus("syncing");
-
-      setLastOperation(
-        `Updating grocery row ${activeRowId}`
-      );
+      setLastOperation(`Updating grocery row ${activeRowId}`);
 
       try {
-        // Get authenticated user
         const {
           data: { user },
           error: authError,
         } = await supabase.auth.getUser();
 
         if (authError) {
-          recordSupabaseError(
-            "Get user before grocery save",
-            authError
-          );
-
+          recordSupabaseError("Get user before grocery save", authError);
           return;
         }
 
-        const currentUserId =
-          user?.id ?? null;
+        const currentUserId = user?.id ?? null;
 
         setUserId(currentUserId);
 
         if (!currentUserId) {
           setStatus("offline");
-
-          setErrorMessage(
-            "Cannot save to Supabase because no authenticated user was found."
-          );
-
-          setLastOperation(
-            "Save failed — no authenticated user"
-          );
-
+          setErrorMessage("Cannot save to Supabase because no authenticated user was found.");
+          setLastOperation("Save failed — no authenticated user");
           return;
         }
 
-        // Check that the row exists
-        const {
-          data: rowCheck,
-          error: rowCheckError,
-        } = await supabase
+        const { data: rowCheck, error: rowCheckError } = await supabase
           .from("grocery_lists")
-          .select(
-            "id, owner_id, items"
-          )
+          .select("id, owner_id, items")
           .eq("id", activeRowId)
           .single();
 
         if (rowCheckError) {
-          recordSupabaseError(
-            "Check grocery row before save",
-            rowCheckError
-          );
-
-          setErrorMessage(
-            `Could not find grocery row: ${rowCheckError.message}`
-          );
-
-          setLastOperation(
-            `Failed to find grocery row ${activeRowId}`
-          );
-
+          recordSupabaseError("Check grocery row before save", rowCheckError);
+          setErrorMessage(`Could not find grocery row: ${rowCheckError.message}`);
+          setLastOperation(`Failed to find grocery row ${activeRowId}`);
           return;
         }
 
-        const owner =
-          rowCheck.owner_id === currentUserId;
+        const owner = rowCheck.owner_id === currentUserId;
 
-        setOwnerId(
-          rowCheck.owner_id ?? null
-        );
-
+        setOwnerId(rowCheck.owner_id ?? null);
         setIsOwner(owner);
 
-        // Make sure authenticated user owns the list
         if (!owner) {
           setStatus("error");
-
-          setErrorMessage(
-            "You are not the owner of this grocery list."
-          );
-
-          setLastOperation(
-            "Save blocked — authenticated user is not the row owner"
-          );
-
+          setErrorMessage("You are not the owner of this grocery list.");
+          setLastOperation("Save blocked — authenticated user is not the row owner");
           return;
         }
 
-        // Update Supabase
-        const {
-          data: savedRow,
-          error: updateError,
-        } = await supabase
+        const { data: savedRow, error: updateError } = await supabase
           .from("grocery_lists")
-          .update({
-            items: updated,
-            updated_at:
-              new Date().toISOString(),
-          })
+          .update({ items: updated, updated_at: new Date().toISOString() })
           .eq("id", activeRowId)
-          .eq(
-            "owner_id",
-            currentUserId
-          )
-          .select(
-            "id, owner_id, items, updated_at"
-          )
+          .eq("owner_id", currentUserId)
+          .select("id, owner_id, items, updated_at")
           .single();
 
         if (updateError) {
-          recordSupabaseError(
-            "Update grocery list",
-            updateError
-          );
-
-          setErrorMessage(
-            `Supabase save failed: ${updateError.message}`
-          );
-
-          setLastOperation(
-            `Supabase update failed for row ${activeRowId}`
-          );
-
+          recordSupabaseError("Update grocery list", updateError);
+          setErrorMessage(`Supabase save failed: ${updateError.message}`);
+          setLastOperation(`Supabase update failed for row ${activeRowId}`);
           return;
         }
 
         if (!savedRow) {
           setStatus("error");
-
-          setErrorMessage(
-            "Supabase accepted the request but returned no saved grocery row."
-          );
-
-          setLastOperation(
-            "Save failed — no row returned after update"
-          );
-
+          setErrorMessage("Supabase accepted the request but returned no saved grocery row.");
+          setLastOperation("Save failed — no row returned after update");
           return;
         }
 
-        // Verify returned data
-        const savedItems =
-          (savedRow.items ?? []) as GroceryItem[];
+        const savedItems = (savedRow.items ?? []) as GroceryItem[];
 
-        if (
-          JSON.stringify(savedItems) !==
-          JSON.stringify(updated)
-        ) {
+        if (JSON.stringify(savedItems) !== JSON.stringify(updated)) {
           setStatus("error");
+          setErrorMessage("Supabase returned data that does not match the grocery items that were saved.");
+          setLastOperation("Save mismatch — Supabase data differs from local data");
 
-          setErrorMessage(
-            "Supabase returned data that does not match the grocery items that were saved."
-          );
-
-          setLastOperation(
-            "Save mismatch — Supabase data differs from local data"
-          );
-
-          console.error(
-            "GROCERY SAVE MISMATCH",
-            {
-              rowId: activeRowId,
-              expected: updated,
-              actual: savedItems,
-            }
-          );
+          console.error("GROCERY SAVE MISMATCH", {
+            rowId: activeRowId,
+            expected: updated,
+            actual: savedItems,
+          });
 
           return;
         }
 
-        // Success
         setStatus("synced");
-
         clearError();
-
-        setLastOperation(
-          `Successfully saved ${updated.length} items to Supabase`
-        );
+        setLastOperation(`Successfully saved ${updated.length} items to Supabase`);
       } catch (error: any) {
-        console.error(
-          "GROCERY SAVE EXCEPTION:",
-          error
-        );
+        console.error("GROCERY SAVE EXCEPTION:", error);
 
         setStatus("offline");
-
-        setErrorMessage(
-          error?.message ??
-            "Unknown error while saving grocery list"
-        );
-
-        setLastOperation(
-          "Grocery save failed with an unexpected error"
-        );
+        setErrorMessage(error?.message ?? "Unknown error while saving grocery list");
+        setLastOperation("Grocery save failed with an unexpected error");
       }
     },
-    [
-      clearError,
-      recordSupabaseError,
-    ]
+    [clearError, recordSupabaseError]
+  );
+
+  // ─────────────────────────────────────────────────────────────
+  // ADD INGREDIENTS (canonical mutation used by grocery.tsx and plan.tsx)
+  // ─────────────────────────────────────────────────────────────
+
+  const addIngredients = useCallback(
+    async (raw: string, opts?: { fromRecipe?: string; servingMultiplier?: number }) => {
+      const incoming = toGroceryItems(raw, opts);
+      const combined = combineIngredients(itemsRef.current, incoming);
+      await save(combined);
+    },
+    [save]
   );
 
   // ─────────────────────────────────────────────────────────────
@@ -539,56 +585,33 @@ export function useGrocerySync() {
 
   const rename = useCallback(
     async (newName: string) => {
-      const trimmed =
-        newName.trim();
+      const trimmed = newName.trim();
 
-      setName(
-        trimmed || null
-      );
+      setName(trimmed || null);
 
-      const activeRowId =
-        rowIdRef.current;
+      const activeRowId = rowIdRef.current;
 
       if (!activeRowId) {
         return;
       }
 
       try {
-        const {
-          error,
-        } = await supabase
+        const { error } = await supabase
           .from("grocery_lists")
-          .update({
-            name:
-              trimmed || null,
-          })
-          .eq(
-            "id",
-            activeRowId
-          );
+          .update({ name: trimmed || null })
+          .eq("id", activeRowId);
 
         if (error) {
-          recordSupabaseError(
-            "Rename grocery list",
-            error
-          );
-
+          recordSupabaseError("Rename grocery list", error);
           return;
         }
 
-        setLastOperation(
-          "Grocery list renamed"
-        );
+        setLastOperation("Grocery list renamed");
       } catch (error: any) {
-        recordSupabaseError(
-          "Rename grocery list",
-          error
-        );
+        recordSupabaseError("Rename grocery list", error);
       }
     },
-    [
-      recordSupabaseError,
-    ]
+    [recordSupabaseError]
   );
 
   // ─────────────────────────────────────────────────────────────
@@ -604,6 +627,7 @@ export function useGrocerySync() {
     save,
     load,
     rename,
+    addIngredients,
 
     // Diagnostics
     errorMessage,
@@ -618,11 +642,6 @@ export function useGrocerySync() {
 }
 
 // ─── Shared (read-only viewer) Grocery Sync ──────────────────────────────────
-// For the /(shared)/grocery/[token] screen only. Does NOT run the "load my
-// own list" logic or create a new row — it only fetches by share token and
-// subscribes to realtime updates for that specific row. This avoids racing
-// against a signed-in visitor's own grocery_lists row (the same bug class
-// that hit the plan screen — see useSharedPlanSync below).
 
 export function useSharedGrocerySync(token: string | undefined) {
   const [items, setItems] = useState<GroceryItem[]>([]);
@@ -659,9 +678,6 @@ export function useSharedGrocerySync(token: string | undefined) {
         setName(data.name ?? null);
         setStatus("synced");
 
-        // "Shared with me" — instant join on open, mirrors
-        // useSharedPlanSync above. See that hook's comment for the
-        // full rationale.
         const userId = await getUserId();
         if (userId) {
           supabase
@@ -700,45 +716,40 @@ export function useSharedGrocerySync(token: string | undefined) {
   }, [rowIdRef.current]);
 
   const save = useCallback(async (updated: GroceryItem[]) => {
-  setItems(updated);
+    setItems(updated);
 
-  try {
-    await AsyncStorage.setItem(
-      GROCERY_LOCAL_KEY,
-      JSON.stringify(updated)
-    );
-  } catch (localError) {
-    console.error("Failed to save grocery list locally:", localError);
-  }
+    try {
+      await AsyncStorage.setItem(GROCERY_LOCAL_KEY, JSON.stringify(updated));
+    } catch (localError) {
+      console.error("Failed to save grocery list locally:", localError);
+    }
 
-  if (!rowIdRef.current) {
-    console.warn("No grocery row ID available. Saved locally only.");
-    return;
-  }
-
-  setStatus("syncing");
-
-  try {
-    const { error } = await supabase
-      .from("grocery_lists")
-      .update({
-        items: updated,
-        updated_at: new Date().toISOString(),
-      })
-      .eq("id", rowIdRef.current);
-
-    if (error) {
-      console.error("Failed to save grocery list to Supabase:", error);
-      setStatus("error");
+    if (!rowIdRef.current) {
+      console.warn("No grocery row ID available. Saved locally only.");
       return;
     }
 
-    setStatus("synced");
-  } catch (error) {
-    console.error("Unexpected grocery sync error:", error);
-    setStatus("offline");
-  }
-}, []);
+    setStatus("syncing");
+
+    try {
+      const { error } = await supabase
+        .from("grocery_lists")
+        .update({ items: updated, updated_at: new Date().toISOString() })
+        .eq("id", rowIdRef.current);
+
+      if (error) {
+        console.error("Failed to save grocery list to Supabase:", error);
+        setStatus("error");
+        return;
+      }
+
+      setStatus("synced");
+    } catch (error) {
+      console.error("Unexpected grocery sync error:", error);
+      setStatus("offline");
+    }
+  }, []);
+
   const rename = useCallback(async (newName: string) => {
     const trimmed = newName.trim();
     setName(trimmed || null);
@@ -1000,17 +1011,6 @@ export function usePlanSync() {
 }
 
 // ─── Shared (read-only viewer) Meal Plan Sync ────────────────────────────────
-// For the /(shared)/plan/[token] screen only. This is intentionally separate
-// from usePlanSync — that hook's own useEffect(() => { load(); }, [load])
-// runs unconditionally for the *signed-in visitor's own* plan, and if they
-// don't have one yet it INSERTS a new meal_plans row owned by them. That
-// raced against loadShared() on the shared screen: both ran on mount, both
-// wrote to rowIdRef, and whichever finished last "won" — leaving `plan`
-// state and rowIdRef pointing at two different rows, or a realtime
-// subscription set up against the wrong id. This is what was causing the
-// crash on the shared plan screen. This hook only ever fetches by
-// share_token and subscribes to that one row — it never touches the
-// visitor's own plan or inserts anything.
 
 export function useSharedPlanSync(token: string | undefined) {
   const [plan, setPlan] = useState<MealPlan>({});
@@ -1047,13 +1047,6 @@ export function useSharedPlanSync(token: string | undefined) {
         setName(data.name ?? null);
         setStatus("synced");
 
-        // "Shared with me" — instant join on open. If the visitor is
-        // signed in, record their membership so this plan becomes
-        // reachable from within the app later, not just via this link.
-        // Anonymous visitors can still view via the token as before;
-        // they just won't get a persistent entry until signed in.
-        // Upsert (not insert) so repeat visits don't error on the
-        // unique(plan_id, user_id) constraint.
         const userId = await getUserId();
         if (userId) {
           supabase
@@ -1118,9 +1111,6 @@ export function useSharedPlanSync(token: string | undefined) {
 }
 
 // ─── "Shared With Me" ─────────────────────────────────────────────────────────
-// Lists every plan/list a signed-in user has previously joined (via opening
-// a share link — see the join-on-open logic in useSharedPlanSync /
-// useSharedGrocerySync above). Used by the "Shared with me" tab/screen.
 
 export type SharedWithMePlan = {
   planId: string;
