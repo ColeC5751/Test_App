@@ -73,7 +73,6 @@ const planDetailStyles = StyleSheet.create({
   ingredientsText: { fontSize: 14, fontFamily: "Inter_400Regular", lineHeight: 22 },
 });
 
-
 function formatDayLabel(date: Date): { day: string; num: string } {
   return {
     day: date.toLocaleDateString("en-US", { weekday: "short" }).toUpperCase(),
@@ -127,7 +126,6 @@ function SlotPickerModal({
 
   useEffect(() => {
     if (!visible) return;
-    // Always reset to My Dinners tab when modal opens
     setTab("pick");
     AsyncStorage.getItem(STORAGE_KEY).then((json) => {
       setRecipes(json ? JSON.parse(json) : []);
@@ -158,7 +156,6 @@ function SlotPickerModal({
           </View>
         </View>
 
-        {/* Tab switcher */}
         <View style={[pickerStyles.tabs, { backgroundColor: colors.secondary, borderColor: colors.border }]}>
           <Pressable
             onPress={() => setTab("pick")}
@@ -335,6 +332,10 @@ export default function PlanScreen() {
   const topPad = Platform.OS === "web" ? 67 : 0;
 
   const { plan, status, shareToken, permission, save, load, setSharePermission } = usePlanSync();
+  // Canonical grocery sync — called here at the component level so
+  // handleAddWeekToGrocery can invoke addIngredients without breaking the
+  // rules of hooks.
+  const { addIngredients } = useGrocerySync();
 
   const [weekOffset, setWeekOffset] = useState(0);
   const [pickerDate, setPickerDate] = useState<Date | null>(null);
@@ -343,7 +344,6 @@ export default function PlanScreen() {
   const [viewingSlot, setViewingSlot] = useState<{ slot: PlanSlot; date: Date } | null>(null);
   const [viewingRecipe, setViewingRecipe] = useState<PersonalRecipe | null>(null);
 
-  // Slide animation for week transitions
   const slideAnim = useRef(new Animated.Value(0)).current;
 
   useFocusEffect(
@@ -373,7 +373,6 @@ export default function PlanScreen() {
     const key = isoDateKey(date);
     const slot = plan[key] as PlanSlot | null | undefined;
     if (slot) {
-      // Load full recipe data then open detail modal
       try {
         const json = await AsyncStorage.getItem(STORAGE_KEY);
         const recipes: PersonalRecipe[] = json ? JSON.parse(json) : [];
@@ -440,185 +439,76 @@ export default function PlanScreen() {
     } catch {}
   };
 
+  // ─── Add week to grocery list ────────────────────────────────────────────
+  // The ONLY grocery mutation path from this screen: useGrocerySync().addIngredients.
+  // No AsyncStorage writes to grocery keys, no separate grocery state, no
+  // parsing/merging logic duplicated here.
   const handleAddWeekToGrocery = async () => {
-  const slots = weekDays
-    .map((d) => plan[isoDateKey(d)])
-    .filter((s): s is PlanSlot => s != null);
+    const slots = weekDays
+      .map((d) => plan[isoDateKey(d)])
+      .filter((s): s is PlanSlot => s != null);
 
-  if (slots.length === 0) {
-    Alert.alert(
-      "No meals planned",
-      "Add some meals to this week first."
-    );
-    return;
-  }
+    if (slots.length === 0) {
+      Alert.alert("No meals planned", "Add some meals to this week first.");
+      return;
+    }
 
-  const recipeNames = slots
-    .map((s) => s.recipeName)
-    .join(", ");
+    const recipeNames = slots.map((s) => s.recipeName).join(", ");
 
-  const confirmed =
-    Platform.OS === "web"
-      ? window.confirm(
-          `Add ingredients from: ${recipeNames}?`
-        )
-      : await new Promise<boolean>((resolve) => {
-          Alert.alert(
-            "Add to grocery list?",
-            `This will add ingredients from:\n${recipeNames}`,
-            [
-              {
-                text: "Cancel",
-                style: "cancel",
-                onPress: () => resolve(false),
-              },
-              {
-                text: "Add",
-                onPress: () => resolve(true),
-              },
-            ]
-          );
-        });
+    const confirmed =
+      Platform.OS === "web"
+        ? window.confirm(`Add ingredients from: ${recipeNames}?`)
+        : await new Promise<boolean>((resolve) => {
+            Alert.alert(
+              "Add to grocery list?",
+              `This will add ingredients from:\n${recipeNames}`,
+              [
+                { text: "Cancel", style: "cancel", onPress: () => resolve(false) },
+                { text: "Add", onPress: () => resolve(true) },
+              ]
+            );
+          });
 
-  if (!confirmed) {
-    return;
-  }
+    if (!confirmed) {
+      return;
+    }
 
-  setAddingToGrocery(true);
+    setAddingToGrocery(true);
 
-  try {
-    const json = await AsyncStorage.getItem(STORAGE_KEY);
+    try {
+      const json = await AsyncStorage.getItem(STORAGE_KEY);
+      const recipes: PersonalRecipe[] = json ? JSON.parse(json) : [];
 
-    const recipes: PersonalRecipe[] = json
-      ? JSON.parse(json)
-      : [];
+      for (const slot of slots) {
+        const recipe = recipes.find((r) => r.id === slot.recipeId);
+        if (!recipe?.ingredients) continue;
 
-    // Start with the grocery list currently loaded
-    // by the shared grocery sync hook.
-    let updatedItems = [...groceryItems];
-
-    for (const slot of slots) {
-      const recipe = recipes.find(
-        (r) => r.id === slot.recipeId
-      );
-
-      if (!recipe?.ingredients) {
-        continue;
-      }
-
-      const incomingItems = toGroceryItems(
-        recipe.ingredients,
-        {
+        // Canonical mutation: parses recipe.ingredients, merges with the
+        // current grocery list, and persists locally + to Supabase — the
+        // exact same path grocery.tsx's manual-add uses.
+        await addIngredients(recipe.ingredients, {
           fromRecipe: slot.recipeName,
           servingMultiplier: 1,
-        }
-      );
-
-      updatedItems = combineIngredients(
-        updatedItems,
-        incomingItems
-      );
-    }
-
-    // Save through useGrocerySync.
-    // This is the important part: the same sync path
-    // used by the Grocery tab.
-    await saveGrocery(updatedItems);
-
-    await Haptics.notificationAsync(
-      Haptics.NotificationFeedbackType.Success
-    );
-
-    Alert.alert(
-      "Added to grocery list",
-      "The ingredients from this week's meals were added."
-    );
-  } catch (error) {
-    console.error(
-      "ADD WEEK TO GROCERY ERROR:",
-      error
-    );
-
-    Alert.alert(
-      "Error",
-      "Could not add ingredients to the grocery list. Please try again."
-    );
-  } finally {
-    setAddingToGrocery(false);
-  }
-};
-
-
-  if (!confirmed) {
-    return;
-  }
-
-  setAddingToGrocery(true);
-
-  try {
-    // Load personal recipes
-    const json = await AsyncStorage.getItem(STORAGE_KEY);
-    const recipes: PersonalRecipe[] = json
-      ? JSON.parse(json)
-      : [];
-
-    // Start with the grocery list currently loaded by useGrocerySync
-    let updatedGroceryItems = [...groceryItems];
-
-    for (const slot of slots) {
-      const recipe = recipes.find(
-        (r) => r.id === slot.recipeId
-      );
-
-      if (!recipe?.ingredients) {
-        continue;
+        });
       }
 
-      // Convert recipe ingredients into grocery items.
-      // This assumes addIngredientsToGrocery is NOT needed here.
-      const newItems = recipe.ingredients.map(
-        (ingredient) => ({
-          id: `${Date.now()}-${Math.random()}`,
-          name:
-            typeof ingredient === "string"
-              ? ingredient
-              : ingredient.name,
-          checked: false,
-        })
+      await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+
+      Alert.alert(
+        "Added to grocery list",
+        "The ingredients from this week's meals were added."
       );
+    } catch (error) {
+      console.error("ADD WEEK TO GROCERY ERROR:", error);
 
-      updatedGroceryItems = [
-        ...updatedGroceryItems,
-        ...newItems,
-      ];
+      Alert.alert(
+        "Error",
+        "Could not add ingredients to the grocery list. Please try again."
+      );
+    } finally {
+      setAddingToGrocery(false);
     }
-
-    // Save through the new Supabase/local grocery sync
-    await saveGrocery(updatedGroceryItems);
-
-    await Haptics.notificationAsync(
-      Haptics.NotificationFeedbackType.Success
-    );
-
-    Alert.alert(
-      "Added to grocery list",
-      "The ingredients from this week's meals have been added."
-    );
-  } catch (error) {
-    console.error(
-      "ADD WEEK TO GROCERY ERROR:",
-      error
-    );
-
-    Alert.alert(
-      "Error",
-      "Could not add ingredients to the grocery list. Please try again."
-    );
-  } finally {
-    setAddingToGrocery(false);
-  }
-};
-
+  };
 
   const pickerDateLabel = pickerDate
     ? `${formatDayLabel(pickerDate).day}, ${pickerDate.toLocaleDateString("en-US", { month: "long", day: "numeric" })}`
@@ -631,7 +521,6 @@ export default function PlanScreen() {
         contentContainerStyle={{ paddingTop: topPad + 32, paddingHorizontal: 16, paddingBottom: 120 }}
         showsVerticalScrollIndicator={false}
       >
-        {/* Header */}
         <View style={styles.headerRow}>
           <View>
             <Text style={[styles.heading, { color: colors.foreground }]}>Meal Plan</Text>
@@ -653,7 +542,6 @@ export default function PlanScreen() {
           </View>
         </View>
 
-        {/* Week navigation */}
         <View style={styles.weekNav}>
           <Pressable
             onPress={() => navigateWeek(-1)}
@@ -677,7 +565,6 @@ export default function PlanScreen() {
           </Pressable>
         </View>
 
-        {/* Day slots */}
         <Animated.View style={{ transform: [{ translateX: slideAnim }] }}>
           {weekDays.map((date) => {
             const key = isoDateKey(date);
@@ -699,20 +586,17 @@ export default function PlanScreen() {
                   pressed && { opacity: 0.8 },
                 ]}
               >
-                {/* Today badge */}
                 {today && (
                   <View style={[styles.todayBadge, { backgroundColor: colors.primary }]}>
                     <Text style={[styles.todayBadgeText, { color: colors.primaryForeground }]}>TODAY</Text>
                   </View>
                 )}
 
-                {/* Date column */}
                 <View style={styles.dateCol}>
                   <Text style={[styles.dayText, { color: today ? colors.primary : colors.mutedForeground }]}>{day}</Text>
                   <Text style={[styles.dayNum, { color: today ? colors.primary : colors.foreground }]}>{num}</Text>
                 </View>
 
-                {/* Slot content */}
                 {slot ? (
                   <View style={[styles.slotFilled, { backgroundColor: colors.background, borderRadius: 10 }]}>
                     {slot.recipePhoto ? (
@@ -738,7 +622,6 @@ export default function PlanScreen() {
           })}
         </Animated.View>
 
-        {/* Add week to grocery list — only shown when meals are planned */}
         {filledSlots.length > 0 && (
           <>
             <Pressable
@@ -776,7 +659,6 @@ export default function PlanScreen() {
         }}
       />
 
-      {/* Recipe detail view from plan slot */}
       <Modal
         visible={!!viewingSlot}
         animationType="slide"
@@ -797,7 +679,6 @@ export default function PlanScreen() {
             </Pressable>
           </View>
           <ScrollView contentContainerStyle={planDetailStyles.body} showsVerticalScrollIndicator={false}>
-            {/* Photo */}
             {viewingSlot?.slot.recipePhoto ? (
               <Image source={{ uri: viewingSlot.slot.recipePhoto }} style={planDetailStyles.photo} />
             ) : (
@@ -806,12 +687,10 @@ export default function PlanScreen() {
               </View>
             )}
 
-            {/* Recipe name */}
             <Text style={[planDetailStyles.recipeName, { color: colors.foreground }]}>
               {viewingSlot?.slot.recipeName}
             </Text>
 
-            {/* Ingredients preview if available */}
             {viewingRecipe?.ingredients ? (
               <View style={[planDetailStyles.ingredientsCard, { backgroundColor: colors.card, borderColor: colors.border }]}>
                 <Text style={[planDetailStyles.ingredientsLabel, { color: colors.mutedForeground }]}>INGREDIENTS</Text>
@@ -821,7 +700,6 @@ export default function PlanScreen() {
               </View>
             ) : null}
 
-            {/* Steps preview if available */}
             {viewingRecipe?.steps ? (
               <View style={[planDetailStyles.ingredientsCard, { backgroundColor: colors.card, borderColor: colors.border }]}>
                 <Text style={[planDetailStyles.ingredientsLabel, { color: colors.mutedForeground }]}>STEPS</Text>
