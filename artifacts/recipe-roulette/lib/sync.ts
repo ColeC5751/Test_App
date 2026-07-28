@@ -216,26 +216,92 @@ export function useGrocerySync() {
     setActiveRowId,
   ]);
 
-  const save = useCallback(
-    async (updated: GroceryItem[]) => {
-      clearError();
+  const save = useCallback(async (updated: GroceryItem[]) => {
+  // Update UI immediately
+  setItems(updated);
 
-      // Optimistically update UI
-      setItems(updated);
+  // Save locally
+  try {
+    await AsyncStorage.setItem(
+      GROCERY_LOCAL_KEY,
+      JSON.stringify(updated)
+    );
+  } catch (localError) {
+    console.error("GROCERY LOCAL SAVE ERROR:", localError);
+  }
 
-      // Always save locally first
-      try {
-        await AsyncStorage.setItem(
-          GROCERY_LOCAL_KEY,
-          JSON.stringify(updated)
-        );
-      } catch (error: any) {
-        setErrorMessage(
-          `Local save failed: ${
-            error?.message ?? "Unknown local storage error"
-          }`
-        );
-      }
+  const rowId = rowIdRef.current;
+
+  if (!rowId) {
+    setStatus("offline");
+    console.error("GROCERY SAVE FAILED: No row ID");
+    return;
+  }
+
+  setStatus("syncing");
+
+  try {
+    console.log("GROCERY SAVE START", {
+      rowId,
+      itemCount: updated.length,
+      items: updated,
+    });
+
+    const { data, error } = await supabase
+      .from("grocery_lists")
+      .update({
+        items: updated,
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", rowId)
+      .select("id, owner_id, items, updated_at")
+      .single();
+
+    if (error) {
+      console.error("GROCERY SUPABASE UPDATE ERROR:", error);
+
+      setStatus("error");
+      return;
+    }
+
+    console.log("GROCERY SUPABASE UPDATE SUCCESS:", data);
+
+    // Verify what Supabase actually saved
+    const { data: verifyData, error: verifyError } = await supabase
+      .from("grocery_lists")
+      .select("id, owner_id, items, updated_at")
+      .eq("id", rowId)
+      .single();
+
+    if (verifyError) {
+      console.error("GROCERY VERIFY ERROR:", verifyError);
+      setStatus("error");
+      return;
+    }
+
+    console.log("GROCERY VERIFY RESULT:", verifyData);
+
+    const savedItems = (verifyData?.items ?? []) as GroceryItem[];
+
+    if (JSON.stringify(savedItems) !== JSON.stringify(updated)) {
+      console.error("GROCERY SAVE MISMATCH", {
+        expected: updated,
+        actual: savedItems,
+      });
+
+      setStatus("error");
+      return;
+    }
+
+    console.log("GROCERY SAVE VERIFIED SUCCESSFULLY");
+
+    setStatus("synced");
+
+  } catch (error) {
+    console.error("GROCERY SAVE EXCEPTION:", error);
+    setStatus("offline");
+  }
+}, []);
 
       const activeRowId = rowIdRef.current;
 
