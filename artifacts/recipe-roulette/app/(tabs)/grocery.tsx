@@ -1002,6 +1002,84 @@ function GroceryRow({
 // ─── Styles ───────────────────────────────────────────────────────────────────
 
 const styles = StyleSheet.create({
+  
+  diagnostics: {
+  borderWidth: 1,
+  borderRadius: 12,
+  padding: 14,
+  marginBottom: 20,
+  gap: 8,
+},
+
+diagnosticsHeader: {
+  flexDirection: "row",
+  alignItems: "center",
+  gap: 8,
+  marginBottom: 4,
+},
+
+diagnosticsTitle: {
+  fontSize: 14,
+  fontFamily: "Inter_600SemiBold",
+},
+
+diagnosticRow: {
+  flexDirection: "row",
+  alignItems: "flex-start",
+  gap: 10,
+},
+
+diagnosticLabel: {
+  width: 105,
+  fontSize: 11,
+  fontFamily: "Inter_400Regular",
+},
+
+diagnosticValue: {
+  flex: 1,
+  fontSize: 11,
+  fontFamily: "Inter_600SemiBold",
+},
+
+errorBox: {
+  borderWidth: 1,
+  borderRadius: 8,
+  padding: 10,
+  marginTop: 4,
+  gap: 4,
+},
+
+errorTitle: {
+  fontSize: 12,
+  fontFamily: "Inter_700Bold",
+},
+
+errorText: {
+  fontSize: 12,
+  fontFamily: "Inter_400Regular",
+  lineHeight: 17,
+},
+
+errorMeta: {
+  fontSize: 10,
+  fontFamily: "Inter_400Regular",
+  lineHeight: 14,
+},
+
+testSaveButton: {
+  flexDirection: "row",
+  alignItems: "center",
+  justifyContent: "center",
+  gap: 7,
+  borderRadius: 8,
+  paddingVertical: 10,
+  marginTop: 4,
+},
+
+testSaveButtonText: {
+  fontSize: 12,
+  fontFamily: "Inter_600SemiBold",
+},
   root: { flex: 1 },
   headerRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 28 },
   headerLeft: { flex: 1, gap: 2 },
