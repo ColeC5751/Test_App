@@ -1,9 +1,12 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { Feather } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
-import React, { useCallback, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
   Alert,
+  Animated,
+  Easing,
+  Image,
   Modal,
   Platform,
   Pressable,
@@ -13,226 +16,228 @@ import {
   StyleSheet,
   Switch,
   Text,
-  TextInput,
   View,
 } from "react-native";
 import { useFocusEffect } from "expo-router";
 
 import { useColors } from "@/hooks/useColors";
-import { useGrocerySync } from "@/lib/sync";
+import { usePlanSync } from "@/lib/sync";
 import { buildShareUrl } from "@/lib/supabase";
-import type { GroceryItem, SyncStatus } from "@/lib/types";
+import { addIngredientsToGrocery } from "@/app/(tabs)/grocery";
+import type { MealPlan, PlanSlot, SharePermission } from "@/lib/types";
 
-// ─── Aisle categorization ─────────────────────────────────────────────────────
+// ─── Personal recipe type (matches roulette.tsx) ──────────────────────────────
 
-const AISLE_MAP: { aisle: string; icon: string; keywords: string[] }[] = [
-  {
-    aisle: "Produce", icon: "🥦",
-    keywords: ["apple","apples","avocado","basil","bean","beans","bell pepper","broccoli","cabbage","carrot","carrots","cauliflower","celery","cherry","chili","cilantro","corn","cucumber","eggplant","garlic","ginger","grape","kale","leek","lemon","lettuce","lime","mint","mushroom","mushrooms","onion","onions","orange","parsley","pea","peas","pepper","peppers","potato","potatoes","rosemary","scallion","spinach","squash","sweet potato","thyme","tomato","tomatoes","zucchini","asparagus","fennel","leeks","parsnip","radish","shallot","turnip"],
-  },
-  {
-    aisle: "Meat & Seafood", icon: "🥩",
-    keywords: ["bacon","beef","chicken","chorizo","clam","cod","crab","duck","fish","ground beef","ground turkey","ham","lamb","lobster","pork","prosciutto","salmon","sausage","scallop","shrimp","steak","tilapia","tuna","turkey","venison","anchovy","anchovies","mussels","sardines","squid"],
-  },
-  {
-    aisle: "Dairy & Eggs", icon: "🧀",
-    keywords: ["butter","cheddar","cheese","cottage cheese","cream","cream cheese","egg","eggs","feta","goat cheese","gouda","gruyere","half and half","heavy cream","milk","mozzarella","parmesan","ricotta","sour cream","whipping cream","yogurt","brie","manchego","pecorino"],
-  },
-  {
-    aisle: "Bakery & Bread", icon: "🍞",
-    keywords: ["bagel","baguette","bread","breadcrumbs","brioche","bun","ciabatta","crouton","croutons","english muffin","flatbread","naan","pita","roll","rolls","sourdough","tortilla","wrap"],
-  },
-  {
-    aisle: "Pantry", icon: "🫙",
-    keywords: ["baking powder","baking soda","bay leaf","black beans","bouillon","broth","brown sugar","capers","chickpeas","chili powder","chocolate","cinnamon","clove","cloves","cocoa","coconut milk","cornstarch","cumin","curry","flour","honey","hot sauce","ketchup","kidney beans","lentils","maple syrup","mayonnaise","molasses","mustard","nutritional yeast","oats","oil","olive oil","oregano","oyster sauce","paprika","peanut butter","pepper","quinoa","red pepper flakes","salt","sesame oil","soy sauce","stock","sugar","tahini","tomato paste","tomato sauce","turmeric","vanilla","vegetable oil","vinegar","worcestershire","yeast","coconut oil","fish sauce","hoisin","miso","sriracha","tabasco"],
-  },
-  {
-    aisle: "Pasta, Rice & Grains", icon: "🍝",
-    keywords: ["barley","brown rice","couscous","egg noodles","farro","fettuccine","lasagna","linguine","macaroni","noodles","orzo","pasta","penne","polenta","ramen","rice","rigatoni","risotto","spaghetti","udon","vermicelli","white rice","wild rice"],
-  },
-  {
-    aisle: "Canned & Jarred", icon: "🥫",
-    keywords: ["artichoke","canned corn","canned tomato","canned tuna","cannellini","crushed tomatoes","diced tomatoes","green chile","green olives","jalapeño","jalapeños","kidney beans","olives","pinto beans","roasted peppers","sun-dried tomato","tomato"],
-  },
-  {
-    aisle: "Frozen", icon: "🧊",
-    keywords: ["frozen broccoli","frozen corn","frozen peas","frozen spinach","frozen shrimp","ice cream","edamame","frozen","tater tots"],
-  },
-  {
-    aisle: "Nuts, Seeds & Dried Fruit", icon: "🥜",
-    keywords: ["almond","almonds","cashew","cashews","chia","cranberry","dried fruit","flaxseed","hemp seed","macadamia","peanut","peanuts","pecan","pecans","pistachio","poppy seed","pumpkin seed","raisin","raisins","sesame","sunflower seed","walnut","walnuts","pine nuts"],
-  },
-  {
-    aisle: "Beverages", icon: "🧃",
-    keywords: ["apple juice","beer","broth","coffee","coconut water","juice","lemonade","orange juice","soda","sparkling water","tea","water","wine","champagne","cider","kombucha","milk alternative","oat milk","almond milk","soy milk"],
-  },
-  {
-    aisle: "Condiments & Sauces", icon: "🫙",
-    keywords: ["barbecue sauce","bbq sauce","buffalo sauce","caesar dressing","dijon","dressing","guacamole","hummus","jam","jelly","pesto","pickle","pickles","ranch","relish","salsa","teriyaki","tzatziki"],
-  },
-  {
-    aisle: "Herbs & Spices", icon: "🌿",
-    keywords: ["allspice","anise","cardamom","cayenne","chives","coriander","dill","fennel seed","herbes","marjoram","nutmeg","saffron","sage","smoked paprika","star anise","tarragon","za'atar"],
-  },
-];
-
-const AISLE_ORDER = AISLE_MAP.map((a) => a.aisle).concat(["Other"]);
-
-function getAisle(name: string): string {
-  const lower = name.toLowerCase().trim();
-  let best = { aisle: "Other", len: 0 };
-  for (const { aisle, keywords } of AISLE_MAP) {
-    for (const kw of keywords) {
-      if (lower.includes(kw) && kw.length > best.len) {
-        best = { aisle, len: kw.length };
-      }
-    }
-  }
-  return best.aisle;
+interface PersonalRecipe {
+  id: string;
+  name: string;
+  ingredients: string;
+  steps: string;
+  photoUrl?: string;
+  createdAt: number;
+  source?: "manual" | "photo" | "url";
 }
 
-// ─── Unit conversion ──────────────────────────────────────────────────────────
+const STORAGE_KEY = "@recipe_roulette_personal";
 
-const TO_ML: Record<string, number> = {
-  ml: 1, milliliter: 1, milliliters: 1,
-  l: 1000, liter: 1000, liters: 1000,
-  tsp: 4.92, teaspoon: 4.92, teaspoons: 4.92,
-  tbsp: 14.79, tablespoon: 14.79, tablespoons: 14.79,
-  cup: 236.6, cups: 236.6,
-  "fl oz": 29.57, floz: 29.57,
-};
+// ─── Date helpers ─────────────────────────────────────────────────────────────
 
-function mlToReadable(ml: number): { amount: number; unit: string } {
-  if (ml >= 900) return { amount: Math.round((ml / 1000) * 10) / 10, unit: "l" };
-  if (ml >= 60) return { amount: Math.round(ml / 14.79 * 10) / 10, unit: "tbsp" };
-  if (ml >= 5) return { amount: Math.round(ml / 4.92 * 10) / 10, unit: "tsp" };
-  return { amount: Math.round(ml), unit: "ml" };
+function getMondayOfWeek(date: Date): Date {
+  const d = new Date(date);
+  const day = d.getDay();
+  const diff = day === 0 ? -6 : 1 - day; // Monday anchor
+  d.setDate(d.getDate() + diff);
+  d.setHours(0, 0, 0, 0);
+  return d;
 }
 
-// ─── combineIngredients ───────────────────────────────────────────────────────
+function formatWeekLabel(monday: Date): string {
+  return monday.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
 
-export function combineIngredients(existing: GroceryItem[], incoming: GroceryItem[]): GroceryItem[] {
-  const result = [...existing];
-  for (const inc of incoming) {
-    const incLower = inc.name.toLowerCase().trim();
-    const idx = result.findIndex((e) => e.name.toLowerCase().trim() === incLower);
-    if (idx === -1) {
-      result.push({ ...inc });
-    } else {
-      const ex = result[idx];
-      const exUnit = ex.unit.toLowerCase().trim();
-      const incUnit = inc.unit.toLowerCase().trim();
-      if (exUnit === incUnit) {
-        result[idx] = { ...ex, amount: Math.round((ex.amount + inc.amount) * 100) / 100 };
-      } else if (TO_ML[exUnit] && TO_ML[incUnit]) {
-        const totalMl = ex.amount * TO_ML[exUnit] + inc.amount * TO_ML[incUnit];
-        const readable = mlToReadable(totalMl);
-        result[idx] = { ...ex, amount: readable.amount, unit: readable.unit };
-      } else {
-        result.push({ ...inc, id: `${inc.id}_${Date.now()}` });
-      }
-    }
-  }
-  return result;
+const planDetailStyles = StyleSheet.create({
+  root: { flex: 1 },
+  header: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", padding: 16, borderBottomWidth: 1 },
+  swapBtn: { flexDirection: "row", alignItems: "center", gap: 6 },
+  swapText: { fontSize: 14, fontFamily: "Inter_600SemiBold" },
+  title: { flex: 1, fontSize: 16, fontFamily: "Inter_700Bold", textAlign: "center", marginHorizontal: 8 },
+  body: { padding: 20, gap: 16 },
+  photo: { width: "100%", height: 200, borderRadius: 14 },
+  photoPlaceholder: { width: "100%", height: 200, borderRadius: 14, alignItems: "center", justifyContent: "center" },
+  recipeName: { fontSize: 22, fontFamily: "Inter_700Bold" },
+  ingredientsCard: { borderRadius: 12, borderWidth: 1, padding: 14, gap: 8, width: "100%" },
+  ingredientsLabel: { fontSize: 10, fontFamily: "Inter_600SemiBold", letterSpacing: 2 },
+  ingredientsText: { fontSize: 14, fontFamily: "Inter_400Regular", lineHeight: 22 },
+});
 }
 
-// ─── Storage (kept for addIngredientsToGrocery which is called from other tabs) ──
-
-export const GROCERY_KEY = "@recipe_roulette_grocery";
-
-export async function loadGroceryList(): Promise<GroceryItem[]> {
-  try {
-    const json = await AsyncStorage.getItem(GROCERY_KEY);
-    return json ? JSON.parse(json) : [];
-  } catch { return []; }
+function formatDayLabel(date: Date): { day: string; num: string } {
+  return {
+    day: date.toLocaleDateString("en-US", { weekday: "short" }).toUpperCase(),
+    num: String(date.getDate()),
+  };
 }
 
-export async function saveGroceryList(items: GroceryItem[]): Promise<void> {
-  try { await AsyncStorage.setItem(GROCERY_KEY, JSON.stringify(items)); } catch {}
+function isoDateKey(date: Date): string {
+  return date.toISOString().split("T")[0];
 }
 
-export async function addIngredientsToGrocery(
-  rawIngredients: string,
-  opts?: { fromRecipe?: string; servingMultiplier?: number }
-): Promise<void> {
-  const existing = await loadGroceryList();
-  const lines = rawIngredients.split(/,|\n/).map((l) => l.trim()).filter(Boolean);
-  const incoming: GroceryItem[] = lines.map((line, i) => {
-    const match = line.match(/^([\d./]+)\s*([a-zA-Z]+(?:\s+[a-zA-Z]+)?)?\s+(.+)$/);
-    if (match) {
-      const name = match[3]?.trim() || line;
-      return {
-        id: `g_${Date.now()}_${i}`,
-        name,
-        amount: parseFloat(match[1]) || 1,
-        unit: match[2]?.trim() || "",
-        checked: false,
-        aisle: getAisle(name),
-        addedFromRecipe: opts?.fromRecipe,
-        servingMultiplier: opts?.servingMultiplier,
-      };
-    }
-    return {
-      id: `g_${Date.now()}_${i}`,
-      name: line,
-      amount: 1,
-      unit: "",
-      checked: false,
-      aisle: getAisle(line),
-      addedFromRecipe: opts?.fromRecipe,
-      servingMultiplier: opts?.servingMultiplier,
-    };
-  });
-  await saveGroceryList(combineIngredients(existing, incoming));
-}
-
-// ─── Helpers ──────────────────────────────────────────────────────────────────
-
-function formatItem(item: GroceryItem): string {
-  const amt = item.amount === 1 && !item.unit
-    ? ""
-    : `${item.amount % 1 === 0 ? item.amount : item.amount.toFixed(1)}${item.unit ? " " + item.unit : ""} `;
-  return `${amt}${item.name}`;
-}
-
-function groupByAisle(items: GroceryItem[]): { aisle: string; icon: string; items: GroceryItem[] }[] {
-  const map = new Map<string, GroceryItem[]>();
-  for (const item of items) {
-    if (!map.has(item.aisle)) map.set(item.aisle, []);
-    map.get(item.aisle)!.push(item);
-  }
-  return AISLE_ORDER
-    .filter((a) => map.has(a))
-    .map((a) => ({
-      aisle: a,
-      icon: AISLE_MAP.find((m) => m.aisle === a)?.icon ?? "🛒",
-      items: (map.get(a)!).slice().sort((x, y) => {
-        // Sort by amount descending, then alphabetically by name
-        if (y.amount !== x.amount) return y.amount - x.amount;
-        return x.name.localeCompare(y.name);
-      }),
-    }));
-}
-
-// ─── Sync status dot ──────────────────────────────────────────────────────────
-
-function SyncDot({ status }: { status: SyncStatus }) {
-  const color =
-    status === "synced" ? "#7C8C5E" :
-    status === "syncing" ? "#C8A86B" :
-    status === "offline" ? "#9A9A88" : "#ef4444";
+function isToday(date: Date): boolean {
+  const today = new Date();
   return (
-    <View style={[syncDotStyles.dot, { backgroundColor: color }]} />
+    date.getDate() === today.getDate() &&
+    date.getMonth() === today.getMonth() &&
+    date.getFullYear() === today.getFullYear()
   );
 }
 
-const syncDotStyles = StyleSheet.create({
-  dot: { width: 8, height: 8, borderRadius: 4, marginTop: 6 },
+function getWeekDays(monday: Date): Date[] {
+  return Array.from({ length: 7 }, (_, i) => {
+    const d = new Date(monday);
+    d.setDate(monday.getDate() + i);
+    return d;
+  });
+}
+
+// ─── Slot Picker Modal ────────────────────────────────────────────────────────
+
+function SlotPickerModal({
+  visible,
+  dateLabel,
+  onClose,
+  onPickRecipe,
+  onSpinRecipe,
+  onDelete,
+  isChanging,
+}: {
+  visible: boolean;
+  dateLabel: string;
+  onClose: () => void;
+  onPickRecipe: (recipe: PersonalRecipe) => void;
+  onSpinRecipe: () => void;
+  onDelete?: () => void;
+  isChanging?: boolean;
+}) {
+  const colors = useColors();
+  const [recipes, setRecipes] = useState<PersonalRecipe[]>([]);
+  const [tab, setTab] = useState<"pick" | "spin">("pick");
+
+  useEffect(() => {
+    if (!visible) return;
+    // Always reset to My Dinners tab when modal opens
+    setTab("pick");
+    AsyncStorage.getItem(STORAGE_KEY).then((json) => {
+      setRecipes(json ? JSON.parse(json) : []);
+    }).catch(() => {});
+  }, [visible]);
+
+  return (
+    <Modal visible={visible} animationType="slide" presentationStyle="pageSheet" onRequestClose={onClose}>
+      <SafeAreaView style={[pickerStyles.root, { backgroundColor: colors.background }]}>
+        <View style={[pickerStyles.header, { borderBottomColor: colors.border }]}>
+          <View style={pickerStyles.headerLeft}>
+            <Text style={[pickerStyles.title, { color: colors.foreground }]}>{dateLabel}</Text>
+            {isChanging && onDelete && (
+              <Text style={[pickerStyles.changingLabel, { color: colors.mutedForeground }]}>
+                Changing existing meal
+              </Text>
+            )}
+          </View>
+          <View style={pickerStyles.headerRight}>
+            {isChanging && onDelete && (
+              <Pressable onPress={onDelete} hitSlop={12} style={pickerStyles.deleteBtn}>
+                <Feather name="trash-2" size={18} color={colors.destructive} />
+              </Pressable>
+            )}
+            <Pressable onPress={onClose}>
+              <Feather name="x" size={22} color={colors.foreground} />
+            </Pressable>
+          </View>
+        </View>
+
+        {/* Tab switcher */}
+        <View style={[pickerStyles.tabs, { backgroundColor: colors.secondary, borderColor: colors.border }]}>
+          <Pressable
+            onPress={() => setTab("pick")}
+            style={[pickerStyles.tabBtn, tab === "pick" && { backgroundColor: colors.primary, borderRadius: 8 }]}
+          >
+            <Feather name="book-open" size={14} color={tab === "pick" ? colors.primaryForeground : colors.mutedForeground} />
+            <Text style={[pickerStyles.tabText, { color: tab === "pick" ? colors.primaryForeground : colors.mutedForeground }]}>
+              My Dinners
+            </Text>
+          </Pressable>
+          <Pressable
+            onPress={() => { setTab("spin"); onSpinRecipe(); }}
+            style={[pickerStyles.tabBtn, tab === "spin" && { backgroundColor: colors.primary, borderRadius: 8 }]}
+          >
+            <Feather name="shuffle" size={14} color={tab === "spin" ? colors.primaryForeground : colors.mutedForeground} />
+            <Text style={[pickerStyles.tabText, { color: tab === "spin" ? colors.primaryForeground : colors.mutedForeground }]}>
+              Pick for me
+            </Text>
+          </Pressable>
+        </View>
+
+        <ScrollView contentContainerStyle={pickerStyles.list} showsVerticalScrollIndicator={false}>
+          {recipes.length === 0 ? (
+            <View style={pickerStyles.empty}>
+              <Feather name="book-open" size={32} color={colors.mutedForeground} />
+              <Text style={[pickerStyles.emptyText, { color: colors.mutedForeground }]}>
+                No recipes in My Dinners yet
+              </Text>
+            </View>
+          ) : (
+            recipes.map((recipe) => (
+              <Pressable
+                key={recipe.id}
+                onPress={() => { onPickRecipe(recipe); Haptics.selectionAsync(); }}
+                style={({ pressed }) => [
+                  pickerStyles.recipeRow,
+                  { backgroundColor: colors.card, borderColor: colors.border },
+                  pressed && { opacity: 0.8 },
+                ]}
+              >
+                {recipe.photoUrl ? (
+                  <Image source={{ uri: recipe.photoUrl }} style={pickerStyles.thumb} />
+                ) : (
+                  <View style={[pickerStyles.thumbPlaceholder, { backgroundColor: colors.muted }]}>
+                    <Feather name="coffee" size={18} color={colors.mutedForeground} />
+                  </View>
+                )}
+                <Text style={[pickerStyles.recipeName, { color: colors.foreground }]} numberOfLines={2}>
+                  {recipe.name}
+                </Text>
+                <Feather name="chevron-right" size={16} color={colors.mutedForeground} />
+              </Pressable>
+            ))
+          )}
+        </ScrollView>
+      </SafeAreaView>
+    </Modal>
+  );
+}
+
+const pickerStyles = StyleSheet.create({
+  root: { flex: 1 },
+  header: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", padding: 20, borderBottomWidth: 1 },
+  headerLeft: { flex: 1 },
+  headerRight: { flexDirection: "row", alignItems: "center", gap: 16 },
+  deleteBtn: { padding: 4 },
+  changingLabel: { fontSize: 11, fontFamily: "Inter_400Regular", marginTop: 2 },
+  title: { fontSize: 18, fontFamily: "Inter_700Bold" },
+  tabs: { flexDirection: "row", margin: 16, borderRadius: 10, borderWidth: 1, padding: 4, gap: 4 },
+  tabBtn: { flex: 1, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6, paddingVertical: 9 },
+  tabText: { fontSize: 13, fontFamily: "Inter_600SemiBold" },
+  list: { padding: 16, gap: 10, paddingBottom: 48 },
+  empty: { alignItems: "center", paddingVertical: 48, gap: 12 },
+  emptyText: { fontSize: 14, fontFamily: "Inter_400Regular", textAlign: "center" },
+  recipeRow: { flexDirection: "row", alignItems: "center", gap: 12, borderRadius: 12, borderWidth: 1, padding: 12 },
+  thumb: { width: 48, height: 48, borderRadius: 8 },
+  thumbPlaceholder: { width: 48, height: 48, borderRadius: 8, alignItems: "center", justifyContent: "center" },
+  recipeName: { flex: 1, fontSize: 14, fontFamily: "Inter_600SemiBold", lineHeight: 19 },
 });
 
 // ─── Share Modal ──────────────────────────────────────────────────────────────
 
-function ShareModal({
+function PlanShareModal({
   visible,
   onClose,
   shareToken,
@@ -242,16 +247,16 @@ function ShareModal({
   visible: boolean;
   onClose: () => void;
   shareToken: string | null;
-  permission: "view" | "edit";
-  onSetPermission: (p: "view" | "edit") => void;
+  permission: SharePermission;
+  onSetPermission: (p: SharePermission) => void;
 }) {
   const colors = useColors();
-  const shareUrl = shareToken ? buildShareUrl("grocery", shareToken) : null;
+  const shareUrl = shareToken ? buildShareUrl("plan", shareToken) : null;
 
   const handleShare = async () => {
     if (!shareUrl) return;
     await Share.share({
-      message: `Join my grocery list on That's Dinner:\n${shareUrl}`,
+      message: `Join my meal plan on That's Dinner:\n${shareUrl}`,
       url: shareUrl,
     });
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
@@ -259,24 +264,22 @@ function ShareModal({
 
   return (
     <Modal visible={visible} animationType="slide" presentationStyle="pageSheet" onRequestClose={onClose}>
-      <SafeAreaView style={[shareStyles.root, { backgroundColor: colors.background }]}>
-        <View style={[shareStyles.header, { borderBottomColor: colors.border }]}>
-          <Text style={[shareStyles.title, { color: colors.foreground }]}>Share Grocery List</Text>
+      <SafeAreaView style={[shareModalStyles.root, { backgroundColor: colors.background }]}>
+        <View style={[shareModalStyles.header, { borderBottomColor: colors.border }]}>
+          <Text style={[shareModalStyles.title, { color: colors.foreground }]}>Share Meal Plan</Text>
           <Pressable onPress={onClose}>
             <Feather name="x" size={22} color={colors.foreground} />
           </Pressable>
         </View>
-        <View style={shareStyles.body}>
-          <Text style={[shareStyles.desc, { color: colors.mutedForeground }]}>
-            Anyone with the link can access your grocery list. Set their permission level below.
+        <View style={shareModalStyles.body}>
+          <Text style={[shareModalStyles.desc, { color: colors.mutedForeground }]}>
+            Family members with the link can view or edit your weekly meal plan.
           </Text>
-
-          {/* Permission toggle */}
-          <View style={[shareStyles.permRow, { backgroundColor: colors.card, borderColor: colors.border }]}>
+          <View style={[shareModalStyles.permRow, { backgroundColor: colors.card, borderColor: colors.border }]}>
             <View>
-              <Text style={[shareStyles.permLabel, { color: colors.foreground }]}>Allow editing</Text>
-              <Text style={[shareStyles.permSub, { color: colors.mutedForeground }]}>
-                {permission === "edit" ? "Anyone with link can check off items" : "Anyone with link can view only"}
+              <Text style={[shareModalStyles.permLabel, { color: colors.foreground }]}>Allow editing</Text>
+              <Text style={[shareModalStyles.permSub, { color: colors.mutedForeground }]}>
+                {permission === "edit" ? "Anyone with link can add/remove meals" : "Anyone with link can view only"}
               </Text>
             </View>
             <Switch
@@ -286,22 +289,19 @@ function ShareModal({
               thumbColor={colors.primaryForeground}
             />
           </View>
-
-          {/* Share URL */}
           {shareUrl && (
-            <View style={[shareStyles.urlBox, { backgroundColor: colors.secondary, borderColor: colors.border }]}>
-              <Text style={[shareStyles.urlText, { color: colors.mutedForeground }]} numberOfLines={1}>
+            <View style={[shareModalStyles.urlBox, { backgroundColor: colors.secondary, borderColor: colors.border }]}>
+              <Text style={[shareModalStyles.urlText, { color: colors.mutedForeground }]} numberOfLines={1}>
                 {shareUrl}
               </Text>
             </View>
           )}
-
           <Pressable
             onPress={handleShare}
-            style={({ pressed }) => [shareStyles.shareBtn, { backgroundColor: colors.primary }, pressed && { opacity: 0.9 }]}
+            style={({ pressed }) => [shareModalStyles.shareBtn, { backgroundColor: colors.primary }, pressed && { opacity: 0.9 }]}
           >
             <Feather name="share" size={16} color={colors.primaryForeground} />
-            <Text style={[shareStyles.shareBtnText, { color: colors.primaryForeground }]}>Share Link</Text>
+            <Text style={[shareModalStyles.shareBtnText, { color: colors.primaryForeground }]}>Share Link</Text>
           </Pressable>
         </View>
       </SafeAreaView>
@@ -309,7 +309,7 @@ function ShareModal({
   );
 }
 
-const shareStyles = StyleSheet.create({
+const shareModalStyles = StyleSheet.create({
   root: { flex: 1 },
   header: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", padding: 20, borderBottomWidth: 1 },
   title: { fontSize: 20, fontFamily: "Inter_700Bold" },
@@ -324,324 +324,386 @@ const shareStyles = StyleSheet.create({
   shareBtnText: { fontSize: 15, fontFamily: "Inter_600SemiBold" },
 });
 
-// ─── Screen ───────────────────────────────────────────────────────────────────
+// ─── Main Screen ──────────────────────────────────────────────────────────────
 
-export default function GroceryScreen() {
+export default function PlanScreen() {
   const colors = useColors();
   const topPad = Platform.OS === "web" ? 67 : 0;
 
-  // useGrocerySync replaces direct AsyncStorage calls.
-  // Local-first: items load from AsyncStorage instantly,
-  // Supabase syncs in background and updates via real-time subscription.
-  const { items, status, shareToken, save, load } = useGrocerySync();
+  const { plan, status, shareToken, permission, save, load, setSharePermission } = usePlanSync();
 
-  const [loaded, setLoaded] = useState(false);
-  const [editingId, setEditingId] = useState<string | null>(null);
-  const [editValue, setEditValue] = useState("");
-  const [manualInput, setManualInput] = useState("");
+  const [weekOffset, setWeekOffset] = useState(0);
+  const [pickerDate, setPickerDate] = useState<Date | null>(null);
   const [showShareModal, setShowShareModal] = useState(false);
-  const [sharePermission, setSharePermission] = useState<"view" | "edit">("view");
+  const [addingToGrocery, setAddingToGrocery] = useState(false);
+  const [viewingSlot, setViewingSlot] = useState<{ slot: PlanSlot; date: Date } | null>(null);
+  const [viewingRecipe, setViewingRecipe] = useState<PersonalRecipe | null>(null);
+
+  // Slide animation for week transitions
+  const slideAnim = useRef(new Animated.Value(0)).current;
 
   useFocusEffect(
     useCallback(() => {
-      load().then(() => setLoaded(true));
+      load();
     }, [load])
   );
 
-  const persist = async (updated: GroceryItem[]) => {
-    await save(updated);
+  const monday = getMondayOfWeek(new Date());
+  monday.setDate(monday.getDate() + weekOffset * 7);
+  const weekDays = getWeekDays(monday);
+  const weekLabel = `Week of ${formatWeekLabel(monday)}`;
+
+  const filledSlots = weekDays.filter((d) => plan[isoDateKey(d)] != null);
+
+  const navigateWeek = (dir: -1 | 1) => {
+    Haptics.selectionAsync();
+    Animated.sequence([
+      Animated.timing(slideAnim, { toValue: dir * -30, duration: 100, useNativeDriver: true, easing: Easing.out(Easing.cubic) }),
+      Animated.timing(slideAnim, { toValue: dir * 30, duration: 0, useNativeDriver: true }),
+      Animated.timing(slideAnim, { toValue: 0, duration: 200, useNativeDriver: true, easing: Easing.out(Easing.cubic) }),
+    ]).start();
+    setWeekOffset((o) => o + dir);
   };
 
-  const deleteItem = async (id: string) => {
-    const updated = items.filter((it) => it.id !== id);
-    await save(updated);
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-  };
-
-  const toggleItem = async (id: string) => {
-    await Haptics.selectionAsync();
-    await persist(items.map((it) => it.id === id ? { ...it, checked: !it.checked, checkedAt: Date.now() } : it));
-  };
-
-  const startEdit = (item: GroceryItem) => {
-    setEditingId(item.id);
-    setEditValue(item.amount % 1 === 0 ? String(item.amount) : item.amount.toFixed(1));
-  };
-
-  const commitEdit = async (id: string) => {
-    const parsed = parseFloat(editValue);
-    if (!isNaN(parsed) && parsed > 0) {
-      await persist(items.map((it) => it.id === id ? { ...it, amount: Math.round(parsed * 100) / 100 } : it));
-    }
-    setEditingId(null);
-    setEditValue("");
-  };
-
-  const handleManualAdd = async () => {
-    const text = manualInput.trim();
-    if (!text) return;
-    // Parse and combine with existing, then save via sync hook
-    const lines = text.split(/,|\n/).map((l) => l.trim()).filter(Boolean);
-    const incoming: GroceryItem[] = lines.map((line, i) => {
-      const match = line.match(/^([\d./]+)\s*([a-zA-Z]+(?:\s+[a-zA-Z]+)?)?\s+(.+)$/);
-      if (match) {
-        const name = match[3]?.trim() || line;
-        return { id: `g_${Date.now()}_${i}`, name, amount: parseFloat(match[1]) || 1, unit: match[2]?.trim() || "", checked: false, aisle: getAisle(name) };
+  const handleSlotPress = async (date: Date) => {
+    const key = isoDateKey(date);
+    const slot = plan[key] as PlanSlot | null | undefined;
+    if (slot) {
+      // Load full recipe data then open detail modal
+      try {
+        const json = await AsyncStorage.getItem(STORAGE_KEY);
+        const recipes: PersonalRecipe[] = json ? JSON.parse(json) : [];
+        const fullRecipe = recipes.find((r) => r.id === slot.recipeId) ?? null;
+        setViewingRecipe(fullRecipe);
+      } catch {
+        setViewingRecipe(null);
       }
-      return { id: `g_${Date.now()}_${i}`, name: line, amount: 1, unit: "", checked: false, aisle: getAisle(line) };
-    });
-    const combined = combineIngredients(items, incoming);
-    await persist(combined);
-    setManualInput("");
-    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-  };
-
-  const handleCopy = async () => {
-    const unchecked = items.filter((it) => !it.checked);
-    if (unchecked.length === 0) { Alert.alert("Nothing to copy", "All items are checked off."); return; }
-    const grouped = groupByAisle(unchecked);
-    const text = grouped
-      .map(({ aisle, icon, items: aisleItems }) =>
-        `${icon} ${aisle}\n` + aisleItems.map((it) => `  • ${formatItem(it)}`).join("\n")
-      ).join("\n\n");
-    await Share.share({ message: `Shopping List:\n\n${text}` });
+      setViewingSlot({ slot, date });
+    } else {
+      setPickerDate(date);
+    }
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
   };
 
-  const handleClear = () => {
-    Alert.alert("Clear list?", "This will remove all items.", [
+  const handleRemoveSlot = async (date: Date) => {
+    Alert.alert("Remove meal?", `Clear ${formatDayLabel(date).day} from your plan?`, [
       { text: "Cancel", style: "cancel" },
-      { text: "Clear", style: "destructive", onPress: async () => { await persist([]); Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning); } },
+      {
+        text: "Remove", style: "destructive",
+        onPress: async () => {
+          const updated = { ...plan, [isoDateKey(date)]: null };
+          await save(updated);
+          setViewingSlot(null);
+          Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
+        },
+      },
     ]);
   };
 
-  const unchecked = items.filter((it) => !it.checked);
-  const checked = items.filter((it) => it.checked);
-  const uncheckedGroups = groupByAisle(unchecked);
-  const checkedGroups = groupByAisle(checked);
+  const handleSwapSlot = (date: Date) => {
+    setViewingSlot(null);
+    setViewingRecipe(null);
+    setPickerDate(date);
+  };
+
+  const handlePickRecipe = async (recipe: PersonalRecipe) => {
+    if (!pickerDate) return;
+    const key = isoDateKey(pickerDate);
+    const slot: PlanSlot = {
+      recipeId: recipe.id,
+      recipeName: recipe.name,
+      recipePhoto: recipe.photoUrl,
+      source: "personal",
+      addedAt: Date.now(),
+    };
+    await save({ ...plan, [key]: slot });
+    setPickerDate(null);
+    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+  };
+
+  const handleSpinRecipe = async () => {
+    if (!pickerDate) return;
+    try {
+      const json = await AsyncStorage.getItem(STORAGE_KEY);
+      const recipes: PersonalRecipe[] = json ? JSON.parse(json) : [];
+      if (recipes.length === 0) {
+        Alert.alert("No recipes", "Add recipes to My Dinners first.");
+        setPickerDate(null);
+        return;
+      }
+      const recipe = recipes[Math.floor(Math.random() * recipes.length)];
+      await handlePickRecipe(recipe);
+    } catch {}
+  };
+
+  const handleAddWeekToGrocery = async () => {
+    const slots = weekDays
+      .map((d) => plan[isoDateKey(d)])
+      .filter((s): s is PlanSlot => s != null);
+
+    if (slots.length === 0) {
+      Alert.alert("No meals planned", "Add some meals to this week first.");
+      return;
+    }
+
+    const recipeNames = slots.map((s) => s.recipeName).join(", ");
+
+    Alert.alert(
+      "Add to grocery list?",
+      `This will add ingredients from:
+${recipeNames}`,
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Add",
+          onPress: async () => {
+            setAddingToGrocery(true);
+            try {
+              const json = await AsyncStorage.getItem(STORAGE_KEY);
+              const recipes: PersonalRecipe[] = json ? JSON.parse(json) : [];
+              for (const slot of slots) {
+                const recipe = recipes.find((r) => r.id === slot.recipeId);
+                if (recipe?.ingredients) {
+                  await addIngredientsToGrocery(recipe.ingredients, {
+                    fromRecipe: slot.recipeName,
+                    servingMultiplier: 1,
+                  });
+                }
+              }
+              Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+            } catch {
+              Alert.alert("Error", "Could not add to grocery list. Please try again.");
+            } finally {
+              setAddingToGrocery(false);
+            }
+          },
+        },
+      ]
+    );
+  };
+
+  const pickerDateLabel = pickerDate
+    ? `${formatDayLabel(pickerDate).day}, ${pickerDate.toLocaleDateString("en-US", { month: "long", day: "numeric" })}`
+    : "";
 
   return (
     <>
       <ScrollView
         style={[styles.root, { backgroundColor: colors.background }]}
-        contentContainerStyle={{ paddingTop: topPad + 32, paddingHorizontal: 20, paddingBottom: 120 }}
+        contentContainerStyle={{ paddingTop: topPad + 32, paddingHorizontal: 16, paddingBottom: 120 }}
         showsVerticalScrollIndicator={false}
-        keyboardShouldPersistTaps="handled"
       >
         {/* Header */}
         <View style={styles.headerRow}>
-          <View style={styles.headerLeft}>
-            <Text style={[styles.heading, { color: colors.foreground }]}>Grocery List</Text>
-            <View style={styles.subRow}>
-              <Text style={[styles.sub, { color: colors.mutedForeground }]}>
-                {items.length === 0
-                  ? "Add ingredients from any recipe"
-                  : `${unchecked.length} of ${items.length} remaining`}
-              </Text>
-              <SyncDot status={status} />
-            </View>
+          <View>
+            <Text style={[styles.heading, { color: colors.foreground }]}>Meal Plan</Text>
+            <Text style={[styles.sub, { color: colors.mutedForeground }]}>Plan your week ahead</Text>
           </View>
           <View style={styles.headerActions}>
-            {items.length > 0 && (
-              <Pressable
-                onPress={handleCopy}
-                style={({ pressed }) => [styles.headerBtn, { backgroundColor: colors.card, borderColor: colors.border }, pressed && { opacity: 0.7 }]}
-              >
-                <Feather name="copy" size={16} color={colors.foreground} />
-              </Pressable>
-            )}
             <Pressable
               onPress={() => setShowShareModal(true)}
-              style={({ pressed }) => [styles.headerBtn, { backgroundColor: colors.card, borderColor: colors.border }, pressed && { opacity: 0.7 }]}
+              style={[styles.headerBtn, { backgroundColor: colors.card, borderColor: colors.border }]}
             >
               <Feather name="share-2" size={16} color={colors.foreground} />
             </Pressable>
-            {items.length > 0 && (
-              <Pressable
-                onPress={handleClear}
-                style={({ pressed }) => [styles.headerBtn, { backgroundColor: colors.card, borderColor: colors.border }, pressed && { opacity: 0.7 }]}
-              >
-                <Feather name="trash-2" size={16} color={colors.destructive} />
+            <Pressable
+              onPress={() => Alert.alert("Coming soon", "Calendar month view is coming in a future update.")}
+              style={[styles.headerBtn, { backgroundColor: colors.card, borderColor: colors.border }]}
+            >
+              <Feather name="calendar" size={16} color={colors.foreground} />
+            </Pressable>
+          </View>
+        </View>
+
+        {/* Week navigation */}
+        <View style={styles.weekNav}>
+          <Pressable
+            onPress={() => navigateWeek(-1)}
+            style={[styles.navBtn, { backgroundColor: colors.card, borderColor: colors.border }]}
+          >
+            <Feather name="chevron-left" size={18} color={colors.foreground} />
+          </Pressable>
+          <View style={styles.weekLabelWrap}>
+            <Text style={[styles.weekLabel, { color: colors.foreground }]}>{weekLabel}</Text>
+            {weekOffset !== 0 && (
+              <Pressable onPress={() => setWeekOffset(0)}>
+                <Text style={[styles.todayLink, { color: colors.primary }]}>Back to this week</Text>
               </Pressable>
             )}
           </View>
-        </View>
-
-        {/* Manual add input */}
-        <View style={[styles.manualAddRow, { backgroundColor: colors.card, borderColor: colors.border }]}>
-          <TextInput
-            style={[styles.manualAddInput, { color: colors.foreground }]}
-            value={manualInput}
-            onChangeText={setManualInput}
-            placeholder="Add an item (e.g. 2 lbs ground beef)"
-            placeholderTextColor={colors.mutedForeground}
-            onSubmitEditing={handleManualAdd}
-            returnKeyType="done"
-          />
           <Pressable
-            onPress={handleManualAdd}
-            disabled={!manualInput.trim()}
-            style={[styles.manualAddBtn, { backgroundColor: manualInput.trim() ? colors.primary : colors.muted }]}
+            onPress={() => navigateWeek(1)}
+            style={[styles.navBtn, { backgroundColor: colors.card, borderColor: colors.border }]}
           >
-            <Feather name="plus" size={18} color={manualInput.trim() ? colors.primaryForeground : colors.mutedForeground} />
+            <Feather name="chevron-right" size={18} color={colors.foreground} />
           </Pressable>
         </View>
 
-        {/* Empty state */}
-        {loaded && items.length === 0 && (
-          <View style={styles.empty}>
-            <Feather name="shopping-cart" size={40} color={colors.mutedForeground} />
-            <Text style={[styles.emptyTitle, { color: colors.foreground }]}>Your list is empty</Text>
-            <Text style={[styles.emptyText, { color: colors.mutedForeground }]}>
-              Add an item above, or tap "Add to Grocery List" inside any recipe
+        {/* Day slots */}
+        <Animated.View style={{ transform: [{ translateX: slideAnim }] }}>
+          {weekDays.map((date) => {
+            const key = isoDateKey(date);
+            const slot = plan[key] as PlanSlot | null | undefined;
+            const today = isToday(date);
+            const { day, num } = formatDayLabel(date);
+
+            return (
+              <Pressable
+                key={key}
+                onPress={() => handleSlotPress(date)}
+                style={({ pressed }) => [
+                  styles.daySlot,
+                  {
+                    backgroundColor: colors.card,
+                    borderColor: today ? colors.primary : colors.border,
+                    borderWidth: today ? 1.5 : 1,
+                  },
+                  pressed && { opacity: 0.8 },
+                ]}
+              >
+                {/* Today badge */}
+                {today && (
+                  <View style={[styles.todayBadge, { backgroundColor: colors.primary }]}>
+                    <Text style={[styles.todayBadgeText, { color: colors.primaryForeground }]}>TODAY</Text>
+                  </View>
+                )}
+
+                {/* Date column */}
+                <View style={styles.dateCol}>
+                  <Text style={[styles.dayText, { color: today ? colors.primary : colors.mutedForeground }]}>{day}</Text>
+                  <Text style={[styles.dayNum, { color: today ? colors.primary : colors.foreground }]}>{num}</Text>
+                </View>
+
+                {/* Slot content */}
+                {slot ? (
+                  <View style={[styles.slotFilled, { backgroundColor: colors.background, borderRadius: 10 }]}>
+                    {slot.recipePhoto ? (
+                      <Image source={{ uri: slot.recipePhoto }} style={styles.slotThumb} />
+                    ) : (
+                      <View style={[styles.slotThumbPlaceholder, { backgroundColor: colors.muted }]}>
+                        <Feather name="coffee" size={16} color={colors.mutedForeground} />
+                      </View>
+                    )}
+                    <Text style={[styles.slotName, { color: colors.foreground }]} numberOfLines={2}>
+                      {slot.recipeName}
+                    </Text>
+                    <Feather name="chevron-right" size={14} color={colors.mutedForeground} />
+                  </View>
+                ) : (
+                  <View style={[styles.slotEmpty, { borderColor: colors.border }]}>
+                    <Feather name="plus" size={16} color={colors.mutedForeground} />
+                    <Text style={[styles.slotEmptyText, { color: colors.mutedForeground }]}>Add dinner</Text>
+                  </View>
+                )}
+              </Pressable>
+            );
+          })}
+        </Animated.View>
+
+        {/* Add week to grocery list — only shown when meals are planned */}
+        {filledSlots.length > 0 && (
+          <>
+            <Pressable
+              onPress={handleAddWeekToGrocery}
+              disabled={addingToGrocery}
+              style={({ pressed }) => [
+                styles.groceryBtn,
+                { backgroundColor: colors.primary, opacity: addingToGrocery ? 0.7 : pressed ? 0.9 : 1 },
+              ]}
+            >
+              <Feather name="shopping-cart" size={18} color={colors.primaryForeground} />
+              <Text style={[styles.groceryBtnText, { color: colors.primaryForeground }]}>
+                {addingToGrocery ? "Adding…" : "Add week to grocery list"}
+              </Text>
+            </Pressable>
+            <Text style={[styles.groceryMeta, { color: colors.mutedForeground }]}>
+              {filledSlots.length} recipe{filledSlots.length !== 1 ? "s" : ""} planned this week
             </Text>
-          </View>
-        )}
-
-        {/* Unchecked items grouped by aisle */}
-        {uncheckedGroups.map(({ aisle, icon, items: aisleItems }) => (
-          <View key={aisle} style={styles.aisleSection}>
-            <View style={styles.aisleHeader}>
-              <Text style={styles.aisleIcon}>{icon}</Text>
-              <Text style={[styles.aisleLabel, { color: colors.mutedForeground }]}>{aisle.toUpperCase()}</Text>
-              <View style={[styles.aisleLine, { backgroundColor: colors.border }]} />
-            </View>
-            {aisleItems.map((item) => (
-              <GroceryRow
-                key={item.id}
-                item={item}
-                colors={colors}
-                isEditing={editingId === item.id}
-                editValue={editValue}
-                onToggle={() => toggleItem(item.id)}
-                onEditStart={() => startEdit(item)}
-                onEditChange={setEditValue}
-                onEditCommit={() => commitEdit(item.id)}
-                onDelete={() => deleteItem(item.id)}
-              />
-            ))}
-          </View>
-        ))}
-
-        {/* In cart section */}
-        {checked.length > 0 && (
-          <View style={styles.aisleSection}>
-            <View style={styles.aisleHeader}>
-              <Text style={styles.aisleIcon}>✅</Text>
-              <Text style={[styles.aisleLabel, { color: colors.mutedForeground }]}>IN CART</Text>
-              <View style={[styles.aisleLine, { backgroundColor: colors.border }]} />
-            </View>
-            {checkedGroups.map(({ items: aisleItems }) =>
-              aisleItems.map((item) => (
-                <GroceryRow
-                  key={item.id}
-                  item={item}
-                  colors={colors}
-                  isEditing={false}
-                  editValue=""
-                  onToggle={() => toggleItem(item.id)}
-                  onEditStart={() => {}}
-                  onEditChange={() => {}}
-                  onEditCommit={() => {}}
-                  onDelete={() => deleteItem(item.id)}
-                />
-              ))
-            )}
-          </View>
+          </>
         )}
       </ScrollView>
 
-      <ShareModal
+      <SlotPickerModal
+        visible={!!pickerDate}
+        dateLabel={pickerDateLabel}
+        onClose={() => setPickerDate(null)}
+        onPickRecipe={handlePickRecipe}
+        onSpinRecipe={handleSpinRecipe}
+        isChanging={!!(pickerDate && plan[isoDateKey(pickerDate)])}
+        onDelete={() => {
+          if (pickerDate) {
+            handleRemoveSlot(pickerDate);
+            setPickerDate(null);
+          }
+        }}
+      />
+
+      {/* Recipe detail view from plan slot */}
+      <Modal
+        visible={!!viewingSlot}
+        animationType="slide"
+        presentationStyle="pageSheet"
+        onRequestClose={() => { setViewingSlot(null); setViewingRecipe(null); }}
+      >
+        <SafeAreaView style={[planDetailStyles.root, { backgroundColor: colors.background }]}>
+          <View style={[planDetailStyles.header, { borderBottomColor: colors.border }]}>
+            <Pressable onPress={() => viewingSlot && handleSwapSlot(viewingSlot.date)} style={planDetailStyles.swapBtn}>
+              <Feather name="refresh-cw" size={18} color={colors.foreground} />
+              <Text style={[planDetailStyles.swapText, { color: colors.foreground }]}>Change</Text>
+            </Pressable>
+            <Text style={[planDetailStyles.title, { color: colors.foreground }]} numberOfLines={1}>
+              {viewingSlot?.slot.recipeName}
+            </Text>
+            <Pressable onPress={() => setViewingSlot(null)}>
+              <Feather name="x" size={22} color={colors.foreground} />
+            </Pressable>
+          </View>
+          <ScrollView contentContainerStyle={planDetailStyles.body} showsVerticalScrollIndicator={false}>
+            {/* Photo */}
+            {viewingSlot?.slot.recipePhoto ? (
+              <Image source={{ uri: viewingSlot.slot.recipePhoto }} style={planDetailStyles.photo} />
+            ) : (
+              <View style={[planDetailStyles.photoPlaceholder, { backgroundColor: colors.muted }]}>
+                <Feather name="coffee" size={48} color={colors.mutedForeground} />
+              </View>
+            )}
+
+            {/* Recipe name */}
+            <Text style={[planDetailStyles.recipeName, { color: colors.foreground }]}>
+              {viewingSlot?.slot.recipeName}
+            </Text>
+
+            {/* Ingredients preview if available */}
+            {viewingRecipe?.ingredients ? (
+              <View style={[planDetailStyles.ingredientsCard, { backgroundColor: colors.card, borderColor: colors.border }]}>
+                <Text style={[planDetailStyles.ingredientsLabel, { color: colors.mutedForeground }]}>INGREDIENTS</Text>
+                <Text style={[planDetailStyles.ingredientsText, { color: colors.foreground }]} numberOfLines={6}>
+                  {viewingRecipe.ingredients}
+                </Text>
+              </View>
+            ) : null}
+
+            {/* Steps preview if available */}
+            {viewingRecipe?.steps ? (
+              <View style={[planDetailStyles.ingredientsCard, { backgroundColor: colors.card, borderColor: colors.border }]}>
+                <Text style={[planDetailStyles.ingredientsLabel, { color: colors.mutedForeground }]}>STEPS</Text>
+                <Text style={[planDetailStyles.ingredientsText, { color: colors.foreground }]} numberOfLines={6}>
+                  {viewingRecipe.steps}
+                </Text>
+              </View>
+            ) : null}
+          </ScrollView>
+        </SafeAreaView>
+      </Modal>
+
+      <PlanShareModal
         visible={showShareModal}
         onClose={() => setShowShareModal(false)}
         shareToken={shareToken}
-        permission={sharePermission}
+        permission={permission}
         onSetPermission={setSharePermission}
       />
     </>
-  );
-}
-
-// ─── Row ──────────────────────────────────────────────────────────────────────
-
-function GroceryRow({
-  item,
-  colors,
-  isEditing,
-  editValue,
-  onToggle,
-  onEditStart,
-  onEditChange,
-  onEditCommit,
-  onDelete,
-}: {
-  item: GroceryItem;
-  colors: ReturnType<typeof useColors>;
-  isEditing: boolean;
-  editValue: string;
-  onToggle: () => void;
-  onEditStart: () => void;
-  onEditChange: (v: string) => void;
-  onEditCommit: () => void;
-  onDelete: () => void;
-}) {
-  return (
-    <View
-      style={[
-        styles.row,
-        { backgroundColor: colors.card, borderColor: colors.border },
-        item.checked && styles.rowChecked,
-      ]}
-    >
-      {/* Checkbox */}
-      <Pressable onPress={onToggle} hitSlop={8}>
-        <View style={[styles.checkbox, { borderColor: item.checked ? colors.primary : colors.border, backgroundColor: item.checked ? colors.primary : "transparent" }]}>
-          {item.checked && <Feather name="check" size={12} color={colors.primaryForeground} />}
-        </View>
-      </Pressable>
-
-      {/* Amount */}
-      {item.amount > 0 && item.unit !== "" || item.amount !== 1 ? (
-        isEditing ? (
-          <TextInput
-            style={[styles.amountInput, { color: colors.foreground, borderColor: colors.primary, backgroundColor: colors.secondary }]}
-            value={editValue}
-            onChangeText={onEditChange}
-            onBlur={onEditCommit}
-            onSubmitEditing={onEditCommit}
-            keyboardType="numeric"
-            autoFocus
-            selectTextOnFocus
-          />
-        ) : (
-          <Pressable onPress={onEditStart} hitSlop={8}>
-            <Text style={[styles.amountBadge, { backgroundColor: colors.secondary, color: colors.mutedForeground }]}>
-              {item.amount % 1 === 0 ? item.amount : item.amount.toFixed(1)}{item.unit ? ` ${item.unit}` : ""}
-            </Text>
-          </Pressable>
-        )
-      ) : null}
-
-      {/* Name + source metadata */}
-      <View style={styles.rowTextWrap}>
-        <Text
-          style={[styles.rowText, { color: colors.foreground }, item.checked && { textDecorationLine: "line-through", color: colors.mutedForeground }]}
-          numberOfLines={2}
-        >
-          {item.name}
-        </Text>
-        {item.addedFromRecipe && (
-          <Text style={[styles.rowSource, { color: colors.mutedForeground }]} numberOfLines={1}>
-            from {item.addedFromRecipe}{item.servingMultiplier && item.servingMultiplier !== 1 ? ` ×${item.servingMultiplier}` : ""}
-          </Text>
-        )}
-      </View>
-
-      {/* Delete */}
-      <Pressable onPress={onDelete} hitSlop={12}>
-        <Feather name="x" size={16} color={colors.mutedForeground} />
-      </Pressable>
-    </View>
   );
 }
 
@@ -649,30 +711,29 @@ function GroceryRow({
 
 const styles = StyleSheet.create({
   root: { flex: 1 },
-  headerRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 28 },
-  headerLeft: { flex: 1, gap: 2 },
-  subRow: { flexDirection: "row", alignItems: "center", gap: 6 },
-  heading: { fontSize: 26, fontFamily: "Inter_700Bold", marginBottom: 2 },
+  headerRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 20 },
+  heading: { fontSize: 26, fontFamily: "Inter_700Bold", marginBottom: 4 },
   sub: { fontSize: 13, fontFamily: "Inter_400Regular" },
-  headerActions: { flexDirection: "row", gap: 8, marginTop: 4 },
+  headerActions: { flexDirection: "row", gap: 10, marginTop: 4 },
   headerBtn: { width: 36, height: 36, borderRadius: 18, borderWidth: 1, alignItems: "center", justifyContent: "center" },
-  manualAddRow: { flexDirection: "row", alignItems: "center", gap: 10, borderRadius: 12, borderWidth: 1, paddingHorizontal: 14, paddingVertical: 6, marginBottom: 20 },
-  manualAddInput: { flex: 1, fontSize: 14, fontFamily: "Inter_400Regular", paddingVertical: 12 },
-  manualAddBtn: { width: 32, height: 32, borderRadius: 16, alignItems: "center", justifyContent: "center" },
-  empty: { alignItems: "center", paddingVertical: 64, gap: 12 },
-  emptyTitle: { fontSize: 17, fontFamily: "Inter_600SemiBold" },
-  emptyText: { fontSize: 13, fontFamily: "Inter_400Regular", textAlign: "center", maxWidth: 260, lineHeight: 20 },
-  aisleSection: { marginBottom: 20 },
-  aisleHeader: { flexDirection: "row", alignItems: "center", gap: 8, marginBottom: 10 },
-  aisleIcon: { fontSize: 16 },
-  aisleLabel: { fontSize: 10, fontFamily: "Inter_600SemiBold", letterSpacing: 2 },
-  aisleLine: { flex: 1, height: 1 },
-  row: { flexDirection: "row", alignItems: "center", gap: 12, borderRadius: 12, borderWidth: 1, paddingHorizontal: 14, paddingVertical: 13, marginBottom: 8 },
-  rowChecked: { opacity: 0.45 },
-  checkbox: { width: 22, height: 22, borderRadius: 6, borderWidth: 1.5, alignItems: "center", justifyContent: "center", flexShrink: 0 },
-  amountBadge: { fontSize: 12, fontFamily: "Inter_600SemiBold", borderRadius: 6, paddingHorizontal: 7, paddingVertical: 3, overflow: "hidden" },
-  amountInput: { fontSize: 13, fontFamily: "Inter_600SemiBold", borderRadius: 6, borderWidth: 1.5, paddingHorizontal: 8, paddingVertical: 3, width: 64 },
-  rowTextWrap: { flex: 1, gap: 2 },
-  rowText: { fontSize: 15, fontFamily: "Inter_400Regular", lineHeight: 20 },
-  rowSource: { fontSize: 11, fontFamily: "Inter_400Regular" },
+  weekNav: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: 20 },
+  navBtn: { width: 36, height: 36, borderRadius: 18, borderWidth: 1, alignItems: "center", justifyContent: "center" },
+  weekLabelWrap: { alignItems: "center", gap: 4 },
+  weekLabel: { fontSize: 15, fontFamily: "Inter_600SemiBold" },
+  todayLink: { fontSize: 11, fontFamily: "Inter_600SemiBold" },
+  daySlot: { flexDirection: "row", alignItems: "center", gap: 12, borderRadius: 14, padding: 14, marginBottom: 10, position: "relative" },
+  todayBadge: { position: "absolute", top: -1, right: 14, borderRadius: 0, borderBottomLeftRadius: 6, borderBottomRightRadius: 6, paddingHorizontal: 8, paddingVertical: 3 },
+  todayBadgeText: { fontSize: 9, fontFamily: "Inter_600SemiBold", letterSpacing: 0.5 },
+  dateCol: { alignItems: "center", minWidth: 38 },
+  dayText: { fontSize: 10, fontFamily: "Inter_600SemiBold", letterSpacing: 0.5 },
+  dayNum: { fontSize: 20, fontFamily: "Inter_700Bold", lineHeight: 24 },
+  slotFilled: { flex: 1, flexDirection: "row", alignItems: "center", gap: 10, padding: 8 },
+  slotThumb: { width: 40, height: 40, borderRadius: 8, flexShrink: 0 },
+  slotThumbPlaceholder: { width: 40, height: 40, borderRadius: 8, alignItems: "center", justifyContent: "center", flexShrink: 0 },
+  slotName: { flex: 1, fontSize: 14, fontFamily: "Inter_600SemiBold", lineHeight: 18 },
+  slotEmpty: { flex: 1, flexDirection: "row", alignItems: "center", gap: 8, borderWidth: 1.5, borderStyle: "dashed", borderRadius: 10, paddingVertical: 10, paddingHorizontal: 14 },
+  slotEmptyText: { fontSize: 13, fontFamily: "Inter_400Regular" },
+  groceryBtn: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 10, borderRadius: 14, paddingVertical: 18, marginTop: 20 },
+  groceryBtnText: { fontSize: 15, fontFamily: "Inter_600SemiBold" },
+  groceryMeta: { fontSize: 12, fontFamily: "Inter_400Regular", textAlign: "center", marginTop: 10 },
 });
