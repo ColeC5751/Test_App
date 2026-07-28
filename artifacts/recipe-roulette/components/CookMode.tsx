@@ -168,10 +168,15 @@ export function CookMode({ visible, recipeName, steps, onClose }: CookModeProps)
             </Text>
           </View>
 
-          {/* Step text — keyed on currentStep to force full remount,
-               preventing ghost text artifacts from the previous step */}
+          {/* Step text — currentStep only updates once fadeAnim has reached
+               0 (see animateTransition), so the text swap always happens
+               while the view is invisible; no remount is needed to avoid
+               ghost artifacts. (This used to carry key={currentStep} to force
+               a remount, but that remount fired mid-callback of a native-driven
+               animation, racing the native animated module. The result: the
+               fade-in for the *next* step often failed to attach, so the text
+               stayed at opacity 0 for every step after the first.) */}
           <Animated.View
-            key={currentStep}
             style={[
               styles.stepTextWrap,
               { opacity: fadeAnim, transform: [{ translateX: slideAnim }] },
