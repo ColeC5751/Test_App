@@ -33,12 +33,13 @@ export function useGrocerySync() {
   const [errorDetails, setErrorDetails] = useState<string | null>(null);
   const [userId, setUserId] = useState<string | null>(null);
   const [ownerId, setOwnerId] = useState<string | null>(null);
+  const [isOwner, setIsOwner] = useState(false);
   const [rowId, setRowId] = useState<string | null>(null);
   const [lastOperation, setLastOperation] = useState<string | null>(null);
 
   const rowIdRef = useRef<string | null>(null);
 
-  // Keep the ref and state synchronized.
+  // Keep ref and state synchronized
   const setActiveRowId = useCallback((id: string | null) => {
     rowIdRef.current = id;
     setRowId(id);
@@ -62,30 +63,40 @@ export function useGrocerySync() {
       setErrorDetails(details);
       setStatus("error");
 
+      console.error(`GROCERY SUPABASE ERROR: ${operation}`, error);
+
       return error;
     },
     []
   );
 
+  // ─────────────────────────────────────────────────────────────
+  // LOAD GROCERY LIST
+  // ─────────────────────────────────────────────────────────────
+
   const load = useCallback(async () => {
     clearError();
     setLastOperation("Loading grocery list");
 
-    // 1. Load local immediately
+    // 1. Load local data immediately
     try {
       const local = await AsyncStorage.getItem(GROCERY_LOCAL_KEY);
 
       if (local) {
-        const parsed = JSON.parse(local);
+        const parsed: GroceryItem[] = JSON.parse(local);
         setItems(parsed);
       }
     } catch (error: any) {
+      console.error("GROCERY LOCAL LOAD ERROR:", error);
+
       setErrorMessage(
-        `Local storage error: ${error?.message ?? "Unable to read local grocery list"}`
+        `Local storage error: ${
+          error?.message ?? "Unable to read local grocery list"
+        }`
       );
     }
 
-    // 2. Get authenticated user
+    // 2. Try to get authenticated user
     setStatus("syncing");
 
     try {
@@ -95,53 +106,77 @@ export function useGrocerySync() {
       } = await supabase.auth.getUser();
 
       if (authError) {
-        recordSupabaseError("Get authenticated user", authError);
+        recordSupabaseError(
+          "Get authenticated user",
+          authError
+        );
         return;
       }
 
       const currentUserId = user?.id ?? null;
+
       setUserId(currentUserId);
 
       if (!currentUserId) {
         setStatus("offline");
         setLastOperation("No authenticated user");
+
         setErrorMessage(
           "No authenticated Supabase user was found. The grocery list is currently local-only."
         );
+
         return;
       }
 
-      // 3. Get stored row ID
-      const storedRowId = await AsyncStorage.getItem(GROCERY_ROW_KEY);
+      // 3. Get previously stored row ID
+      const storedRowId = await AsyncStorage.getItem(
+        GROCERY_ROW_KEY
+      );
 
       setActiveRowId(storedRowId);
 
-      // 4. Try to load existing row
+      // 4. Load existing grocery row
       if (storedRowId) {
-        setLastOperation(`Loading grocery row ${storedRowId}`);
+        setLastOperation(
+          `Loading grocery row ${storedRowId}`
+        );
 
-        const { data, error } = await supabase
+        const {
+          data,
+          error,
+        } = await supabase
           .from("grocery_lists")
-          .select("id, items, share_token, name, owner_id, permission")
+          .select(
+            "id, items, share_token, name, owner_id, permission"
+          )
           .eq("id", storedRowId)
           .single();
 
         if (error) {
-          recordSupabaseError("Load existing grocery list", error);
+          recordSupabaseError(
+            "Load existing grocery list",
+            error
+          );
 
-          // Don't immediately create a new row here.
-          // This prevents accidentally creating duplicate lists
-          // when the existing row is inaccessible because of RLS.
+          // Important:
+          // Do NOT create another grocery list here.
+          // The stored row may exist but be blocked by RLS.
           return;
         }
 
         if (data) {
-          const remoteItems: GroceryItem[] = data.items ?? [];
+          const remoteItems: GroceryItem[] =
+            data.items ?? [];
 
           setItems(remoteItems);
-          setShareToken(data.share_token);
+          setShareToken(data.share_token ?? null);
           setName(data.name ?? null);
           setOwnerId(data.owner_id ?? null);
+
+          const owner =
+            data.owner_id === currentUserId;
+
+          setIsOwner(owner);
 
           await AsyncStorage.setItem(
             GROCERY_LOCAL_KEY,
@@ -149,15 +184,23 @@ export function useGrocerySync() {
           );
 
           setStatus("synced");
-          setLastOperation("Loaded grocery list successfully");
+          setLastOperation(
+            "Loaded grocery list successfully"
+          );
+
           return;
         }
       }
 
-      // 5. No row ID exists — create a new row
-      setLastOperation("Creating new grocery list");
+      // 5. No row ID exists, so create a new grocery list
+      setLastOperation(
+        "Creating new grocery list"
+      );
 
-      const local = await AsyncStorage.getItem(GROCERY_LOCAL_KEY);
+      const local = await AsyncStorage.getItem(
+        GROCERY_LOCAL_KEY
+      );
+
       const localItems: GroceryItem[] = local
         ? JSON.parse(local)
         : [];
@@ -171,7 +214,9 @@ export function useGrocerySync() {
           owner_id: currentUserId,
           items: localItems,
         })
-        .select("id, share_token, name, owner_id, permission")
+        .select(
+          "id, share_token, name, owner_id, permission"
+        )
         .single();
 
       if (insertError) {
@@ -179,14 +224,28 @@ export function useGrocerySync() {
           "Create new grocery list",
           insertError
         );
+
         return;
       }
 
       if (newRow) {
         setActiveRowId(newRow.id);
-        setShareToken(newRow.share_token);
-        setName(newRow.name ?? null);
-        setOwnerId(newRow.owner_id ?? null);
+
+        setShareToken(
+          newRow.share_token ?? null
+        );
+
+        setName(
+          newRow.name ?? null
+        );
+
+        setOwnerId(
+          newRow.owner_id ?? null
+        );
+
+        setIsOwner(
+          newRow.owner_id === currentUserId
+        );
 
         await AsyncStorage.setItem(
           GROCERY_ROW_KEY,
@@ -200,15 +259,29 @@ export function useGrocerySync() {
 
       setStatus("synced");
     } catch (error: any) {
+      console.error(
+        "GROCERY LOAD EXCEPTION:",
+        error
+      );
+
       setStatus("offline");
 
-      setLastOperation("Unexpected grocery sync error");
+      setLastOperation(
+        "Unexpected grocery sync error"
+      );
+
       setErrorMessage(
         error?.message ??
           "Unexpected error while syncing grocery list"
       );
-      setErrorCode(error?.code ?? null);
-      setErrorDetails(error?.details ?? null);
+
+      setErrorCode(
+        error?.code ?? null
+      );
+
+      setErrorDetails(
+        error?.details ?? null
+      );
     }
   }, [
     clearError,
@@ -216,229 +289,311 @@ export function useGrocerySync() {
     setActiveRowId,
   ]);
 
-const save = useCallback(async (updated: GroceryItem[]) => {
-  // Update the UI immediately
-  setItems(updated);
+  // ─────────────────────────────────────────────────────────────
+  // SAVE GROCERY LIST
+  // ─────────────────────────────────────────────────────────────
 
-  // Always save locally first
-  try {
-    await AsyncStorage.setItem(
-      GROCERY_LOCAL_KEY,
-      JSON.stringify(updated)
-    );
-  } catch (localError) {
-    console.error("GROCERY LOCAL SAVE ERROR:", localError);
-  }
+  const save = useCallback(
+    async (updated: GroceryItem[]) => {
+      // Update UI immediately
+      setItems(updated);
 
-  const activeRowId = rowIdRef.current;
+      // Always save locally first
+      try {
+        await AsyncStorage.setItem(
+          GROCERY_LOCAL_KEY,
+          JSON.stringify(updated)
+        );
+      } catch (localError) {
+        console.error(
+          "GROCERY LOCAL SAVE ERROR:",
+          localError
+        );
+      }
 
-  // If there is no Supabase row yet, the data is still
-  // safely stored locally.
-  if (!activeRowId) {
-    setLastOperation(
-      "Saved locally — no Supabase row ID available"
-    );
-    setStatus("offline");
-    return;
-  }
+      const activeRowId =
+        rowIdRef.current;
 
-  setStatus("syncing");
-  setLastOperation(
-    `Updating grocery row ${activeRowId}`
+      // No Supabase row yet
+      if (!activeRowId) {
+        setLastOperation(
+          "Saved locally — no Supabase row ID available"
+        );
+
+        setStatus("offline");
+
+        return;
+      }
+
+      setStatus("syncing");
+
+      setLastOperation(
+        `Updating grocery row ${activeRowId}`
+      );
+
+      try {
+        // Get authenticated user
+        const {
+          data: { user },
+          error: authError,
+        } = await supabase.auth.getUser();
+
+        if (authError) {
+          recordSupabaseError(
+            "Get user before grocery save",
+            authError
+          );
+
+          return;
+        }
+
+        const currentUserId =
+          user?.id ?? null;
+
+        setUserId(currentUserId);
+
+        if (!currentUserId) {
+          setStatus("offline");
+
+          setErrorMessage(
+            "Cannot save to Supabase because no authenticated user was found."
+          );
+
+          setLastOperation(
+            "Save failed — no authenticated user"
+          );
+
+          return;
+        }
+
+        // Check that the row exists
+        const {
+          data: rowCheck,
+          error: rowCheckError,
+        } = await supabase
+          .from("grocery_lists")
+          .select(
+            "id, owner_id, items"
+          )
+          .eq("id", activeRowId)
+          .single();
+
+        if (rowCheckError) {
+          recordSupabaseError(
+            "Check grocery row before save",
+            rowCheckError
+          );
+
+          setErrorMessage(
+            `Could not find grocery row: ${rowCheckError.message}`
+          );
+
+          setLastOperation(
+            `Failed to find grocery row ${activeRowId}`
+          );
+
+          return;
+        }
+
+        const owner =
+          rowCheck.owner_id === currentUserId;
+
+        setOwnerId(
+          rowCheck.owner_id ?? null
+        );
+
+        setIsOwner(owner);
+
+        // Make sure authenticated user owns the list
+        if (!owner) {
+          setStatus("error");
+
+          setErrorMessage(
+            "You are not the owner of this grocery list."
+          );
+
+          setLastOperation(
+            "Save blocked — authenticated user is not the row owner"
+          );
+
+          return;
+        }
+
+        // Update Supabase
+        const {
+          data: savedRow,
+          error: updateError,
+        } = await supabase
+          .from("grocery_lists")
+          .update({
+            items: updated,
+            updated_at:
+              new Date().toISOString(),
+          })
+          .eq("id", activeRowId)
+          .eq(
+            "owner_id",
+            currentUserId
+          )
+          .select(
+            "id, owner_id, items, updated_at"
+          )
+          .single();
+
+        if (updateError) {
+          recordSupabaseError(
+            "Update grocery list",
+            updateError
+          );
+
+          setErrorMessage(
+            `Supabase save failed: ${updateError.message}`
+          );
+
+          setLastOperation(
+            `Supabase update failed for row ${activeRowId}`
+          );
+
+          return;
+        }
+
+        if (!savedRow) {
+          setStatus("error");
+
+          setErrorMessage(
+            "Supabase accepted the request but returned no saved grocery row."
+          );
+
+          setLastOperation(
+            "Save failed — no row returned after update"
+          );
+
+          return;
+        }
+
+        // Verify returned data
+        const savedItems =
+          (savedRow.items ?? []) as GroceryItem[];
+
+        if (
+          JSON.stringify(savedItems) !==
+          JSON.stringify(updated)
+        ) {
+          setStatus("error");
+
+          setErrorMessage(
+            "Supabase returned data that does not match the grocery items that were saved."
+          );
+
+          setLastOperation(
+            "Save mismatch — Supabase data differs from local data"
+          );
+
+          console.error(
+            "GROCERY SAVE MISMATCH",
+            {
+              rowId: activeRowId,
+              expected: updated,
+              actual: savedItems,
+            }
+          );
+
+          return;
+        }
+
+        // Success
+        setStatus("synced");
+
+        clearError();
+
+        setLastOperation(
+          `Successfully saved ${updated.length} items to Supabase`
+        );
+      } catch (error: any) {
+        console.error(
+          "GROCERY SAVE EXCEPTION:",
+          error
+        );
+
+        setStatus("offline");
+
+        setErrorMessage(
+          error?.message ??
+            "Unknown error while saving grocery list"
+        );
+
+        setLastOperation(
+          "Grocery save failed with an unexpected error"
+        );
+      }
+    },
+    [
+      clearError,
+      recordSupabaseError,
+    ]
   );
 
-  try {
-    // Get the currently authenticated user
-    const {
-      data: { user },
-      error: authError,
-    } = await supabase.auth.getUser();
-
-    if (authError) {
-      recordSupabaseError(
-        "Get user before grocery save",
-        authError
-      );
-
-      setStatus("error");
-      setErrorMessage(
-        `Authentication error: ${authError.message}`
-      );
-
-      return;
-    }
-
-    const currentUserId = user?.id ?? null;
-    setUserId(currentUserId);
-
-    if (!currentUserId) {
-      setStatus("offline");
-      setErrorMessage(
-        "Cannot save to Supabase because no authenticated user was found."
-      );
-      setLastOperation(
-        "Save failed — no authenticated user"
-      );
-      return;
-    }
-
-    // Verify that the row belongs to the authenticated user
-    const { data: rowCheck, error: rowCheckError } = await supabase
-      .from("grocery_lists")
-      .select("id, owner_id, items")
-      .eq("id", activeRowId)
-      .single();
-
-    if (rowCheckError) {
-      recordSupabaseError(
-        "Check grocery row before save",
-        rowCheckError
-      );
-
-      setStatus("error");
-      setErrorMessage(
-        `Could not find grocery row: ${rowCheckError.message}`
-      );
-      setLastOperation(
-        `Failed to find grocery row ${activeRowId}`
-      );
-
-      return;
-    }
-
-    const isOwner = rowCheck.owner_id === currentUserId;
-
-    setOwnerId(rowCheck.owner_id ?? null);
-    setIsOwner(isOwner);
-
-    if (!isOwner) {
-      setStatus("error");
-      setErrorMessage(
-        "You are not the owner of this grocery list."
-      );
-      setLastOperation(
-        "Save blocked — authenticated user is not the row owner"
-      );
-
-      return;
-    }
-
-    // Perform the actual Supabase update
-    const { data: savedRow, error: updateError } = await supabase
-      .from("grocery_lists")
-      .update({
-        items: updated,
-        updated_at: new Date().toISOString(),
-      })
-      .eq("id", activeRowId)
-      .eq("owner_id", currentUserId)
-      .select("id, owner_id, items, updated_at")
-      .single();
-
-    if (updateError) {
-      recordSupabaseError(
-        "Update grocery list",
-        updateError
-      );
-
-      setStatus("error");
-      setErrorMessage(
-        `Supabase save failed: ${updateError.message}`
-      );
-      setLastOperation(
-        `Supabase update failed for row ${activeRowId}`
-      );
-
-      return;
-    }
-
-    // Verify that Supabase returned the saved row
-    if (!savedRow) {
-      setStatus("error");
-      setErrorMessage(
-        "Supabase accepted the request but returned no saved grocery row."
-      );
-      setLastOperation(
-        "Save failed — no row returned after update"
-      );
-
-      return;
-    }
-
-    // Verify the saved data matches what we sent
-    const savedItems = (savedRow.items ?? []) as GroceryItem[];
-
-    if (JSON.stringify(savedItems) !== JSON.stringify(updated)) {
-      setStatus("error");
-      setErrorMessage(
-        "Supabase returned data that does not match the grocery items that were saved."
-      );
-      setLastOperation(
-        "Save mismatch — Supabase data differs from local data"
-      );
-
-      console.error("GROCERY SAVE MISMATCH", {
-        rowId: activeRowId,
-        expected: updated,
-        actual: savedItems,
-      });
-
-      return;
-    }
-
-    // Everything succeeded
-    setStatus("synced");
-    setErrorMessage(null);
-
-    setLastOperation(
-      `Successfully saved ${updated.length} items to Supabase`
-    );
-
-  } catch (error) {
-    console.error("GROCERY SAVE EXCEPTION:", error);
-
-    setStatus("offline");
-
-    setErrorMessage(
-      error instanceof Error
-        ? error.message
-        : "Unknown error while saving grocery list"
-    );
-
-    setLastOperation(
-      "Grocery save failed with an unexpected error"
-    );
-  }
-}, []);
-
+  // ─────────────────────────────────────────────────────────────
+  // RENAME GROCERY LIST
+  // ─────────────────────────────────────────────────────────────
 
   const rename = useCallback(
     async (newName: string) => {
-      const trimmed = newName.trim();
+      const trimmed =
+        newName.trim();
 
-      setName(trimmed || null);
+      setName(
+        trimmed || null
+      );
 
-      if (!rowIdRef.current) return;
+      const activeRowId =
+        rowIdRef.current;
 
-      const { error } = await supabase
-        .from("grocery_lists")
-        .update({
-          name: trimmed || null,
-        })
-        .eq("id", rowIdRef.current);
+      if (!activeRowId) {
+        return;
+      }
 
-      if (error) {
+      try {
+        const {
+          error,
+        } = await supabase
+          .from("grocery_lists")
+          .update({
+            name:
+              trimmed || null,
+          })
+          .eq(
+            "id",
+            activeRowId
+          );
+
+        if (error) {
+          recordSupabaseError(
+            "Rename grocery list",
+            error
+          );
+
+          return;
+        }
+
+        setLastOperation(
+          "Grocery list renamed"
+        );
+      } catch (error: any) {
         recordSupabaseError(
           "Rename grocery list",
           error
         );
-        return;
       }
-
-      setLastOperation("Grocery list renamed");
     },
-    [recordSupabaseError]
+    [
+      recordSupabaseError,
+    ]
   );
+
+  // ─────────────────────────────────────────────────────────────
+  // RETURN
+  // ─────────────────────────────────────────────────────────────
 
   return {
     items,
@@ -448,7 +603,6 @@ const save = useCallback(async (updated: GroceryItem[]) => {
 
     save,
     load,
-    loadShared,
     rename,
 
     // Diagnostics
@@ -457,6 +611,7 @@ const save = useCallback(async (updated: GroceryItem[]) => {
     errorDetails,
     userId,
     ownerId,
+    isOwner,
     rowId,
     lastOperation,
   };
