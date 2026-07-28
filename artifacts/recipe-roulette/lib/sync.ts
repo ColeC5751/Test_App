@@ -26,150 +26,497 @@ export function useGrocerySync() {
   const [status, setStatus] = useState<SyncStatus>("synced");
   const [shareToken, setShareToken] = useState<string | null>(null);
   const [name, setName] = useState<string | null>(null);
+
+  // Diagnostics
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [errorCode, setErrorCode] = useState<string | null>(null);
+  const [errorDetails, setErrorDetails] = useState<string | null>(null);
+  const [userId, setUserId] = useState<string | null>(null);
+  const [ownerId, setOwnerId] = useState<string | null>(null);
+  const [rowId, setRowId] = useState<string | null>(null);
+  const [lastOperation, setLastOperation] = useState<string | null>(null);
+
   const rowIdRef = useRef<string | null>(null);
 
+  // Keep the ref and state synchronized.
+  const setActiveRowId = useCallback((id: string | null) => {
+    rowIdRef.current = id;
+    setRowId(id);
+  }, []);
+
+  const clearError = useCallback(() => {
+    setErrorMessage(null);
+    setErrorCode(null);
+    setErrorDetails(null);
+  }, []);
+
+  const recordSupabaseError = useCallback(
+    (operation: string, error: any) => {
+      const message = error?.message ?? "Unknown Supabase error";
+      const code = error?.code ?? null;
+      const details = error?.details ?? error?.hint ?? null;
+
+      setLastOperation(operation);
+      setErrorMessage(message);
+      setErrorCode(code);
+      setErrorDetails(details);
+      setStatus("error");
+
+      return error;
+    },
+    []
+  );
+
   const load = useCallback(async () => {
+    clearError();
+    setLastOperation("Loading grocery list");
+
     // 1. Load local immediately
     try {
       const local = await AsyncStorage.getItem(GROCERY_LOCAL_KEY);
-      if (local) setItems(JSON.parse(local));
-    } catch {}
 
-    // 2. Sync from Supabase in background
+      if (local) {
+        const parsed = JSON.parse(local);
+        setItems(parsed);
+      }
+    } catch (error: any) {
+      setErrorMessage(
+        `Local storage error: ${error?.message ?? "Unable to read local grocery list"}`
+      );
+    }
+
+    // 2. Get authenticated user
     setStatus("syncing");
+
     try {
-      const userId = await getUserId();
-      if (!userId) { setStatus("offline"); return; }
+      const {
+        data: { user },
+        error: authError,
+      } = await supabase.auth.getUser();
 
+      if (authError) {
+        recordSupabaseError("Get authenticated user", authError);
+        return;
+      }
+
+      const currentUserId = user?.id ?? null;
+      setUserId(currentUserId);
+
+      if (!currentUserId) {
+        setStatus("offline");
+        setLastOperation("No authenticated user");
+        setErrorMessage(
+          "No authenticated Supabase user was found. The grocery list is currently local-only."
+        );
+        return;
+      }
+
+      // 3. Get stored row ID
       const storedRowId = await AsyncStorage.getItem(GROCERY_ROW_KEY);
-      rowIdRef.current = storedRowId;
 
+      setActiveRowId(storedRowId);
+
+      // 4. Try to load existing row
       if (storedRowId) {
+        setLastOperation(`Loading grocery row ${storedRowId}`);
+
         const { data, error } = await supabase
           .from("grocery_lists")
-          .select("id, items, share_token, name")
+          .select("id, items, share_token, name, owner_id, permission")
           .eq("id", storedRowId)
           .single();
 
-        if (!error && data) {
+        if (error) {
+          recordSupabaseError("Load existing grocery list", error);
+
+          // Don't immediately create a new row here.
+          // This prevents accidentally creating duplicate lists
+          // when the existing row is inaccessible because of RLS.
+          return;
+        }
+
+        if (data) {
           const remoteItems: GroceryItem[] = data.items ?? [];
+
           setItems(remoteItems);
           setShareToken(data.share_token);
           setName(data.name ?? null);
-          await AsyncStorage.setItem(GROCERY_LOCAL_KEY, JSON.stringify(remoteItems));
+          setOwnerId(data.owner_id ?? null);
+
+          await AsyncStorage.setItem(
+            GROCERY_LOCAL_KEY,
+            JSON.stringify(remoteItems)
+          );
+
           setStatus("synced");
+          setLastOperation("Loaded grocery list successfully");
           return;
         }
       }
 
-      // No existing row — create one
+      // 5. No row ID exists — create a new row
+      setLastOperation("Creating new grocery list");
+
       const local = await AsyncStorage.getItem(GROCERY_LOCAL_KEY);
-      const localItems: GroceryItem[] = local ? JSON.parse(local) : [];
-      const { data: newRow, error: insertError } = await supabase
+      const localItems: GroceryItem[] = local
+        ? JSON.parse(local)
+        : [];
+
+      const {
+        data: newRow,
+        error: insertError,
+      } = await supabase
         .from("grocery_lists")
-        .insert({ owner_id: userId, items: localItems })
-        .select("id, share_token, name")
+        .insert({
+          owner_id: currentUserId,
+          items: localItems,
+        })
+        .select("id, share_token, name, owner_id, permission")
         .single();
 
-      if (!insertError && newRow) {
-        rowIdRef.current = newRow.id;
+      if (insertError) {
+        recordSupabaseError(
+          "Create new grocery list",
+          insertError
+        );
+        return;
+      }
+
+      if (newRow) {
+        setActiveRowId(newRow.id);
         setShareToken(newRow.share_token);
         setName(newRow.name ?? null);
-        await AsyncStorage.setItem(GROCERY_ROW_KEY, newRow.id);
+        setOwnerId(newRow.owner_id ?? null);
+
+        await AsyncStorage.setItem(
+          GROCERY_ROW_KEY,
+          newRow.id
+        );
+
+        setLastOperation(
+          `Created grocery list ${newRow.id}`
+        );
       }
+
       setStatus("synced");
-    } catch {
+    } catch (error: any) {
       setStatus("offline");
+
+      setLastOperation("Unexpected grocery sync error");
+      setErrorMessage(
+        error?.message ??
+          "Unexpected error while syncing grocery list"
+      );
+      setErrorCode(error?.code ?? null);
+      setErrorDetails(error?.details ?? null);
     }
-  }, []);
+  }, [
+    clearError,
+    recordSupabaseError,
+    setActiveRowId,
+  ]);
 
-  const save = useCallback(async (updated: GroceryItem[]) => {
-    setItems(updated);
-    await AsyncStorage.setItem(GROCERY_LOCAL_KEY, JSON.stringify(updated));
-    if (!rowIdRef.current) {
-  console.error("Cannot save grocery list: no Supabase row ID");
-  setStatus("offline");
-  return;
-}
-    setStatus("syncing");
-    try {
-      const { error } = await supabase
-  .from("grocery_lists")
-  .update({
-    items: updated,
-    updated_at: new Date().toISOString(),
-  })
-  .eq("id", rowIdRef.current);
+  const save = useCallback(
+    async (updated: GroceryItem[]) => {
+      clearError();
 
-if (error) {
-  console.error("Failed to save grocery list:", error);
-  setStatus("offline");
-  return;
-}
+      // Optimistically update UI
+      setItems(updated);
 
-setStatus("synced");
-      setStatus("synced");
-    } catch {
-      setStatus("offline");
-    }
-  }, []);
+      // Always save locally first
+      try {
+        await AsyncStorage.setItem(
+          GROCERY_LOCAL_KEY,
+          JSON.stringify(updated)
+        );
+      } catch (error: any) {
+        setErrorMessage(
+          `Local save failed: ${
+            error?.message ?? "Unknown local storage error"
+          }`
+        );
+      }
 
-  // Real-time subscription
+      const activeRowId = rowIdRef.current;
+
+      // If we don't have a Supabase row yet,
+      // the data is still safely stored locally.
+      if (!activeRowId) {
+        setLastOperation(
+          "Saved locally — no Supabase row ID available"
+        );
+        setStatus("offline");
+        return;
+      }
+
+      setStatus("syncing");
+      setLastOperation(
+        `Updating grocery row ${activeRowId}`
+      );
+
+      try {
+        // Get current authenticated user
+        const {
+          data: { user },
+          error: authError,
+        } = await supabase.auth.getUser();
+
+        if (authError) {
+          recordSupabaseError(
+            "Get user before grocery save",
+            authError
+          );
+          return;
+        }
+
+        const currentUserId = user?.id ?? null;
+        setUserId(currentUserId);
+
+        if (!currentUserId) {
+          setStatus("offline");
+          setErrorMessage(
+            "Cannot save to Supabase because no authenticated user was found."
+          );
+          return;
+        }
+
+        // First fetch the row owner.
+        // This helps diagnose whether we're targeting
+        // the correct row.
+        const {
+          data: rowData,
+          error: rowError,
+        } = await supabase
+          .from("grocery_lists")
+          .select("id, owner_id, permission")
+          .eq("id", activeRowId)
+          .single();
+
+        if (rowError) {
+          recordSupabaseError(
+            "Check grocery row ownership before save",
+            rowError
+          );
+          return;
+        }
+
+        setOwnerId(rowData?.owner_id ?? null);
+
+        // Perform the actual update.
+        const {
+          data: updateData,
+          error: updateError,
+        } = await supabase
+          .from("grocery_lists")
+          .update({
+            items: updated,
+            updated_at: new Date().toISOString(),
+          })
+          .eq("id", activeRowId)
+          .select("id, items, owner_id, permission")
+          .single();
+
+        // THIS IS THE IMPORTANT PART:
+        // Supabase errors must be explicitly checked.
+        if (updateError) {
+          recordSupabaseError(
+            "Update grocery list",
+            updateError
+          );
+          return;
+        }
+
+        if (!updateData) {
+          setStatus("error");
+          setLastOperation(
+            "Update returned no data"
+          );
+          setErrorMessage(
+            "Supabase returned no updated row. This may indicate an RLS policy prevented the update."
+          );
+          return;
+        }
+
+        // Success
+        setStatus("synced");
+        setLastOperation(
+          `Successfully saved ${updated.length} items to Supabase`
+        );
+
+        setErrorMessage(null);
+        setErrorCode(null);
+        setErrorDetails(null);
+      } catch (error: any) {
+        setStatus("offline");
+
+        setLastOperation(
+          "Unexpected error during grocery save"
+        );
+
+        setErrorMessage(
+          error?.message ??
+            "Unexpected error while saving grocery list"
+        );
+
+        setErrorCode(error?.code ?? null);
+        setErrorDetails(error?.details ?? null);
+      }
+    },
+    [
+      clearError,
+      recordSupabaseError,
+    ]
+  );
+
+  // FIX:
+  // Don't use [rowIdRef.current] as a dependency.
+  // Refs changing do not cause React effects to rerun.
   useEffect(() => {
-    load();
-  }, [load]);
+    if (!rowId) return;
 
-  useEffect(() => {
-    if (!rowIdRef.current) return;
+    const id = rowId;
+
     const channel = supabase
-      .channel(`grocery_${rowIdRef.current}`)
-      .on("postgres_changes",
-        { event: "UPDATE", schema: "public", table: "grocery_lists", filter: `id=eq.${rowIdRef.current}` },
+      .channel(`grocery_${id}`)
+      .on(
+        "postgres_changes",
+        {
+          event: "UPDATE",
+          schema: "public",
+          table: "grocery_lists",
+          filter: `id=eq.${id}`,
+        },
         (payload) => {
-          const remoteItems: GroceryItem[] = (payload.new as any).items ?? [];
+          const remoteItems: GroceryItem[] =
+            (payload.new as any).items ?? [];
+
           setItems(remoteItems);
-          AsyncStorage.setItem(GROCERY_LOCAL_KEY, JSON.stringify(remoteItems));
+
+          AsyncStorage.setItem(
+            GROCERY_LOCAL_KEY,
+            JSON.stringify(remoteItems)
+          );
+
           setStatus("synced");
+          setLastOperation(
+            "Received realtime grocery list update"
+          );
         }
       )
       .subscribe();
-    return () => { supabase.removeChannel(channel); };
-  }, [rowIdRef.current]);
 
-  const loadShared = useCallback(async (token: string) => {
-    setStatus("syncing");
-    try {
-      const { data, error } = await supabase
-        .from("grocery_lists")
-        .select("id, items, share_token, permission")
-        .eq("share_token", token)
-        .single();
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [rowId]);
 
-      if (!error && data) {
-        rowIdRef.current = data.id;
-        setItems(data.items ?? []);
-        setShareToken(data.share_token);
-        setStatus("synced");
-        return { permission: (data.permission ?? "view") as SharePermission };
+  const loadShared = useCallback(
+    async (token: string) => {
+      clearError();
+
+      setStatus("syncing");
+      setLastOperation(
+        "Loading shared grocery list"
+      );
+
+      try {
+        const {
+          data,
+          error,
+        } = await supabase
+          .from("grocery_lists")
+          .select(
+            "id, items, share_token, permission, name, owner_id"
+          )
+          .eq("share_token", token)
+          .single();
+
+        if (error) {
+          recordSupabaseError(
+            "Load shared grocery list",
+            error
+          );
+          return null;
+        }
+
+        if (data) {
+          setActiveRowId(data.id);
+          setItems(data.items ?? []);
+          setShareToken(data.share_token);
+          setName(data.name ?? null);
+          setOwnerId(data.owner_id ?? null);
+          setStatus("synced");
+
+          return {
+            permission: (data.permission ??
+              "view") as SharePermission,
+          };
+        }
+      } catch (error: any) {
+        setStatus("error");
+        setErrorMessage(
+          error?.message ??
+            "Unable to load shared grocery list"
+        );
       }
-    } catch {}
-    setStatus("error");
-    return null;
-  }, []);
 
-  const rename = useCallback(async (newName: string) => {
-    const trimmed = newName.trim();
-    setName(trimmed || null);
-    if (!rowIdRef.current) return;
-    try {
-      await supabase
+      return null;
+    },
+    [
+      clearError,
+      recordSupabaseError,
+      setActiveRowId,
+    ]
+  );
+
+  const rename = useCallback(
+    async (newName: string) => {
+      const trimmed = newName.trim();
+
+      setName(trimmed || null);
+
+      if (!rowIdRef.current) return;
+
+      const { error } = await supabase
         .from("grocery_lists")
-        .update({ name: trimmed || null })
+        .update({
+          name: trimmed || null,
+        })
         .eq("id", rowIdRef.current);
-    } catch {}
-  }, []);
 
-  return { items, status, shareToken, name, save, load, loadShared, rename };
+      if (error) {
+        recordSupabaseError(
+          "Rename grocery list",
+          error
+        );
+        return;
+      }
+
+      setLastOperation("Grocery list renamed");
+    },
+    [recordSupabaseError]
+  );
+
+  return {
+    items,
+    status,
+    shareToken,
+    name,
+
+    save,
+    load,
+    loadShared,
+    rename,
+
+    // Diagnostics
+    errorMessage,
+    errorCode,
+    errorDetails,
+    userId,
+    ownerId,
+    rowId,
+    lastOperation,
+  };
 }
 
 // ─── Shared (read-only viewer) Grocery Sync ──────────────────────────────────
