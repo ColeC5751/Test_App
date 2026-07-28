@@ -53,6 +53,7 @@ function getMondayOfWeek(date: Date): Date {
 
 function formatWeekLabel(monday: Date): string {
   return monday.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+}
 
 const planDetailStyles = StyleSheet.create({
   root: { flex: 1 },
@@ -68,7 +69,7 @@ const planDetailStyles = StyleSheet.create({
   ingredientsLabel: { fontSize: 10, fontFamily: "Inter_600SemiBold", letterSpacing: 2 },
   ingredientsText: { fontSize: 14, fontFamily: "Inter_400Regular", lineHeight: 22 },
 });
-}
+
 
 function formatDayLabel(date: Date): { day: string; num: string } {
   return {
