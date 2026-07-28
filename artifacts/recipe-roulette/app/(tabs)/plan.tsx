@@ -456,7 +456,10 @@ export default function PlanScreen() {
   const recipeNames = slots
     .map((s) => s.recipeName)
     .join(", ");
-
+const {
+  items: groceryItems,
+  save: saveGrocery,
+} = useGrocerySync();
   const confirmed =
     Platform.OS === "web"
       ? window.confirm(
