@@ -86,7 +86,11 @@ export function useGrocerySync() {
   const save = useCallback(async (updated: GroceryItem[]) => {
     setItems(updated);
     await AsyncStorage.setItem(GROCERY_LOCAL_KEY, JSON.stringify(updated));
-    if (!rowIdRef.current) return;
+    if (!rowIdRef.current) {
+  console.error("Cannot save grocery list: no Supabase row ID");
+  setStatus("offline");
+  return;
+}
     setStatus("syncing");
     try {
       const { error } = await supabase
