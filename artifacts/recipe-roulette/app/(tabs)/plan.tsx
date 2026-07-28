@@ -447,41 +447,40 @@ export default function PlanScreen() {
       return;
     }
 
-    const recipeNames = slots.map((s) => s.recipeName).join(", ");
+        const recipeNames = slots.map((s) => s.recipeName).join(", ");
 
-    Alert.alert(
-      "Add to grocery list?",
-      `This will add ingredients from:
-${recipeNames}`,
-      [
-        { text: "Cancel", style: "cancel" },
-        {
-          text: "Add",
-          onPress: async () => {
-            setAddingToGrocery(true);
-            try {
-              const json = await AsyncStorage.getItem(STORAGE_KEY);
-              const recipes: PersonalRecipe[] = json ? JSON.parse(json) : [];
-              for (const slot of slots) {
-                const recipe = recipes.find((r) => r.id === slot.recipeId);
-                if (recipe?.ingredients) {
-                  await addIngredientsToGrocery(recipe.ingredients, {
-                    fromRecipe: slot.recipeName,
-                    servingMultiplier: 1,
-                  });
-                }
-              }
-              Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-            } catch {
-              Alert.alert("Error", "Could not add to grocery list. Please try again.");
-            } finally {
-              setAddingToGrocery(false);
-            }
-          },
-        },
-      ]
-    );
+    const confirmed = Platform.OS === "web"
+      ? window.confirm(`Add ingredients from: ${recipeNames}?`)
+      : await new Promise<boolean>((resolve) => {
+          Alert.alert("Add to grocery list?", `This will add ingredients from:\n${recipeNames}`, [
+            { text: "Cancel", style: "cancel", onPress: () => resolve(false) },
+            { text: "Add", onPress: () => resolve(true) },
+          ]);
+        });
+
+    if (!confirmed) return;
+
+    setAddingToGrocery(true);
+    try {
+      const json = await AsyncStorage.getItem(STORAGE_KEY);
+      const recipes: PersonalRecipe[] = json ? JSON.parse(json) : [];
+      for (const slot of slots) {
+        const recipe = recipes.find((r) => r.id === slot.recipeId);
+        if (recipe?.ingredients) {
+          await addIngredientsToGrocery(recipe.ingredients, {
+            fromRecipe: slot.recipeName,
+            servingMultiplier: 1,
+          });
+        }
+      }
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    } catch {
+      Alert.alert("Error", "Could not add to grocery list. Please try again.");
+    } finally {
+      setAddingToGrocery(false);
+    }
   };
+
 
   const pickerDateLabel = pickerDate
     ? `${formatDayLabel(pickerDate).day}, ${pickerDate.toLocaleDateString("en-US", { month: "long", day: "numeric" })}`
