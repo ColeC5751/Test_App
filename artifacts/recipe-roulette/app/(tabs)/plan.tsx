@@ -352,7 +352,7 @@ export default function PlanScreen() {
   // Canonical grocery sync — called here at the component level so
   // handleAddWeekToGrocery can invoke addIngredients without breaking the
   // rules of hooks.
-  const { addIngredients } = useGrocerySync();
+  const { addIngredients, load: loadGrocery } = useGrocerySync();
 
   const [weekOffset, setWeekOffset] = useState(0);
   const [pickerDate, setPickerDate] = useState<Date | null>(null);
@@ -366,7 +366,16 @@ export default function PlanScreen() {
   useFocusEffect(
     useCallback(() => {
       load();
-    }, [load])
+      // Unlike usePlanSync/useRecipeSync, useGrocerySync() does NOT call
+      // load() internally — grocery.tsx is expected to trigger it. This
+      // screen also mutates the grocery list (via addIngredients), so it
+      // needs its own useGrocerySync() instance to have loaded too;
+      // otherwise rowIdRef.current stays null forever and every add here
+      // silently falls back to "saved locally only", never reaching
+      // Supabase. Loading on focus keeps this instance's rowId current
+      // even if the user hasn't visited the Grocery tab yet this session.
+      loadGrocery();
+    }, [load, loadGrocery])
   );
 
   const monday = getMondayOfWeek(new Date());
@@ -495,6 +504,15 @@ export default function PlanScreen() {
     setAddingToGrocery(true);
 
     try {
+      // Race-safety belt-and-suspenders: the useFocusEffect above already
+      // loads the grocery row on focus, but if the user taps this button
+      // faster than that load() resolves (or the tab never regained focus
+      // after some navigator quirk), rowIdRef.current could still be null
+      // here. Re-awaiting load() is cheap (guarded by savingRef against
+      // clobbering, see lib/sync.ts) and guarantees the row id — and thus
+      // Supabase persistence — is in place before addIngredients runs.
+      await loadGrocery();
+
       const json = await AsyncStorage.getItem(STORAGE_KEY);
       const recipes: PersonalRecipe[] = json ? JSON.parse(json) : [];
 
