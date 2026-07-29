@@ -25,8 +25,9 @@ async function getUserId(): Promise<string | null> {
 //   - persists grocery items locally and to Supabase
 //
 // grocery.tsx (display/editing) and plan.tsx (meal-plan → grocery) both
-// call useGrocerySync() and use its `addIngredients` method rather than
-// keeping their own storage or parsing logic.
+// call useGrocerySync() and use its addIngredients/deleteItem/toggleItem/
+// updateItemAmount methods rather than keeping their own storage, parsing,
+// or "compute next list from current items" logic.
 
 const GROCERY_LOCAL_KEY = "@recipe_roulette_grocery";
 const GROCERY_ROW_KEY = "@recipe_roulette_grocery_row_id";
@@ -268,10 +269,14 @@ export function useGrocerySync() {
   const [lastOperation, setLastOperation] = useState<string | null>(null);
 
   const rowIdRef = useRef<string | null>(null);
-  // Mirrors `items` synchronously (not subject to React batching), so
-  // addIngredients() can be called back-to-back (e.g. in a loop from
-  // plan.tsx) without racing against stale closures.
+  // Mirrors `items` synchronously (not subject to React batching), so any
+  // handler can always compute the *next* list off the latest known state
+  // even if several mutations fire back-to-back before a re-render commits.
   const itemsRef = useRef<GroceryItem[]>([]);
+  // True while a save() is persisting to Supabase. Guards load() from
+  // clobbering a very-recent local mutation with a remote row that may not
+  // reflect it yet (e.g. focus-triggered load right after a delete).
+  const savingRef = useRef(false);
 
   const setActiveRowId = useCallback((id: string | null) => {
     rowIdRef.current = id;
@@ -316,8 +321,10 @@ export function useGrocerySync() {
 
       if (local) {
         const parsed: GroceryItem[] = JSON.parse(local);
-        itemsRef.current = parsed;
-        setItems(parsed);
+        if (!savingRef.current) {
+          itemsRef.current = parsed;
+          setItems(parsed);
+        }
       }
     } catch (error: any) {
       console.error("GROCERY LOCAL LOAD ERROR:", error);
@@ -380,8 +387,15 @@ export function useGrocerySync() {
         if (data) {
           const remoteItems: GroceryItem[] = data.items ?? [];
 
-          itemsRef.current = remoteItems;
-          setItems(remoteItems);
+          // A save() may have started (or completed) after this fetch was
+          // issued but before it resolved. Don't stomp on it with a remote
+          // snapshot that could be stale relative to the in-flight write.
+          if (!savingRef.current) {
+            itemsRef.current = remoteItems;
+            setItems(remoteItems);
+            await AsyncStorage.setItem(GROCERY_LOCAL_KEY, JSON.stringify(remoteItems));
+          }
+
           setShareToken(data.share_token ?? null);
           setName(data.name ?? null);
           setOwnerId(data.owner_id ?? null);
@@ -389,8 +403,6 @@ export function useGrocerySync() {
           const owner = data.owner_id === currentUserId;
 
           setIsOwner(owner);
-
-          await AsyncStorage.setItem(GROCERY_LOCAL_KEY, JSON.stringify(remoteItems));
 
           setStatus("synced");
           setLastOperation("Loaded grocery list successfully");
@@ -445,8 +457,10 @@ export function useGrocerySync() {
 
   const save = useCallback(
     async (updated: GroceryItem[]) => {
-      // Update the ref synchronously so a subsequent addIngredients() call
-      // (even before this render commits) sees the up-to-date list.
+      savingRef.current = true;
+
+      // Update the ref synchronously so a subsequent mutation call (even
+      // one fired before this render commits) sees the up-to-date list.
       itemsRef.current = updated;
       setItems(updated);
 
@@ -461,6 +475,7 @@ export function useGrocerySync() {
       if (!activeRowId) {
         setLastOperation("Saved locally — no Supabase row ID available");
         setStatus("offline");
+        savingRef.current = false;
         return;
       }
 
@@ -561,6 +576,8 @@ export function useGrocerySync() {
         setStatus("offline");
         setErrorMessage(error?.message ?? "Unknown error while saving grocery list");
         setLastOperation("Grocery save failed with an unexpected error");
+      } finally {
+        savingRef.current = false;
       }
     },
     [clearError, recordSupabaseError]
@@ -575,6 +592,40 @@ export function useGrocerySync() {
       const incoming = toGroceryItems(raw, opts);
       const combined = combineIngredients(itemsRef.current, incoming);
       await save(combined);
+    },
+    [save]
+  );
+
+  // ─────────────────────────────────────────────────────────────
+  // DELETE / TOGGLE / EDIT a single item (race-safe: computed off
+  // itemsRef, not the React `items` closure, so rapid consecutive taps
+  // never overwrite each other's result)
+  // ─────────────────────────────────────────────────────────────
+
+  const deleteItem = useCallback(
+    async (id: string) => {
+      const updated = itemsRef.current.filter((it) => it.id !== id);
+      await save(updated);
+    },
+    [save]
+  );
+
+  const toggleItem = useCallback(
+    async (id: string) => {
+      const updated = itemsRef.current.map((it) =>
+        it.id === id ? { ...it, checked: !it.checked, checkedAt: Date.now() } : it
+      );
+      await save(updated);
+    },
+    [save]
+  );
+
+  const updateItemAmount = useCallback(
+    async (id: string, amount: number) => {
+      const updated = itemsRef.current.map((it) =>
+        it.id === id ? { ...it, amount } : it
+      );
+      await save(updated);
     },
     [save]
   );
@@ -628,6 +679,9 @@ export function useGrocerySync() {
     load,
     rename,
     addIngredients,
+    deleteItem,
+    toggleItem,
+    updateItemAmount,
 
     // Diagnostics
     errorMessage,
