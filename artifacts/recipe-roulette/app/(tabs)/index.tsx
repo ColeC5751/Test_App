@@ -20,7 +20,7 @@ import {
 } from "react-native";
 
 import { useColors } from "@/hooks/useColors";
-import { addIngredientsToGrocery } from "@/app/(tabs)/grocery";
+import { useGrocerySync } from "@/lib/sync";
 import { SavedToast } from "@/components/SavedToast";
 import { CookMode } from "@/components/CookMode";
 
@@ -326,7 +326,21 @@ function WheelSettingsModal({
   );
 }
 
-function RecipeDetailModal({ recipe, onClose }: { recipe: Recipe | null; onClose: () => void }) {
+// RecipeDetailModal no longer imports grocery mutation logic directly.
+// `onAddToGrocery` is passed down from SpinScreen, which is the only place
+// that calls useGrocerySync() (a component-level hook can't be called
+// inside this sibling component). This keeps the canonical grocery
+// mutation path identical to grocery.tsx and plan.tsx: everything funnels
+// through useGrocerySync().addIngredients().
+function RecipeDetailModal({
+  recipe,
+  onClose,
+  onAddToGrocery,
+}: {
+  recipe: Recipe | null;
+  onClose: () => void;
+  onAddToGrocery: (ingredientsText: string, opts: { fromRecipe: string; servingMultiplier: number }) => Promise<void>;
+}) {
   const colors = useColors();
   const [currentServings, setCurrentServings] = useState<number | null>(null);
   const [saved, setSaved] = useState(false);
@@ -372,6 +386,9 @@ function RecipeDetailModal({ recipe, onClose }: { recipe: Recipe | null; onClose
     } catch {}
   };
 
+  const baseServings = recipe?.servings ?? 4;
+  const servings = currentServings ?? baseServings;
+
   const handleAddToGrocery = async () => {
     if (!recipe) return;
     const scale = servings / baseServings;
@@ -382,14 +399,18 @@ function RecipeDetailModal({ recipe, onClose }: { recipe: Recipe | null; onClose
         return `${amt} ${unit}${ing.name}`.trim();
       })
       .join("\n");
-    await addIngredientsToGrocery(ingredientsString);
+
+    // Canonical path: parses + merges + persists (local, then Supabase)
+    // through the same useGrocerySync() state that grocery.tsx displays.
+    await onAddToGrocery(ingredientsString, {
+      fromRecipe: recipe.title,
+      servingMultiplier: scale,
+    });
+
     setAddedToGrocery(true);
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     setTimeout(() => setAddedToGrocery(false), 2000);
   };
-
-  const baseServings = recipe?.servings ?? 4;
-  const servings = currentServings ?? baseServings;
 
   const handleClose = () => { setCurrentServings(null); onClose(); };
 
@@ -563,6 +584,13 @@ function RecipeCard({ recipe, onPress }: { recipe: Recipe; onPress: () => void }
 export default function SpinScreen() {
   const colors = useColors();
   const topPad = Platform.OS === "web" ? 67 : 0;
+
+  // Canonical grocery sync — called here at the component level (not inside
+  // RecipeDetailModal, a sibling component) and threaded down as a prop.
+  // This replaces the broken `import { addIngredientsToGrocery } from
+  // "@/app/(tabs)/grocery"`, which referenced an export that no longer
+  // exists and was failing the whole Metro bundle.
+  const { addIngredients } = useGrocerySync();
 
   const [wheels, setWheels] = useState<WheelData>({
     proteins: DEFAULT_PROTEINS,
@@ -900,7 +928,11 @@ export default function SpinScreen() {
         )}
       </ScrollView>
 
-      <RecipeDetailModal recipe={selectedRecipe} onClose={() => setSelectedRecipe(null)} />
+      <RecipeDetailModal
+        recipe={selectedRecipe}
+        onClose={() => setSelectedRecipe(null)}
+        onAddToGrocery={addIngredients}
+      />
       <WheelSettingsModal
         visible={showSettings}
         onClose={() => setShowSettings(false)}
