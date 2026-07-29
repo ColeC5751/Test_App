@@ -9,6 +9,18 @@ import { Platform, StyleSheet, View, useColorScheme } from "react-native";
 
 import { useColors } from "@/hooks/useColors";
 
+// Per-tab active tint. Keeps each icon visually distinct when selected
+// instead of every tab sharing one accent color. Inactive state still
+// falls back to the theme's colors.mutedForeground, and the bar itself
+// (background/blur/border) is untouched.
+const TAB_TINTS = {
+  index: "#FF9F4A", // Spin — orange
+  roulette: "#4ADE80", // My Dinners — green
+  grocery: "#38BDF8", // Grocery List — blue
+  plan: "#F472B6", // Plan — pink
+  shared: "#C084FC", // Shared — purple
+} as const;
+
 function NativeTabLayout() {
   return (
     <NativeTabs>
@@ -46,7 +58,6 @@ function ClassicTabLayout() {
   return (
     <Tabs
       screenOptions={{
-        tabBarActiveTintColor: colors.primary,
         tabBarInactiveTintColor: colors.mutedForeground,
         headerShown: false,
         tabBarStyle: {
@@ -78,6 +89,7 @@ function ClassicTabLayout() {
         name="index"
         options={{
           title: "Spin",
+          tabBarActiveTintColor: TAB_TINTS.index,
           tabBarIcon: ({ color }) =>
             isIOS ? (
               <SymbolView name="shuffle" tintColor={color} size={24} />
@@ -90,6 +102,7 @@ function ClassicTabLayout() {
         name="roulette"
         options={{
           title: "My Dinners",
+          tabBarActiveTintColor: TAB_TINTS.roulette,
           tabBarIcon: ({ color }) =>
             isIOS ? (
               <SymbolView name="fork.knife" tintColor={color} size={24} />
@@ -102,6 +115,7 @@ function ClassicTabLayout() {
         name="grocery"
         options={{
           title: "Grocery List",
+          tabBarActiveTintColor: TAB_TINTS.grocery,
           tabBarIcon: ({ color }) =>
             isIOS ? (
               <SymbolView name="cart" tintColor={color} size={24} />
@@ -114,6 +128,7 @@ function ClassicTabLayout() {
         name="plan"
         options={{
           title: "Plan",
+          tabBarActiveTintColor: TAB_TINTS.plan,
           tabBarIcon: ({ color }) =>
             isIOS ? (
               <SymbolView name="calendar" tintColor={color} size={24} />
@@ -126,6 +141,7 @@ function ClassicTabLayout() {
         name="shared"
         options={{
           title: "Shared",
+          tabBarActiveTintColor: TAB_TINTS.shared,
           tabBarIcon: ({ color }) =>
             isIOS ? (
               <SymbolView name="person.2" tintColor={color} size={24} />
@@ -144,4 +160,5 @@ export default function TabLayout() {
   }
   return <ClassicTabLayout />;
 }
+
 
