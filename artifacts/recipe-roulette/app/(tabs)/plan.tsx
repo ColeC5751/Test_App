@@ -101,6 +101,23 @@ function getWeekDays(monday: Date): Date[] {
   });
 }
 
+// Cross-platform confirm dialog. Alert.alert's callback-based API is
+// unreliable on React Native Web (it can fail to present, or never invoke
+// its button callbacks), so on web we fall back to window.confirm. Both
+// paths resolve a single Promise<boolean> so callers can simply `await`
+// the user's choice instead of racing UI state against a callback.
+function confirmAsync(title: string, message: string): Promise<boolean> {
+  if (Platform.OS === "web") {
+    return Promise.resolve(window.confirm(`${title}\n\n${message}`));
+  }
+  return new Promise<boolean>((resolve) => {
+    Alert.alert(title, message, [
+      { text: "Cancel", style: "cancel", onPress: () => resolve(false) },
+      { text: "Remove", style: "destructive", onPress: () => resolve(true) },
+    ]);
+  });
+}
+
 // ─── Slot Picker Modal ────────────────────────────────────────────────────────
 
 function SlotPickerModal({
@@ -388,19 +405,23 @@ export default function PlanScreen() {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
   };
 
-  const handleRemoveSlot = async (date: Date) => {
-    Alert.alert("Remove meal?", `Clear ${formatDayLabel(date).day} from your plan?`, [
-      { text: "Cancel", style: "cancel" },
-      {
-        text: "Remove", style: "destructive",
-        onPress: async () => {
-          const updated = { ...plan, [isoDateKey(date)]: null };
-          await save(updated);
-          setViewingSlot(null);
-          Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
-        },
-      },
-    ]);
+  // Fixed: previously this fired Alert.alert with no web fallback, and
+  // callers closed the picker modal (setPickerDate(null)) synchronously
+  // before this even resolved — which on native could race the modal's own
+  // dismissal animation and cause the confirmation to be dropped. Now this
+  // resolves a single confirmAsync() promise (web-safe) and the removal is
+  // awaited by the caller before anything else happens.
+  const handleRemoveSlot = async (date: Date): Promise<boolean> => {
+    const confirmed = await confirmAsync(
+      "Remove meal?",
+      `Clear ${formatDayLabel(date).day} from your plan?`
+    );
+    if (!confirmed) return false;
+
+    const updated = { ...plan, [isoDateKey(date)]: null };
+    await save(updated);
+    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
+    return true;
   };
 
   const handleSwapSlot = (date: Date) => {
@@ -441,8 +462,6 @@ export default function PlanScreen() {
 
   // ─── Add week to grocery list ────────────────────────────────────────────
   // The ONLY grocery mutation path from this screen: useGrocerySync().addIngredients.
-  // No AsyncStorage writes to grocery keys, no separate grocery state, no
-  // parsing/merging logic duplicated here.
   const handleAddWeekToGrocery = async () => {
     const slots = weekDays
       .map((d) => plan[isoDateKey(d)])
@@ -651,14 +670,21 @@ export default function PlanScreen() {
         onPickRecipe={handlePickRecipe}
         onSpinRecipe={handleSpinRecipe}
         isChanging={!!(pickerDate && plan[isoDateKey(pickerDate)])}
-        onDelete={() => {
-          if (pickerDate) {
-            handleRemoveSlot(pickerDate);
+        onDelete={async () => {
+          // Fixed: await the confirmation + removal BEFORE closing the
+          // picker. Previously the picker closed synchronously first, which
+          // could race the alert's own presentation on native and silently
+          // drop it, and never worked on web at all (no window.confirm
+          // fallback existed for this path).
+          if (!pickerDate) return;
+          const removed = await handleRemoveSlot(pickerDate);
+          if (removed) {
             setPickerDate(null);
           }
         }}
       />
 
+      {/* Recipe detail view from plan slot */}
       <Modal
         visible={!!viewingSlot}
         animationType="slide"
