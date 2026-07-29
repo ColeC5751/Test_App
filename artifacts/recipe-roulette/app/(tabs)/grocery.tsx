@@ -23,8 +23,8 @@ import { buildShareUrl } from "@/lib/supabase";
 import type { GroceryItem, SyncStatus } from "@/lib/types";
 
 // ─── Display helpers ───────────────────────────────────────────────────────────
-// Parsing, aisle categorization, and merging now live in lib/sync.ts —
-// this file only formats items for display and groups them by aisle.
+// Parsing, aisle categorization, and merging live in lib/sync.ts — this file
+// only formats items for display and groups them by aisle.
 
 function formatItem(item: GroceryItem): string {
   const amt = item.amount === 1 && !item.unit
@@ -172,15 +172,19 @@ export default function GroceryScreen() {
     save,
     load,
     addIngredients,
+    deleteItem: deleteItemSync,
+    toggleItem: toggleItemSync,
+    updateItemAmount,
 
-    // Diagnostics
-    errorMessage,
-    errorCode,
-    errorDetails,
-    userId,
-    ownerId,
-    rowId,
-    lastOperation,
+    // Diagnostics — kept in the hook's return, just unused here.
+    // Uncomment along with the JSX block below to reinstate the panel.
+    // errorMessage,
+    // errorCode,
+    // errorDetails,
+    // userId,
+    // ownerId,
+    // rowId,
+    // lastOperation,
   } = useGrocerySync();
 
   const [loaded, setLoaded] = useState(false);
@@ -196,19 +200,18 @@ export default function GroceryScreen() {
     }, [load])
   );
 
-  const persist = async (updated: GroceryItem[]) => {
-    await save(updated);
-  };
-
+  // Race-safe: these call into useGrocerySync()'s canonical mutation
+  // methods, which compute the next list off itemsRef rather than this
+  // component's `items` closure, so rapid consecutive taps never clobber
+  // each other.
   const deleteItem = useCallback(async (id: string) => {
-    const updated = items.filter((it) => it.id !== id);
-    await save(updated);
+    await deleteItemSync(id);
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-  }, [items, save]);
+  }, [deleteItemSync]);
 
   const toggleItem = async (id: string) => {
     await Haptics.selectionAsync();
-    await persist(items.map((it) => it.id === id ? { ...it, checked: !it.checked, checkedAt: Date.now() } : it));
+    await toggleItemSync(id);
   };
 
   const startEdit = (item: GroceryItem) => {
@@ -219,7 +222,7 @@ export default function GroceryScreen() {
   const commitEdit = async (id: string) => {
     const parsed = parseFloat(editValue);
     if (!isNaN(parsed) && parsed > 0) {
-      await persist(items.map((it) => it.id === id ? { ...it, amount: Math.round(parsed * 100) / 100 } : it));
+      await updateItemAmount(id, Math.round(parsed * 100) / 100);
     }
     setEditingId(null);
     setEditValue("");
@@ -228,8 +231,6 @@ export default function GroceryScreen() {
   const handleManualAdd = async () => {
     const text = manualInput.trim();
     if (!text) return;
-    // Goes through the canonical addIngredients — parses, merges with the
-    // current grocery state, and persists locally + to Supabase.
     await addIngredients(text);
     setManualInput("");
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
@@ -250,7 +251,7 @@ export default function GroceryScreen() {
   const handleClear = () => {
     Alert.alert("Clear list?", "This will remove all items.", [
       { text: "Cancel", style: "cancel" },
-      { text: "Clear", style: "destructive", onPress: async () => { await persist([]); Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning); } },
+      { text: "Clear", style: "destructive", onPress: async () => { await save([]); Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning); } },
     ]);
   };
 
@@ -267,6 +268,7 @@ export default function GroceryScreen() {
         showsVerticalScrollIndicator={false}
         keyboardShouldPersistTaps="handled"
       >
+        {/* Header */}
         <View style={styles.headerRow}>
           <View style={styles.headerLeft}>
             <Text style={[styles.heading, { color: colors.foreground }]}>Grocery List</Text>
@@ -305,7 +307,11 @@ export default function GroceryScreen() {
           </View>
         </View>
 
-        {/* Temporary Supabase diagnostics */}
+        {/*
+        ─── Sync Diagnostics panel (disabled) ───────────────────────────
+        To reinstate: uncomment the diagnostic destructuring above and the
+        block below, and add it back into the JSX where you want it shown.
+
         <View
           style={[
             styles.diagnostics,
@@ -399,6 +405,8 @@ export default function GroceryScreen() {
             <Text style={[styles.testSaveButtonText, { color: colors.primaryForeground }]}>Test Supabase Save</Text>
           </Pressable>
         </View>
+        ─────────────────────────────────────────────────────────────────
+        */}
 
         {/* Manual add input */}
         <View style={[styles.manualAddRow, { backgroundColor: colors.card, borderColor: colors.border }]}>
@@ -420,6 +428,7 @@ export default function GroceryScreen() {
           </Pressable>
         </View>
 
+        {/* Empty state */}
         {loaded && items.length === 0 && (
           <View style={styles.empty}>
             <Feather name="shopping-cart" size={40} color={colors.mutedForeground} />
@@ -430,6 +439,7 @@ export default function GroceryScreen() {
           </View>
         )}
 
+        {/* Unchecked items grouped by aisle */}
         {uncheckedGroups.map(({ aisle, icon, items: aisleItems }) => (
           <View key={aisle} style={styles.aisleSection}>
             <View style={styles.aisleHeader}>
@@ -454,6 +464,7 @@ export default function GroceryScreen() {
           </View>
         ))}
 
+        {/* In cart section */}
         {checked.length > 0 && (
           <View style={styles.aisleSection}>
             <View style={styles.aisleHeader}>
