@@ -1,4 +1,4 @@
-// app/(tabs)/shared.tsx
+// // app/(tabs)/shared.tsx
 // "Shared with me" — plans and grocery lists the signed-in user has
 // previously opened via a share link (joined automatically on open,
 // see useSharedPlanSync / useSharedGrocerySync in lib/sync.ts).
@@ -22,6 +22,14 @@ import {
   useSharedWithMePlans,
   useSharedWithMeGroceryLists,
 } from "@/lib/sync";
+
+// Vibrant per-type tint for the row icon. Card/background colors stay
+// on the theme (colors.card / colors.secondary) — only the glyph itself
+// picks up color here.
+const ICON_TINTS = {
+  calendar: "#FF9F4A", // meal plans — warm orange
+  "shopping-cart": "#22C55E", // grocery lists — green
+} as const;
 
 function formatJoinedAt(iso: string): string {
   const d = new Date(iso);
@@ -129,6 +137,8 @@ function SharedRow({
   colors: ReturnType<typeof useColors>;
   onPress: () => void;
 }) {
+  const tint = ICON_TINTS[icon as keyof typeof ICON_TINTS] ?? colors.foreground;
+
   return (
     <Pressable
       onPress={onPress}
@@ -139,7 +149,7 @@ function SharedRow({
       ]}
     >
       <View style={[styles.iconWrap, { backgroundColor: colors.secondary }]}>
-        <Feather name={icon} size={18} color={colors.foreground} />
+        <Feather name={icon} size={18} color={tint} />
       </View>
       <View style={styles.rowTextWrap}>
         <Text style={[styles.rowTitle, { color: colors.foreground }]}>{title}</Text>
