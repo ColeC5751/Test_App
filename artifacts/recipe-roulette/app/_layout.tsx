@@ -150,13 +150,25 @@ function RootLayoutNav() {
 
   useAuthGate(session, sessionLoaded);
 
+  // Transition tuning per screen. Kept subtle and purposeful rather than
+  // decorative: auth fades in/out (a calm, low-motion moment rather than
+  // a "navigating somewhere" moment), while shared links slide in from
+  // the right (reads as drilling into content, matching the mental model
+  // of "opening a plan/list"). Native only — `animation` is a no-op on
+  // web, where Expo Router relies on browser navigation instead.
   return (
     <Stack screenOptions={{ headerShown: false }}>
-      <Stack.Screen name="(tabs)" />
-      <Stack.Screen name="auth" />
-      <Stack.Screen name="auth/callback" />
-      <Stack.Screen name="(shared)/grocery/[token]" />
-      <Stack.Screen name="(shared)/plan/[token]" />
+      <Stack.Screen name="(tabs)" options={{ animation: "fade" }} />
+      <Stack.Screen name="auth" options={{ animation: "fade", animationDuration: 220 }} />
+      <Stack.Screen name="auth/callback" options={{ animation: "fade" }} />
+      <Stack.Screen
+        name="(shared)/grocery/[token]"
+        options={{ animation: "slide_from_right", animationDuration: 260 }}
+      />
+      <Stack.Screen
+        name="(shared)/plan/[token]"
+        options={{ animation: "slide_from_right", animationDuration: 260 }}
+      />
     </Stack>
   );
 }
