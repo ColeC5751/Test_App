@@ -456,7 +456,7 @@ export function useGrocerySync() {
   // ─────────────────────────────────────────────────────────────
 
   const save = useCallback(
-    async (updated: GroceryItem[]) => {
+    async (updated: GroceryItem[]): Promise<boolean> => {
       savingRef.current = true;
 
       // Update the ref synchronously so a subsequent mutation call (even
@@ -476,7 +476,9 @@ export function useGrocerySync() {
         setLastOperation("Saved locally — no Supabase row ID available");
         setStatus("offline");
         savingRef.current = false;
-        return;
+        // Nothing remote to fail — local-only mode is a legitimate,
+        // fully-persisted state here, not an error.
+        return true;
       }
 
       setStatus("syncing");
@@ -490,7 +492,7 @@ export function useGrocerySync() {
 
         if (authError) {
           recordSupabaseError("Get user before grocery save", authError);
-          return;
+          return false;
         }
 
         const currentUserId = user?.id ?? null;
@@ -501,7 +503,7 @@ export function useGrocerySync() {
           setStatus("offline");
           setErrorMessage("Cannot save to Supabase because no authenticated user was found.");
           setLastOperation("Save failed — no authenticated user");
-          return;
+          return false;
         }
 
         const { data: rowCheck, error: rowCheckError } = await supabase
@@ -514,7 +516,7 @@ export function useGrocerySync() {
           recordSupabaseError("Check grocery row before save", rowCheckError);
           setErrorMessage(`Could not find grocery row: ${rowCheckError.message}`);
           setLastOperation(`Failed to find grocery row ${activeRowId}`);
-          return;
+          return false;
         }
 
         const owner = rowCheck.owner_id === currentUserId;
@@ -526,7 +528,7 @@ export function useGrocerySync() {
           setStatus("error");
           setErrorMessage("You are not the owner of this grocery list.");
           setLastOperation("Save blocked — authenticated user is not the row owner");
-          return;
+          return false;
         }
 
         const { data: savedRow, error: updateError } = await supabase
@@ -541,14 +543,14 @@ export function useGrocerySync() {
           recordSupabaseError("Update grocery list", updateError);
           setErrorMessage(`Supabase save failed: ${updateError.message}`);
           setLastOperation(`Supabase update failed for row ${activeRowId}`);
-          return;
+          return false;
         }
 
         if (!savedRow) {
           setStatus("error");
           setErrorMessage("Supabase accepted the request but returned no saved grocery row.");
           setLastOperation("Save failed — no row returned after update");
-          return;
+          return false;
         }
 
         const savedItems = (savedRow.items ?? []) as GroceryItem[];
@@ -564,18 +566,20 @@ export function useGrocerySync() {
             actual: savedItems,
           });
 
-          return;
+          return false;
         }
 
         setStatus("synced");
         clearError();
         setLastOperation(`Successfully saved ${updated.length} items to Supabase`);
+        return true;
       } catch (error: any) {
         console.error("GROCERY SAVE EXCEPTION:", error);
 
         setStatus("offline");
         setErrorMessage(error?.message ?? "Unknown error while saving grocery list");
         setLastOperation("Grocery save failed with an unexpected error");
+        return false;
       } finally {
         savingRef.current = false;
       }
@@ -603,29 +607,52 @@ export function useGrocerySync() {
   // ─────────────────────────────────────────────────────────────
 
   const deleteItem = useCallback(
-    async (id: string) => {
-      const updated = itemsRef.current.filter((it) => it.id !== id);
-      await save(updated);
+    async (id: string): Promise<boolean> => {
+      const previous = itemsRef.current;
+      const updated = previous.filter((it) => it.id !== id);
+      const ok = await save(updated);
+      if (!ok) {
+        // The remote save failed, so keeping the optimistic local removal
+        // would just get silently undone the next time load() runs (e.g.
+        // on screen focus), with no indication anything went wrong. Roll
+        // back immediately instead so the UI stays consistent with what's
+        // actually persisted, and let the caller inform the user.
+        itemsRef.current = previous;
+        setItems(previous);
+      }
+      return ok;
     },
     [save]
   );
 
   const toggleItem = useCallback(
-    async (id: string) => {
-      const updated = itemsRef.current.map((it) =>
+    async (id: string): Promise<boolean> => {
+      const previous = itemsRef.current;
+      const updated = previous.map((it) =>
         it.id === id ? { ...it, checked: !it.checked, checkedAt: Date.now() } : it
       );
-      await save(updated);
+      const ok = await save(updated);
+      if (!ok) {
+        itemsRef.current = previous;
+        setItems(previous);
+      }
+      return ok;
     },
     [save]
   );
 
   const updateItemAmount = useCallback(
-    async (id: string, amount: number) => {
-      const updated = itemsRef.current.map((it) =>
+    async (id: string, amount: number): Promise<boolean> => {
+      const previous = itemsRef.current;
+      const updated = previous.map((it) =>
         it.id === id ? { ...it, amount } : it
       );
-      await save(updated);
+      const ok = await save(updated);
+      if (!ok) {
+        itemsRef.current = previous;
+        setItems(previous);
+      }
+      return ok;
     },
     [save]
   );
