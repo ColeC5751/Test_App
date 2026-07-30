@@ -203,15 +203,32 @@ export default function GroceryScreen() {
   // Race-safe: these call into useGrocerySync()'s canonical mutation
   // methods, which compute the next list off itemsRef rather than this
   // component's `items` closure, so rapid consecutive taps never clobber
-  // each other.
+  // each other. deleteItemSync now also reports whether the removal
+  // actually persisted, so we can tell the person if it didn't rather than
+  // letting the item silently reappear later.
   const deleteItem = useCallback(async (id: string) => {
-    await deleteItemSync(id);
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    const ok = await deleteItemSync(id);
+    if (ok) {
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    } else {
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+      Alert.alert(
+        "Couldn't delete item",
+        "This item wasn't removed from your synced list. Check your connection and try again."
+      );
+    }
   }, [deleteItemSync]);
 
   const toggleItem = async (id: string) => {
     await Haptics.selectionAsync();
-    await toggleItemSync(id);
+    const ok = await toggleItemSync(id);
+    if (!ok) {
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+      Alert.alert(
+        "Couldn't update item",
+        "This change wasn't saved to your synced list. Check your connection and try again."
+      );
+    }
   };
 
   const startEdit = (item: GroceryItem) => {
@@ -222,7 +239,13 @@ export default function GroceryScreen() {
   const commitEdit = async (id: string) => {
     const parsed = parseFloat(editValue);
     if (!isNaN(parsed) && parsed > 0) {
-      await updateItemAmount(id, Math.round(parsed * 100) / 100);
+      const ok = await updateItemAmount(id, Math.round(parsed * 100) / 100);
+      if (!ok) {
+        Alert.alert(
+          "Couldn't update amount",
+          "This change wasn't saved to your synced list. Check your connection and try again."
+        );
+      }
     }
     setEditingId(null);
     setEditValue("");
