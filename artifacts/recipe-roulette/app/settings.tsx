@@ -151,6 +151,20 @@ export default function SettingsScreen() {
       // user's synced grocery/plan/recipe state. Supabase's own session
       // token is already cleared by signOut() above; these are just the
       // app's own AsyncStorage caches from lib/sync.ts.
+      //
+      // NOTE on the grocery/plan row-id caches specifically
+      // (@recipe_roulette_grocery_row_id / @recipe_roulette_plan_row_id):
+      // it's safe to wipe these here because useGrocerySync().load() and
+      // usePlanSync().load() now resolve a person's row primarily by
+      // owner_id (and is_default for grocery), not by this cached id. The
+      // cached id is only a fast-path optimization that gets re-populated
+      // (healed) on the next load(). Previously this was NOT safe: load()
+      // depended on this cached id as its only way of finding an existing
+      // row, so clearing it here caused the same owner's next sign-in to
+      // look like "no list yet" and silently create a duplicate, empty
+      // row while their real one sat orphaned in Supabase. If load()'s
+      // owner-based lookup is ever reverted to being cache-id-only again,
+      // this multiRemove call would reintroduce that bug.
       await AsyncStorage.multiRemove([
         "@recipe_roulette_grocery",
         "@recipe_roulette_grocery_row_id",
