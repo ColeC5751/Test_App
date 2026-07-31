@@ -170,7 +170,14 @@ function ShareModal({
 }) {
   const colors = useColors();
   const shareUrl = shareToken ? buildShareUrl("grocery", shareToken) : null;
-
+<ConfirmModal
+  visible={showClearModal}
+  title="Clear list?"
+  message="This will remove all items."
+  confirmLabel="Clear"
+  onConfirm={confirmClear}
+  onCancel={() => setShowClearModal(false)}
+/>
   const handleShare = async () => {
     if (!shareUrl) return;
     await Share.share({
