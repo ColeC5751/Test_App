@@ -68,7 +68,93 @@ const syncDotStyles = StyleSheet.create({
 });
 
 // ─── Share Modal ──────────────────────────────────────────────────────────────
+function ConfirmModal({
+  visible,
+  title,
+  message,
+  confirmLabel,
+  onConfirm,
+  onCancel,
+}: {
+  visible: boolean;
+  title: string;
+  message: string;
+  confirmLabel: string;
+  onConfirm: () => void;
+  onCancel: () => void;
+}) {
+  const colors = useColors();
 
+  return (
+    <Modal visible={visible} animationType="fade" transparent onRequestClose={onCancel}>
+      <View style={confirmStyles.overlay}>
+        <View style={[confirmStyles.card, { backgroundColor: colors.background, borderColor: colors.border }]}>
+          <View style={[confirmStyles.iconWrap, { backgroundColor: colors.secondary }]}>
+            <Feather name="trash-2" size={20} color={colors.destructive} />
+          </View>
+
+          <Text style={[confirmStyles.title, { color: colors.foreground }]}>{title}</Text>
+          <Text style={[confirmStyles.message, { color: colors.mutedForeground }]}>{message}</Text>
+
+          <View style={confirmStyles.actions}>
+            <Pressable
+              onPress={onCancel}
+              style={({ pressed }) => [
+                confirmStyles.btn,
+                { backgroundColor: colors.card, borderColor: colors.border, borderWidth: 1 },
+                pressed && { opacity: 0.7 },
+              ]}
+            >
+              <Text style={[confirmStyles.btnText, { color: colors.foreground }]}>Cancel</Text>
+            </Pressable>
+            <Pressable
+              onPress={onConfirm}
+              style={({ pressed }) => [
+                confirmStyles.btn,
+                { backgroundColor: colors.destructive },
+                pressed && { opacity: 0.85 },
+              ]}
+            >
+              <Text style={[confirmStyles.btnText, { color: "#fff" }]}>{confirmLabel}</Text>
+            </Pressable>
+          </View>
+        </View>
+      </View>
+    </Modal>
+  );
+}
+
+const confirmStyles = StyleSheet.create({
+  overlay: {
+    flex: 1,
+    backgroundColor: "rgba(0,0,0,0.4)",
+    alignItems: "center",
+    justifyContent: "center",
+    padding: 24,
+  },
+  card: {
+    width: "100%",
+    maxWidth: 340,
+    borderRadius: 20,
+    borderWidth: 1,
+    padding: 24,
+    alignItems: "center",
+    gap: 6,
+  },
+  iconWrap: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    alignItems: "center",
+    justifyContent: "center",
+    marginBottom: 8,
+  },
+  title: { fontSize: 17, fontFamily: "Inter_700Bold", textAlign: "center" },
+  message: { fontSize: 13, fontFamily: "Inter_400Regular", textAlign: "center", lineHeight: 19, marginBottom: 16 },
+  actions: { flexDirection: "row", gap: 10, width: "100%" },
+  btn: { flex: 1, borderRadius: 12, paddingVertical: 13, alignItems: "center", justifyContent: "center" },
+  btnText: { fontSize: 14, fontFamily: "Inter_600SemiBold" },
+});
 function ShareModal({
   visible,
   onClose,
