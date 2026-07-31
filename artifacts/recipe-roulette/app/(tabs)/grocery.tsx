@@ -272,11 +272,31 @@ export default function GroceryScreen() {
   };
 
   const handleClear = () => {
-    Alert.alert("Clear list?", "This will remove all items.", [
-      { text: "Cancel", style: "cancel" },
-      { text: "Clear", style: "destructive", onPress: async () => { await save([]); Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning); } },
-    ]);
+  const title = "Clear list?";
+  const message = "This will remove all items.";
+
+  const doClear = async () => {
+    const ok = await save([]);
+    if (ok) {
+      Platform.OS !== "web" && Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
+    } else {
+      Platform.OS !== "web" && Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+      Alert.alert("Couldn't clear list", "This change wasn't saved to your synced list. Check your connection and try again.");
+    }
   };
+
+  if (Platform.OS === "web") {
+    if (typeof window !== "undefined" && window.confirm(`${title}\n\n${message}`)) {
+      doClear();
+    }
+    return;
+  }
+
+  Alert.alert(title, message, [
+    { text: "Cancel", style: "cancel" },
+    { text: "Clear", style: "destructive", onPress: doClear },
+  ]);
+};
 
   const unchecked = items.filter((it) => !it.checked);
   const checked = items.filter((it) => it.checked);
