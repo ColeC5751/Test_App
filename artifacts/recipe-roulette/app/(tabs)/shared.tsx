@@ -73,10 +73,24 @@ export default function SharedWithMeScreen() {
       }
     >
       <View style={styles.headerRow}>
-        <Text style={[styles.heading, { color: colors.foreground }]}>Shared with me</Text>
-        <Text style={[styles.sub, { color: colors.mutedForeground }]}>
-          Plans and lists others have shared with you
-        </Text>
+        <View style={styles.headerTop}>
+          <View style={{ flex: 1 }}>
+            <Text style={[styles.heading, { color: colors.foreground }]}>Shared with me</Text>
+            <Text style={[styles.sub, { color: colors.mutedForeground }]}>
+              Plans and lists others have shared with you
+            </Text>
+          </View>
+          <Pressable
+            onPress={() => router.push("/settings")}
+            style={({ pressed }) => [
+              styles.settingsBtn,
+              { backgroundColor: colors.card, borderColor: colors.border },
+              pressed && { opacity: 0.7 },
+            ]}
+          >
+            <Feather name="settings" size={16} color={colors.foreground} />
+          </Pressable>
+        </View>
       </View>
 
       {isEmpty && (
@@ -166,6 +180,15 @@ const styles = StyleSheet.create({
   root: { flex: 1 },
   center: { flex: 1, alignItems: "center", justifyContent: "center" },
   headerRow: { marginBottom: 24 },
+  headerTop: { flexDirection: "row", alignItems: "flex-start", gap: 12 },
+  settingsBtn: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    borderWidth: 1,
+    alignItems: "center",
+    justifyContent: "center",
+  },
   heading: { fontSize: 26, fontFamily: "Inter_700Bold", marginBottom: 4 },
   sub: { fontSize: 13, fontFamily: "Inter_400Regular" },
   sectionLabel: { fontSize: 10, fontFamily: "Inter_600SemiBold", letterSpacing: 2, marginBottom: 10 },
