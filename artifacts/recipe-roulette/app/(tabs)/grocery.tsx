@@ -357,9 +357,20 @@ export default function GroceryScreen() {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
   };
 
-  const handleClear = () => {
-  const title = "Clear list?";
-  const message = "This will remove all items.";
+const [showClearModal, setShowClearModal] = useState(false);
+
+const handleClear = () => setShowClearModal(true);
+
+const confirmClear = async () => {
+  setShowClearModal(false);
+  const ok = await save([]);
+  if (ok) {
+    Platform.OS !== "web" && Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
+  } else {
+    Platform.OS !== "web" && Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+    Alert.alert("Couldn't clear list", "This change wasn't saved to your synced list. Check your connection and try again.");
+  }
+};
 
   const doClear = async () => {
     const ok = await save([]);
