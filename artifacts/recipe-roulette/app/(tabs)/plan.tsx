@@ -101,22 +101,106 @@ function getWeekDays(monday: Date): Date[] {
   });
 }
 
-// Cross-platform confirm dialog. Alert.alert's callback-based API is
-// unreliable on React Native Web (it can fail to present, or never invoke
-// its button callbacks), so on web we fall back to window.confirm. Both
-// paths resolve a single Promise<boolean> so callers can simply `await`
-// the user's choice instead of racing UI state against a callback.
-function confirmAsync(title: string, message: string): Promise<boolean> {
-  if (Platform.OS === "web") {
-    return Promise.resolve(window.confirm(`${title}\n\n${message}`));
-  }
-  return new Promise<boolean>((resolve) => {
-    Alert.alert(title, message, [
-      { text: "Cancel", style: "cancel", onPress: () => resolve(false) },
-      { text: "Remove", style: "destructive", onPress: () => resolve(true) },
-    ]);
-  });
+// ─── Confirm Modal ────────────────────────────────────────────────────────────
+// Styled replacement for Alert.alert/window.confirm confirmation dialogs, so
+// they match the app's card/rounded-corner visual language instead of the
+// platform's native dialog chrome. Renders correctly on both web and native
+// (unlike Alert.alert, which is unreliable on React Native Web), and resolves
+// a Promise<boolean> via showConfirm() so callers can `await` the user's
+// choice exactly like the old confirmAsync() did.
+
+function ConfirmModal({
+  visible,
+  title,
+  message,
+  confirmLabel,
+  variant,
+  icon,
+  onConfirm,
+  onCancel,
+}: {
+  visible: boolean;
+  title: string;
+  message: string;
+  confirmLabel: string;
+  variant: "destructive" | "default";
+  icon: keyof typeof Feather.glyphMap;
+  onConfirm: () => void;
+  onCancel: () => void;
+}) {
+  const colors = useColors();
+  const confirmColor = variant === "destructive" ? colors.destructive : colors.primary;
+
+  return (
+    <Modal visible={visible} animationType="fade" transparent onRequestClose={onCancel}>
+      <View style={confirmStyles.overlay}>
+        <View style={[confirmStyles.card, { backgroundColor: colors.background, borderColor: colors.border }]}>
+          <View style={[confirmStyles.iconWrap, { backgroundColor: colors.secondary }]}>
+            <Feather name={icon} size={20} color={confirmColor} />
+          </View>
+
+          <Text style={[confirmStyles.title, { color: colors.foreground }]}>{title}</Text>
+          <Text style={[confirmStyles.message, { color: colors.mutedForeground }]}>{message}</Text>
+
+          <View style={confirmStyles.actions}>
+            <Pressable
+              onPress={onCancel}
+              style={({ pressed }) => [
+                confirmStyles.btn,
+                { backgroundColor: colors.card, borderColor: colors.border, borderWidth: 1 },
+                pressed && { opacity: 0.7 },
+              ]}
+            >
+              <Text style={[confirmStyles.btnText, { color: colors.foreground }]}>Cancel</Text>
+            </Pressable>
+            <Pressable
+              onPress={onConfirm}
+              style={({ pressed }) => [
+                confirmStyles.btn,
+                { backgroundColor: confirmColor },
+                pressed && { opacity: 0.85 },
+              ]}
+            >
+              <Text style={[confirmStyles.btnText, { color: "#fff" }]}>{confirmLabel}</Text>
+            </Pressable>
+          </View>
+        </View>
+      </View>
+    </Modal>
+  );
 }
+
+const confirmStyles = StyleSheet.create({
+  overlay: {
+    flex: 1,
+    backgroundColor: "rgba(0,0,0,0.4)",
+    alignItems: "center",
+    justifyContent: "center",
+    padding: 24,
+  },
+  card: {
+    width: "100%",
+    maxWidth: 340,
+    borderRadius: 20,
+    borderWidth: 1,
+    padding: 24,
+    alignItems: "center",
+    gap: 6,
+  },
+  iconWrap: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    alignItems: "center",
+    justifyContent: "center",
+    marginBottom: 8,
+  },
+  title: { fontSize: 17, fontFamily: "Inter_700Bold", textAlign: "center" },
+  message: { fontSize: 13, fontFamily: "Inter_400Regular", textAlign: "center", lineHeight: 19, marginBottom: 16 },
+  actions: { flexDirection: "row", gap: 10, width: "100%" },
+  btn: { flex: 1, borderRadius: 12, paddingVertical: 13, alignItems: "center", justifyContent: "center" },
+  btnText: { fontSize: 14, fontFamily: "Inter_600SemiBold" },
+});
 
 // ─── Slot Picker Modal ────────────────────────────────────────────────────────
 
@@ -361,6 +445,57 @@ export default function PlanScreen() {
   const [viewingSlot, setViewingSlot] = useState<{ slot: PlanSlot; date: Date } | null>(null);
   const [viewingRecipe, setViewingRecipe] = useState<PersonalRecipe | null>(null);
 
+  // ─── Styled confirm modal control ──────────────────────────────────────
+  // Generic promise-resolving replacement for Alert.alert/window.confirm.
+  // showConfirm(...) opens ConfirmModal and resolves true/false once the
+  // person taps Confirm, Cancel, or dismisses it — same async contract the
+  // old confirmAsync() had, just rendered with the app's own styling.
+  const confirmResolveRef = useRef<((value: boolean) => void) | null>(null);
+  const [confirmModal, setConfirmModal] = useState<{
+    visible: boolean;
+    title: string;
+    message: string;
+    confirmLabel: string;
+    variant: "destructive" | "default";
+    icon: keyof typeof Feather.glyphMap;
+  }>({
+    visible: false,
+    title: "",
+    message: "",
+    confirmLabel: "Confirm",
+    variant: "default",
+    icon: "help-circle",
+  });
+
+  const showConfirm = useCallback(
+    (opts: {
+      title: string;
+      message: string;
+      confirmLabel: string;
+      variant?: "destructive" | "default";
+      icon?: keyof typeof Feather.glyphMap;
+    }): Promise<boolean> => {
+      return new Promise((resolve) => {
+        confirmResolveRef.current = resolve;
+        setConfirmModal({
+          visible: true,
+          title: opts.title,
+          message: opts.message,
+          confirmLabel: opts.confirmLabel,
+          variant: opts.variant ?? "default",
+          icon: opts.icon ?? "help-circle",
+        });
+      });
+    },
+    []
+  );
+
+  const resolveConfirm = useCallback((result: boolean) => {
+    setConfirmModal((prev) => ({ ...prev, visible: false }));
+    confirmResolveRef.current?.(result);
+    confirmResolveRef.current = null;
+  }, []);
+
   const slideAnim = useRef(new Animated.Value(0)).current;
 
   useFocusEffect(
@@ -418,13 +553,17 @@ export default function PlanScreen() {
   // callers closed the picker modal (setPickerDate(null)) synchronously
   // before this even resolved — which on native could race the modal's own
   // dismissal animation and cause the confirmation to be dropped. Now this
-  // resolves a single confirmAsync() promise (web-safe) and the removal is
-  // awaited by the caller before anything else happens.
+  // awaits the styled confirm modal (which resolves a single Promise<boolean>,
+  // web-safe) and the removal is awaited by the caller before anything else
+  // happens.
   const handleRemoveSlot = async (date: Date): Promise<boolean> => {
-    const confirmed = await confirmAsync(
-      "Remove meal?",
-      `Clear ${formatDayLabel(date).day} from your plan?`
-    );
+    const confirmed = await showConfirm({
+      title: "Remove meal?",
+      message: `Clear ${formatDayLabel(date).day} from your plan?`,
+      confirmLabel: "Remove",
+      variant: "destructive",
+      icon: "trash-2",
+    });
     if (!confirmed) return false;
 
     const updated = { ...plan, [isoDateKey(date)]: null };
@@ -483,19 +622,18 @@ export default function PlanScreen() {
 
     const recipeNames = slots.map((s) => s.recipeName).join(", ");
 
-    const confirmed =
-      Platform.OS === "web"
-        ? window.confirm(`Add ingredients from: ${recipeNames}?`)
-        : await new Promise<boolean>((resolve) => {
-            Alert.alert(
-              "Add to grocery list?",
-              `This will add ingredients from:\n${recipeNames}`,
-              [
-                { text: "Cancel", style: "cancel", onPress: () => resolve(false) },
-                { text: "Add", onPress: () => resolve(true) },
-              ]
-            );
-          });
+    // Previously this branched on Platform.OS to pick between
+    // window.confirm (web) and Alert.alert (native) — now routed through
+    // the same styled showConfirm() used by handleRemoveSlot, so it
+    // matches the app's visual style on every platform instead of falling
+    // back to native dialog chrome.
+    const confirmed = await showConfirm({
+      title: "Add to grocery list?",
+      message: `This will add ingredients from: ${recipeNames}`,
+      confirmLabel: "Add",
+      variant: "default",
+      icon: "shopping-cart",
+    });
 
     if (!confirmed) {
       return;
@@ -762,6 +900,17 @@ export default function PlanScreen() {
         shareToken={shareToken}
         permission={permission}
         onSetPermission={setSharePermission}
+      />
+
+      <ConfirmModal
+        visible={confirmModal.visible}
+        title={confirmModal.title}
+        message={confirmModal.message}
+        confirmLabel={confirmModal.confirmLabel}
+        variant={confirmModal.variant}
+        icon={confirmModal.icon}
+        onConfirm={() => resolveConfirm(true)}
+        onCancel={() => resolveConfirm(false)}
       />
     </>
   );
