@@ -67,12 +67,21 @@ const syncDotStyles = StyleSheet.create({
   dot: { width: 8, height: 8, borderRadius: 4, marginTop: 6 },
 });
 
-// ─── Share Modal ──────────────────────────────────────────────────────────────
+// ─── Confirm Modal ────────────────────────────────────────────────────────────
+// Styled replacement for Alert.alert/window.confirm. Alert.alert with a
+// multi-button config is unreliable on React Native Web — it can silently
+// fail to present, which is why the header trash icon previously appeared
+// completely broken (no dialog, no haptics, no deletion). This renders as a
+// real React Native <Modal>, so it works identically on web and native, and
+// it matches the app's card/rounded-corner visual language instead of the
+// platform's native dialog chrome.
+
 function ConfirmModal({
   visible,
   title,
   message,
   confirmLabel,
+  icon,
   onConfirm,
   onCancel,
 }: {
@@ -80,6 +89,7 @@ function ConfirmModal({
   title: string;
   message: string;
   confirmLabel: string;
+  icon: keyof typeof Feather.glyphMap;
   onConfirm: () => void;
   onCancel: () => void;
 }) {
@@ -90,7 +100,7 @@ function ConfirmModal({
       <View style={confirmStyles.overlay}>
         <View style={[confirmStyles.card, { backgroundColor: colors.background, borderColor: colors.border }]}>
           <View style={[confirmStyles.iconWrap, { backgroundColor: colors.secondary }]}>
-            <Feather name="trash-2" size={20} color={colors.destructive} />
+            <Feather name={icon} size={20} color={colors.destructive} />
           </View>
 
           <Text style={[confirmStyles.title, { color: colors.foreground }]}>{title}</Text>
@@ -155,6 +165,9 @@ const confirmStyles = StyleSheet.create({
   btn: { flex: 1, borderRadius: 12, paddingVertical: 13, alignItems: "center", justifyContent: "center" },
   btnText: { fontSize: 14, fontFamily: "Inter_600SemiBold" },
 });
+
+// ─── Share Modal ──────────────────────────────────────────────────────────────
+
 function ShareModal({
   visible,
   onClose,
@@ -170,14 +183,7 @@ function ShareModal({
 }) {
   const colors = useColors();
   const shareUrl = shareToken ? buildShareUrl("grocery", shareToken) : null;
-<ConfirmModal
-  visible={showClearModal}
-  title="Clear list?"
-  message="This will remove all items."
-  confirmLabel="Clear"
-  onConfirm={confirmClear}
-  onCancel={() => setShowClearModal(false)}
-/>
+
   const handleShare = async () => {
     if (!shareUrl) return;
     await Share.share({
@@ -287,6 +293,14 @@ export default function GroceryScreen() {
   const [showShareModal, setShowShareModal] = useState(false);
   const [sharePermission, setSharePermission] = useState<"view" | "edit">("view");
 
+  // Styled confirmation for "Clear list". Previously this used
+  // Alert.alert(...) directly inside handleClear, which silently fails to
+  // present on React Native Web — meaning the whole chain (including the
+  // save([]) call) never fired, with no haptic or error feedback. Now the
+  // trash icon just opens this modal; the actual clear + save happens in
+  // confirmClear below once the person taps "Clear".
+  const [showClearModal, setShowClearModal] = useState(false);
+
   useFocusEffect(
     useCallback(() => {
       load().then(() => setLoaded(true));
@@ -364,43 +378,26 @@ export default function GroceryScreen() {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
   };
 
-const [showClearModal, setShowClearModal] = useState(false);
+  // Opens the styled ConfirmModal instead of calling Alert.alert directly.
+  const handleClear = () => setShowClearModal(true);
 
-const handleClear = () => setShowClearModal(true);
-
-const confirmClear = async () => {
-  setShowClearModal(false);
-  const ok = await save([]);
-  if (ok) {
-    Platform.OS !== "web" && Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
-  } else {
-    Platform.OS !== "web" && Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
-    Alert.alert("Couldn't clear list", "This change wasn't saved to your synced list. Check your connection and try again.");
-  }
-};
-
-  const doClear = async () => {
+  // Fires once the person taps "Clear" in ConfirmModal. Checks save()'s
+  // return value and surfaces a failure alert instead of assuming success,
+  // matching the pattern already used by deleteItem/toggleItem/commitEdit.
+  // Haptics are skipped on web since expo-haptics isn't supported there.
+  const confirmClear = async () => {
+    setShowClearModal(false);
     const ok = await save([]);
     if (ok) {
       Platform.OS !== "web" && Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
     } else {
       Platform.OS !== "web" && Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
-      Alert.alert("Couldn't clear list", "This change wasn't saved to your synced list. Check your connection and try again.");
+      Alert.alert(
+        "Couldn't clear list",
+        "This change wasn't saved to your synced list. Check your connection and try again."
+      );
     }
   };
-
-  if (Platform.OS === "web") {
-    if (typeof window !== "undefined" && window.confirm(`${title}\n\n${message}`)) {
-      doClear();
-    }
-    return;
-  }
-
-  Alert.alert(title, message, [
-    { text: "Cancel", style: "cancel" },
-    { text: "Clear", style: "destructive", onPress: doClear },
-  ]);
-};
 
   const unchecked = items.filter((it) => !it.checked);
   const checked = items.filter((it) => it.checked);
@@ -645,6 +642,16 @@ const confirmClear = async () => {
         shareToken={shareToken}
         permission={sharePermission}
         onSetPermission={setSharePermission}
+      />
+
+      <ConfirmModal
+        visible={showClearModal}
+        title="Clear list?"
+        message="This will remove all items."
+        confirmLabel="Clear"
+        icon="trash-2"
+        onConfirm={confirmClear}
+        onCancel={() => setShowClearModal(false)}
       />
     </>
   );
