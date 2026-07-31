@@ -162,7 +162,7 @@ export default function SettingsScreen() {
       Platform.OS !== "web" && Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
 
       // Adjust this to whatever your actual sign-in/auth route is.
-      router.replace("/login");
+      router.replace("/auth");
     } catch (error: any) {
       console.error("SIGN OUT ERROR:", error);
       Alert.alert("Couldn't sign out", error?.message ?? "Unexpected error while signing out");
