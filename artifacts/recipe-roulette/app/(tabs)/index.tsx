@@ -22,7 +22,7 @@ import { useFocusEffect } from "expo-router";
 
 import { useColors } from "@/hooks/useColors";
 import { useGrocerySync, useRecipeSync } from "@/lib/sync";
-import type { Macros as MacrosShared } from "@/lib/macros";
+import type { Macros as MacrosShared } from "@/lib/types";
 import { MacroBar, MacroPills } from "@/components/MacroDisplay";
 import { SavedToast } from "@/components/SavedToast";
 import { CookMode } from "@/components/CookMode";
@@ -277,7 +277,7 @@ function RecipeDetailModal({
   onClose: () => void;
   onAddToGrocery: (ingredientsText: string, opts: { fromRecipe: string; servingMultiplier: number }) => Promise<void>;
   isSaved: boolean;
-  onToggleSave: (recipe: Recipe) => Promise<boolean>;
+  onToggleSave: (recipe: Recipe, servings: number) => Promise<boolean>;
 }) {
   const colors = useColors();
   const [currentServings, setCurrentServings] = useState<number | null>(null);
@@ -289,18 +289,18 @@ function RecipeDetailModal({
     if (!recipe) { setAddedToGrocery(false); setShowSavedToast(false); setShowCookMode(false); }
   }, [recipe?.id]);
 
+  const baseServings = recipe?.servings ?? 4;
+  const servings = currentServings ?? baseServings;
+
   const handleSave = async () => {
     if (!recipe) return;
-    const nowSaved = await onToggleSave(recipe);
+    const nowSaved = await onToggleSave(recipe, servings);
     if (nowSaved) {
       setShowSavedToast(true);
       setTimeout(() => setShowSavedToast(false), 1000);
     }
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
   };
-
-  const baseServings = recipe?.servings ?? 4;
-  const servings = currentServings ?? baseServings;
 
   const handleAddToGrocery = async () => {
     if (!recipe) return;
@@ -637,7 +637,7 @@ export default function SpinScreen() {
   const isRecipeSaved = (recipe: Recipe | null): boolean =>
     !!recipe && personalRecipes.some((r) => r.id === `spoonacular_${recipe.id}`);
 
-  const handleToggleSaveRecipe = async (recipe: Recipe): Promise<boolean> => {
+  const handleToggleSaveRecipe = async (recipe: Recipe, servings: number): Promise<boolean> => {
     const recipeId = `spoonacular_${recipe.id}`;
     const alreadySaved = personalRecipes.some((r) => r.id === recipeId);
     if (alreadySaved) {
@@ -651,6 +651,15 @@ export default function SpinScreen() {
       steps: recipe.instructions.map((s, i) => `${i + 1}. ${s}`).join("\n"),
       photoUrl: recipe.image,
       createdAt: Date.now(),
+      // Whatever the servings stepper was showing at the moment of
+      // bookmarking becomes this recipe's default — this is what lets the
+      // planner (plan.tsx's handlePickRecipe) pick up the same serving
+      // size automatically instead of always falling back to a generic 4.
+      servings,
+      // Real API-provided nutrition, not an estimate — Spoonacular already
+      // gives us this, so there's no reason to fall back to
+      // estimateMacrosPerServing() for recipes that have it.
+      macros: recipe.macros,
     };
     await savePersonalRecipe(entry);
     return true;
