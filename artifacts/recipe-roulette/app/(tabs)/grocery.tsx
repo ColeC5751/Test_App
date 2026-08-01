@@ -185,13 +185,13 @@ function ShareModal({
   const shareUrl = shareToken ? buildShareUrl("grocery", shareToken) : null;
 
   const handleShare = async () => {
-    if (!shareUrl) return;
-    await Share.share({
-      message: `Join my grocery list on That's Dinner:\n${shareUrl}`,
-      url: shareUrl,
-    });
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-  };
+  if (!shareUrl) return;
+  await Share.share({
+    message: `Join my grocery list on That's Dinner:\n${shareUrl}`,
+  });
+  Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+};
+
 
   return (
     <Modal visible={visible} animationType="slide" presentationStyle="pageSheet" onRequestClose={onClose}>
