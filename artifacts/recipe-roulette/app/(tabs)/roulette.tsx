@@ -1,5 +1,4 @@
 import { useFocusEffect } from "expo-router";
-import AsyncStorage from "@react-native-async-storage/async-storage";
 import { Feather } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
 import * as ImagePicker from "expo-image-picker";
@@ -22,11 +21,12 @@ import {
 } from "react-native";
 
 import { useColors } from "@/hooks/useColors";
+import { useRecipeSync } from "@/lib/sync";
 import { addIngredientsToGrocery } from "@/app/(tabs)/grocery";
 import { SavedToast } from "@/components/SavedToast";
 import { CookMode } from "@/components/CookMode";
+import type { PersonalRecipe } from "@/lib/types";
 
-const STORAGE_KEY = "@recipe_roulette_personal";
 const API_BASE = "https://test-app-api-server.vercel.app";
 
 // Module-level session state — survives tab switches without Supabase.
@@ -54,16 +54,6 @@ function wheelSpinTargetY(count: number, prevIdx: number, newIdx: number) {
 }
 function wheelResetY(count: number, newIdx: number) {
   return CARD_HEIGHT * (1 - (SPIN_START_COPY * count + newIdx));
-}
-
-interface PersonalRecipe {
-  id: string;
-  name: string;
-  ingredients: string;
-  steps: string;
-  photoUrl?: string;
-  createdAt: number;
-  source?: "manual" | "photo" | "url";
 }
 
 function generateId() {
@@ -673,7 +663,13 @@ export default function RouletteScreen() {
   const colors = useColors();
   const topPad = Platform.OS === "web" ? 67 : 0;
 
-  const [recipes, setRecipes] = useState<PersonalRecipe[]>([]);
+  // Canonical, Supabase-backed personal recipe store. Replaces the
+  // previous direct AsyncStorage(@recipe_roulette_personal) reads/writes —
+  // recipes now persist to the `recipes` table (keyed by the stable
+  // Supabase user_id), so they survive sign-out/sign-in instead of only
+  // living in the local cache that settings.tsx clears on sign-out.
+  const { recipes, load: loadRecipes, save: saveRecipe, remove: removeRecipe } = useRecipeSync();
+
   const [loaded, setLoaded] = useState(false);
   const [showImport, setShowImport] = useState(false);
   const [spinning, setSpinning] = useState(false);
@@ -687,33 +683,23 @@ export default function RouletteScreen() {
 
   useFocusEffect(
     React.useCallback(() => {
-      const loadRecipes = async () => {
-        try {
-          const json = await AsyncStorage.getItem(STORAGE_KEY);
-          const list: PersonalRecipe[] = json ? JSON.parse(json) : [];
-          setRecipes(list);
-          if (list.length > 0) {
-            slotY.setValue(wheelInitialY(list.length, 0));
-          }
-        } catch {}
-        setLoaded(true);
-      };
-      loadRecipes();
-    }, [])
+      loadRecipes().then(() => setLoaded(true));
+    }, [loadRecipes])
   );
 
-  const persist = async (updated: PersonalRecipe[]) => {
-    setRecipes(updated);
-    await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
-  };
+  // Reset the wheel to a resting position once the recipe list first
+  // becomes available on this screen visit — mirrors the previous
+  // behavior of setting slotY right after a manual AsyncStorage read, now
+  // driven off useRecipeSync's `recipes` state instead.
+  React.useEffect(() => {
+    if (loaded && recipes.length > 0) {
+      slotY.setValue(wheelInitialY(recipes.length, 0));
+    }
+  }, [loaded, recipes.length]);
 
   const handleSave = async (recipe: PersonalRecipe) => {
-    const existingIdx = recipes.findIndex((r) => r.id === recipe.id);
-    const isUpdate = existingIdx !== -1;
-    const updatedList = isUpdate
-      ? recipes.map((r) => (r.id === recipe.id ? recipe : r))
-      : [...recipes, recipe];
-    await persist(updatedList);
+    const isUpdate = recipes.some((r) => r.id === recipe.id);
+    await saveRecipe(recipe);
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     if (!isUpdate) {
       setShowSavedToast(true);
@@ -728,7 +714,7 @@ export default function RouletteScreen() {
   };
 
   const deleteRecipe = async (id: string) => {
-    await persist(recipes.filter((r) => r.id !== id));
+    await removeRecipe(id);
     if (tonightsPick?.id === id) { setTonightsPick(null); sessionTonightsPick = null; }
     setSelIdx(0);
     slotY.setValue(wheelInitialY(Math.max(recipes.length - 1, 1)));
@@ -989,7 +975,7 @@ const styles = StyleSheet.create({
   stepsPreviewToggle: { fontSize: 11, fontFamily: "Inter_600SemiBold" },
   stepsPreviewCard:   { borderRadius: 12, borderWidth: 1, padding: 14, marginBottom: 16, gap: 12 },
   stepsPreviewLabel:  { fontSize: 10, fontFamily: "Inter_600SemiBold", letterSpacing: 2, marginBottom: 4 },
-  stepsPreviewRow:    { flexDirection: "row", alignItems: "flex-start", gap: 10 },
+  stepsPreviewRow:    { flexDirection: "CD row", alignItems: "flex-start", gap: 10 },
   stepsPreviewNum:    { width: 22, height: 22, borderRadius: 11, alignItems: "center", justifyContent: "center", flexShrink: 0, marginTop: 1 },
   stepsPreviewNumText:{ fontSize: 11, fontFamily: "Inter_700Bold" },
   stepsPreviewStep:   { flex: 1, fontSize: 13, fontFamily: "Inter_400Regular", lineHeight: 19 },
