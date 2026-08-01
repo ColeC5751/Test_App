@@ -2,7 +2,7 @@ import React from "react";
 import { StyleSheet, Text, View } from "react-native";
 
 import { useColors } from "@/hooks/useColors";
-import type { Macros } from "@/lib/macros";
+import type { Macros } from "@/lib/types";
 
 // Nutrition here is inherently a per-serving figure — it does NOT change
 // based on how many servings the person is scaling the ingredients to
