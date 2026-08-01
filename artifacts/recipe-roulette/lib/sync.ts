@@ -202,7 +202,7 @@ export function parseIngredientLine(rawLine: string): { name: string; amount: nu
   return { name: rest, amount, unit: "" };
 }
 
-function splitIngredientLines(raw: string): string[] {
+export function splitIngredientLines(raw: string): string[] {
   return raw.split(/,|\n/).map((l) => l.trim()).filter(Boolean);
 }
 
