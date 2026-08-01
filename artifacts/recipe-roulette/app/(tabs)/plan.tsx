@@ -384,9 +384,11 @@ function PlanShareModal({
 
   const handleShare = async () => {
     if (!shareUrl) return;
+    // Only pass `message` — Share.share() on iOS appends `url` to the end
+    // of `message` rather than treating them as alternatives, so passing
+    // both produced the link twice in the share sheet text.
     await Share.share({
       message: `Join my meal plan on That's Dinner:\n${shareUrl}`,
-      url: shareUrl,
     });
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
   };
