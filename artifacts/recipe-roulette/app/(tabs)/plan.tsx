@@ -1,4 +1,3 @@
-import AsyncStorage from "@react-native-async-storage/async-storage";
 import { Feather } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
 import React, { useCallback, useEffect, useRef, useState } from "react";
@@ -24,24 +23,11 @@ import { useColors } from "@/hooks/useColors";
 import {
   usePlanSync,
   useGrocerySync,
+  useRecipeSync,
 } from "@/lib/sync";
 
 import { buildShareUrl } from "@/lib/supabase";
-import type { MealPlan, PlanSlot, SharePermission } from "@/lib/types";
-
-// ─── Personal recipe type (matches roulette.tsx) ──────────────────────────────
-
-interface PersonalRecipe {
-  id: string;
-  name: string;
-  ingredients: string;
-  steps: string;
-  photoUrl?: string;
-  createdAt: number;
-  source?: "manual" | "photo" | "url";
-}
-
-const STORAGE_KEY = "@recipe_roulette_personal";
+import type { MealPlan, PersonalRecipe, PlanSlot, SharePermission } from "@/lib/types";
 
 // ─── Date helpers ─────────────────────────────────────────────────────────────
 
@@ -207,6 +193,7 @@ const confirmStyles = StyleSheet.create({
 function SlotPickerModal({
   visible,
   dateLabel,
+  recipes,
   onClose,
   onPickRecipe,
   onSpinRecipe,
@@ -215,6 +202,7 @@ function SlotPickerModal({
 }: {
   visible: boolean;
   dateLabel: string;
+  recipes: PersonalRecipe[];
   onClose: () => void;
   onPickRecipe: (recipe: PersonalRecipe) => void;
   onSpinRecipe: () => void;
@@ -222,15 +210,11 @@ function SlotPickerModal({
   isChanging?: boolean;
 }) {
   const colors = useColors();
-  const [recipes, setRecipes] = useState<PersonalRecipe[]>([]);
   const [tab, setTab] = useState<"pick" | "spin">("pick");
 
   useEffect(() => {
     if (!visible) return;
     setTab("pick");
-    AsyncStorage.getItem(STORAGE_KEY).then((json) => {
-      setRecipes(json ? JSON.parse(json) : []);
-    }).catch(() => {});
   }, [visible]);
 
   return (
@@ -437,6 +421,12 @@ export default function PlanScreen() {
   // handleAddWeekToGrocery can invoke addIngredients without breaking the
   // rules of hooks.
   const { addIngredients, load: loadGrocery } = useGrocerySync();
+  // Canonical, Supabase-backed personal recipe store — replaces this
+  // screen's previous direct AsyncStorage(@recipe_roulette_personal)
+  // reads in the slot picker, "pick for me", and add-week-to-grocery
+  // flows, so this screen sees the same recipes (and the same
+  // survives-sign-out guarantee) as the My Dinners tab.
+  const { recipes: personalRecipes, load: loadPersonalRecipes } = useRecipeSync();
 
   const [weekOffset, setWeekOffset] = useState(0);
   const [pickerDate, setPickerDate] = useState<Date | null>(null);
@@ -510,7 +500,12 @@ export default function PlanScreen() {
       // Supabase. Loading on focus keeps this instance's rowId current
       // even if the user hasn't visited the Grocery tab yet this session.
       loadGrocery();
-    }, [load, loadGrocery])
+      // My Dinners recipes are read directly by this screen (slot picker,
+      // spin-for-me, add-week-to-grocery) — refresh on focus so they
+      // reflect anything saved/deleted on the My Dinners tab since we
+      // were last here.
+      loadPersonalRecipes();
+    }, [load, loadGrocery, loadPersonalRecipes])
   );
 
   const monday = getMondayOfWeek(new Date());
@@ -530,18 +525,12 @@ export default function PlanScreen() {
     setWeekOffset((o) => o + dir);
   };
 
-  const handleSlotPress = async (date: Date) => {
+  const handleSlotPress = (date: Date) => {
     const key = isoDateKey(date);
     const slot = plan[key] as PlanSlot | null | undefined;
     if (slot) {
-      try {
-        const json = await AsyncStorage.getItem(STORAGE_KEY);
-        const recipes: PersonalRecipe[] = json ? JSON.parse(json) : [];
-        const fullRecipe = recipes.find((r) => r.id === slot.recipeId) ?? null;
-        setViewingRecipe(fullRecipe);
-      } catch {
-        setViewingRecipe(null);
-      }
+      const fullRecipe = personalRecipes.find((r) => r.id === slot.recipeId) ?? null;
+      setViewingRecipe(fullRecipe);
       setViewingSlot({ slot, date });
     } else {
       setPickerDate(date);
@@ -595,17 +584,13 @@ export default function PlanScreen() {
 
   const handleSpinRecipe = async () => {
     if (!pickerDate) return;
-    try {
-      const json = await AsyncStorage.getItem(STORAGE_KEY);
-      const recipes: PersonalRecipe[] = json ? JSON.parse(json) : [];
-      if (recipes.length === 0) {
-        Alert.alert("No recipes", "Add recipes to My Dinners first.");
-        setPickerDate(null);
-        return;
-      }
-      const recipe = recipes[Math.floor(Math.random() * recipes.length)];
-      await handlePickRecipe(recipe);
-    } catch {}
+    if (personalRecipes.length === 0) {
+      Alert.alert("No recipes", "Add recipes to My Dinners first.");
+      setPickerDate(null);
+      return;
+    }
+    const recipe = personalRecipes[Math.floor(Math.random() * personalRecipes.length)];
+    await handlePickRecipe(recipe);
   };
 
   // ─── Add week to grocery list ────────────────────────────────────────────
@@ -651,11 +636,8 @@ export default function PlanScreen() {
       // Supabase persistence — is in place before addIngredients runs.
       await loadGrocery();
 
-      const json = await AsyncStorage.getItem(STORAGE_KEY);
-      const recipes: PersonalRecipe[] = json ? JSON.parse(json) : [];
-
       for (const slot of slots) {
-        const recipe = recipes.find((r) => r.id === slot.recipeId);
+        const recipe = personalRecipes.find((r) => r.id === slot.recipeId);
         if (!recipe?.ingredients) continue;
 
         // Canonical mutation: parses recipe.ingredients, merges with the
@@ -822,6 +804,7 @@ export default function PlanScreen() {
       <SlotPickerModal
         visible={!!pickerDate}
         dateLabel={pickerDateLabel}
+        recipes={personalRecipes}
         onClose={() => setPickerDate(null)}
         onPickRecipe={handlePickRecipe}
         onSpinRecipe={handleSpinRecipe}
