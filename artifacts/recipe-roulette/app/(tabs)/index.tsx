@@ -22,6 +22,8 @@ import { useFocusEffect } from "expo-router";
 
 import { useColors } from "@/hooks/useColors";
 import { useGrocerySync, useRecipeSync } from "@/lib/sync";
+import type { Macros as MacrosShared } from "@/lib/macros";
+import { MacroBar, MacroPills } from "@/components/MacroDisplay";
 import { SavedToast } from "@/components/SavedToast";
 import { CookMode } from "@/components/CookMode";
 import type { PersonalRecipe } from "@/lib/types";
@@ -80,13 +82,7 @@ type RecipeIngredient = {
   original: string;
 };
 
-type Macros = {
-  calories: number;
-  protein: number;
-  carbs: number;
-  fat: number;
-  fiber: number;
-};
+type Macros = MacrosShared;
 
 type Recipe = {
   id: number;
@@ -131,74 +127,6 @@ async function fetchRecipes(ingredients: string): Promise<FetchResult> {
   }
 }
 
-// Nutrition here is inherently a per-serving figure (as returned by the
-// recipe API) — it does NOT change based on how many servings the person
-// is scaling the ingredients to cook. Previously this multiplied by
-// servings/baseServings, which meant "NUTRITION PER SERVING" was actually
-// showing nutrition scaled by batch size (e.g. doubling the servings
-// stepper doubled the "per serving" calories) — the opposite of what a
-// per-serving figure should do. Ingredient amounts still scale (see
-// handleAddToGrocery / the ingredients list below); nutrition just doesn't.
-function MacroBar({ macros, colors }: { macros: Macros; colors: ReturnType<typeof useColors> }) {
-  const items: { label: string; value: number; unit: string; color: string }[] = [
-    { label: "Calories", value: Math.round(macros.calories), unit: "kcal", color: colors.primary },
-    { label: "Protein", value: Math.round(macros.protein), unit: "g", color: "#7C8C5E" },
-    { label: "Carbs", value: Math.round(macros.carbs), unit: "g", color: "#C8A86B" },
-    { label: "Fat", value: Math.round(macros.fat), unit: "g", color: "#B87333" },
-    { label: "Fiber", value: Math.round(macros.fiber), unit: "g", color: "#6B8E6B" },
-  ];
-  return (
-    <View style={[macroStyles.wrap, { backgroundColor: colors.card, borderColor: colors.border }]}>
-      <Text style={[macroStyles.heading, { color: colors.mutedForeground }]}>NUTRITION PER SERVING</Text>
-      <View style={macroStyles.row}>
-        {items.map((item) => (
-          <View key={item.label} style={macroStyles.cell}>
-            <Text style={[macroStyles.value, { color: colors.foreground }]}>{item.value}</Text>
-            <Text style={[macroStyles.unit, { color: item.color }]}>{item.unit}</Text>
-            <Text style={[macroStyles.label, { color: colors.mutedForeground }]}>{item.label}</Text>
-          </View>
-        ))}
-      </View>
-    </View>
-  );
-}
-
-function MacroPills({ macros, colors }: { macros: Macros; colors: ReturnType<typeof useColors> }) {
-  return (
-    <View style={macroStyles.pillRow}>
-      <View style={[macroStyles.pill, { backgroundColor: colors.secondary }]}>
-        <Text style={[macroStyles.pillVal, { color: colors.foreground }]}>{macros.calories}</Text>
-        <Text style={[macroStyles.pillLabel, { color: colors.mutedForeground }]}>kcal</Text>
-      </View>
-      <View style={[macroStyles.pill, { backgroundColor: colors.secondary }]}>
-        <Text style={[macroStyles.pillVal, { color: colors.foreground }]}>{macros.protein}g</Text>
-        <Text style={[macroStyles.pillLabel, { color: colors.mutedForeground }]}>protein</Text>
-      </View>
-      <View style={[macroStyles.pill, { backgroundColor: colors.secondary }]}>
-        <Text style={[macroStyles.pillVal, { color: colors.foreground }]}>{macros.carbs}g</Text>
-        <Text style={[macroStyles.pillLabel, { color: colors.mutedForeground }]}>carbs</Text>
-      </View>
-      <View style={[macroStyles.pill, { backgroundColor: colors.secondary }]}>
-        <Text style={[macroStyles.pillVal, { color: colors.foreground }]}>{macros.fat}g</Text>
-        <Text style={[macroStyles.pillLabel, { color: colors.mutedForeground }]}>fat</Text>
-      </View>
-    </View>
-  );
-}
-
-const macroStyles = StyleSheet.create({
-  wrap: { borderRadius: 14, borderWidth: 1, padding: 16, marginTop: 8, marginBottom: 4 },
-  heading: { fontSize: 10, fontFamily: "Inter_600SemiBold", letterSpacing: 2, marginBottom: 12 },
-  row: { flexDirection: "row", justifyContent: "space-between" },
-  cell: { alignItems: "center", flex: 1 },
-  value: { fontSize: 17, fontFamily: "Inter_700Bold" },
-  unit: { fontSize: 10, fontFamily: "Inter_600SemiBold", marginTop: 1 },
-  label: { fontSize: 10, fontFamily: "Inter_400Regular", marginTop: 2 },
-  pillRow: { flexDirection: "row", flexWrap: "wrap", gap: 6, marginTop: 6 },
-  pill: { flexDirection: "row", alignItems: "baseline", gap: 3, borderRadius: 20, paddingHorizontal: 10, paddingVertical: 4 },
-  pillVal: { fontSize: 12, fontFamily: "Inter_700Bold" },
-  pillLabel: { fontSize: 11, fontFamily: "Inter_400Regular" },
-});
 
 function SlotColumn({ label, items, animValue }: { label: string; items: string[]; animValue: Animated.Value }) {
   const colors = useColors();
@@ -338,14 +266,6 @@ function WheelSettingsModal({
 // this component reading/writing AsyncStorage directly. That keeps
 // Spoonacular bookmarks on the same Supabase-backed path as the rest of
 // My Dinners, so they also survive sign-out/sign-in.
-//
-// "Add to Grocery List" now mirrors that same persisting-state pattern:
-// once tapped, it flips to a locked "Added to Grocery List" state (same
-// outline/checkmark styling as "Save to My Dinners") so it can't be
-// spam-tapped into adding duplicate ingredients. That lock is scoped to
-// the current serving size — nudging the servings stepper re-arms the
-// button, since a different serving size means different quantities the
-// person may legitimately want to add.
 function RecipeDetailModal({
   recipe,
   onClose,
@@ -362,17 +282,11 @@ function RecipeDetailModal({
   const colors = useColors();
   const [currentServings, setCurrentServings] = useState<number | null>(null);
   const [addedToGrocery, setAddedToGrocery] = useState(false);
-  const [addingToGrocery, setAddingToGrocery] = useState(false);
   const [showSavedToast, setShowSavedToast] = useState(false);
   const [showCookMode, setShowCookMode] = useState(false);
 
   useEffect(() => {
-    if (!recipe) {
-      setAddedToGrocery(false);
-      setAddingToGrocery(false);
-      setShowSavedToast(false);
-      setShowCookMode(false);
-    }
+    if (!recipe) { setAddedToGrocery(false); setShowSavedToast(false); setShowCookMode(false); }
   }, [recipe?.id]);
 
   const handleSave = async () => {
@@ -388,20 +302,8 @@ function RecipeDetailModal({
   const baseServings = recipe?.servings ?? 4;
   const servings = currentServings ?? baseServings;
 
-  // Changing servings changes the quantities that would be added, so the
-  // "Added to Grocery List" lock is scoped to the serving size it was set
-  // at — adjusting the stepper re-arms the button rather than leaving it
-  // permanently stuck on a stale serving size.
-  const adjustServings = (delta: number) => {
-    setCurrentServings((s) => Math.max(1, Math.min(20, (s ?? baseServings) + delta)));
-    setAddedToGrocery(false);
-    Haptics.selectionAsync();
-  };
-
   const handleAddToGrocery = async () => {
-    if (!recipe || addedToGrocery || addingToGrocery) return;
-    setAddingToGrocery(true);
-
+    if (!recipe) return;
     const scale = servings / baseServings;
     const ingredientsString = recipe.ingredients
       .map((ing) => {
@@ -418,9 +320,9 @@ function RecipeDetailModal({
       servingMultiplier: scale,
     });
 
-    setAddingToGrocery(false);
     setAddedToGrocery(true);
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    setTimeout(() => setAddedToGrocery(false), 2000);
   };
 
   const handleClose = () => { setCurrentServings(null); onClose(); };
@@ -476,11 +378,11 @@ function RecipeDetailModal({
             <View style={[styles.servingsRow, { backgroundColor: colors.card, borderColor: colors.border }]}>
               <Text style={[styles.servingsLabel, { color: colors.mutedForeground }]}>SERVINGS</Text>
               <View style={styles.stepper}>
-                <Pressable onPress={() => adjustServings(-1)} style={[styles.stepperBtn, { backgroundColor: colors.secondary, borderColor: colors.border }]}>
+                <Pressable onPress={() => { setCurrentServings((s) => Math.max(1, (s ?? baseServings) - 1)); Haptics.selectionAsync(); }} style={[styles.stepperBtn, { backgroundColor: colors.secondary, borderColor: colors.border }]}>
                   <Feather name="minus" size={16} color={colors.foreground} />
                 </Pressable>
                 <Text style={[styles.stepperValue, { color: colors.foreground }]}>{servings}</Text>
-                <Pressable onPress={() => adjustServings(1)} style={[styles.stepperBtn, { backgroundColor: colors.secondary, borderColor: colors.border }]}>
+                <Pressable onPress={() => { setCurrentServings((s) => Math.min(20, (s ?? baseServings) + 1)); Haptics.selectionAsync(); }} style={[styles.stepperBtn, { backgroundColor: colors.secondary, borderColor: colors.border }]}>
                   <Feather name="plus" size={16} color={colors.foreground} />
                 </Pressable>
               </View>
@@ -505,29 +407,35 @@ function RecipeDetailModal({
               </Pressable>
             )}
 
-            {/* Add to Grocery List now mirrors the "Save to My Dinners"
-                treatment below: a card-background button with a border
-                that turns primary-colored once actioned, and a persisting
-                "Added to Grocery List" label + disabled state so it can't
-                be spam-tapped into duplicate additions. It re-arms if the
-                servings stepper changes (see adjustServings above), since
-                that changes what would actually be added. */}
+            {/* Add to Grocery List steps back to an outline style whenever
+                Start Cooking is present, so there's a single clear
+                highlighted action rather than two competing filled
+                buttons. If a recipe has no steps, this is the only action
+                available, so it keeps the primary-filled treatment. */}
             <Pressable
               onPress={handleAddToGrocery}
-              disabled={addedToGrocery || addingToGrocery}
               style={({ pressed }) => [
                 styles.groceryBtn,
-                { backgroundColor: colors.card, borderWidth: 1.5, borderColor: addedToGrocery ? colors.primary : colors.border },
-                pressed && !addedToGrocery && !addingToGrocery && { opacity: 0.9 },
+                addedToGrocery
+                  ? { backgroundColor: colors.secondary }
+                  : recipe.instructions.length > 0
+                  ? { backgroundColor: colors.secondary, borderWidth: 1.5, borderColor: colors.primary }
+                  : { backgroundColor: colors.primary },
+                pressed && { opacity: 0.9 },
               ]}
             >
               <Feather
                 name={addedToGrocery ? "check" : "shopping-cart"}
                 size={16}
-                color={addedToGrocery ? colors.primary : colors.foreground}
+                color={addedToGrocery ? colors.foreground : recipe.instructions.length > 0 ? colors.primary : colors.primaryForeground}
               />
-              <Text style={[styles.groceryBtnText, { color: addedToGrocery ? colors.primary : colors.foreground }]}>
-                {addingToGrocery ? "Adding…" : addedToGrocery ? "Added to Grocery List" : "Add to Grocery List"}
+              <Text
+                style={[
+                  styles.groceryBtnText,
+                  { color: addedToGrocery ? colors.foreground : recipe.instructions.length > 0 ? colors.primary : colors.primaryForeground },
+                ]}
+              >
+                {addedToGrocery ? "Added to Grocery List" : "Add to Grocery List"}
               </Text>
             </Pressable>
 
