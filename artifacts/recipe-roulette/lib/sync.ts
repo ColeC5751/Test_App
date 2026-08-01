@@ -364,53 +364,73 @@ export function useGrocerySync() {
         return;
       }
 
-      const storedRowId = await AsyncStorage.getItem(GROCERY_ROW_KEY);
+      // ── PRIMARY LOOKUP: by owner_id + is_default, not by cached row id ──
+      // The AsyncStorage-cached row id (GROCERY_ROW_KEY) is a write-through
+      // cache/fast-path only. It must never be the sole way of finding a
+      // person's list: settings.tsx's sign-out flow clears this exact key,
+      // and if it were the source of truth, signing back in as the same
+      // owner would look like "no list yet" and silently insert a second,
+      // empty row while the real one (still is_default: true) sits
+      // orphaned in Supabase forever. Alexa's webhook also resolves the
+      // list by owner_id + is_default, so this keeps the app and Alexa
+      // pointed at the same row.
+      //
+      // .order + .limit(1) instead of .single()/.maybeSingle() so this
+      // doesn't throw if a prior occurrence of this exact bug already left
+      // more than one is_default: true row for this owner — it just picks
+      // the most recently updated one. That does NOT retroactively merge
+      // or clean up any such duplicate rows; that requires a one-time
+      // manual data fix, not something this hook should attempt silently.
+      setLastOperation(`Looking up grocery list for owner ${currentUserId}`);
 
-      setActiveRowId(storedRowId);
+      const { data: ownerRows, error: ownerLookupError } = await supabase
+        .from("grocery_lists")
+        .select("id, items, share_token, name, owner_id, permission, is_default")
+        .eq("owner_id", currentUserId)
+        .eq("is_default", true)
+        .order("updated_at", { ascending: false })
+        .limit(1);
 
-      if (storedRowId) {
-        setLastOperation(`Loading grocery row ${storedRowId}`);
-
-        const { data, error } = await supabase
-          .from("grocery_lists")
-          .select("id, items, share_token, name, owner_id, permission")
-          .eq("id", storedRowId)
-          .single();
-
-        if (error) {
-          recordSupabaseError("Load existing grocery list", error);
-          // Do NOT create another grocery list here — the stored row may
-          // exist but be blocked by RLS.
-          return;
-        }
-
-        if (data) {
-          const remoteItems: GroceryItem[] = data.items ?? [];
-
-          // A save() may have started (or completed) after this fetch was
-          // issued but before it resolved. Don't stomp on it with a remote
-          // snapshot that could be stale relative to the in-flight write.
-          if (!savingRef.current) {
-            itemsRef.current = remoteItems;
-            setItems(remoteItems);
-            await AsyncStorage.setItem(GROCERY_LOCAL_KEY, JSON.stringify(remoteItems));
-          }
-
-          setShareToken(data.share_token ?? null);
-          setName(data.name ?? null);
-          setOwnerId(data.owner_id ?? null);
-
-          const owner = data.owner_id === currentUserId;
-
-          setIsOwner(owner);
-
-          setStatus("synced");
-          setLastOperation("Loaded grocery list successfully");
-
-          return;
-        }
+      if (ownerLookupError) {
+        recordSupabaseError("Look up grocery list by owner", ownerLookupError);
+        return;
       }
 
+      const ownerRow = ownerRows && ownerRows.length > 0 ? ownerRows[0] : null;
+
+      if (ownerRow) {
+        // Found the person's real row. Heal the cached row id — it may have
+        // been missing (wiped on sign-out), stale, or never set — so future
+        // loads/saves can use it as a fast path again.
+        setActiveRowId(ownerRow.id);
+        await AsyncStorage.setItem(GROCERY_ROW_KEY, ownerRow.id);
+
+        const remoteItems: GroceryItem[] = ownerRow.items ?? [];
+
+        // A save() may have started (or completed) after this fetch was
+        // issued but before it resolved. Don't stomp on it with a remote
+        // snapshot that could be stale relative to the in-flight write.
+        if (!savingRef.current) {
+          itemsRef.current = remoteItems;
+          setItems(remoteItems);
+          await AsyncStorage.setItem(GROCERY_LOCAL_KEY, JSON.stringify(remoteItems));
+        }
+
+        setShareToken(ownerRow.share_token ?? null);
+        setName(ownerRow.name ?? null);
+        setOwnerId(ownerRow.owner_id ?? null);
+        setIsOwner(true);
+
+        setStatus("synced");
+        setLastOperation("Loaded grocery list successfully");
+
+        return;
+      }
+
+      // No is_default row exists for this owner at all — genuinely a new
+      // user (or first sync ever). Only now do we create one, with
+      // is_default explicitly true, since this will be the only
+      // grocery_lists row for this owner_id.
       setLastOperation("Creating new grocery list");
 
       const local = await AsyncStorage.getItem(GROCERY_LOCAL_KEY);
@@ -418,7 +438,7 @@ export function useGrocerySync() {
 
       const { data: newRow, error: insertError } = await supabase
         .from("grocery_lists")
-        .insert({ owner_id: currentUserId, items: localItems })
+        .insert({ owner_id: currentUserId, items: localItems, is_default: true })
         .select("id, share_token, name, owner_id, permission")
         .single();
 
@@ -1021,27 +1041,42 @@ export function usePlanSync() {
       const userId = await getUserId();
       if (!userId) { setStatus("offline"); return; }
 
-      const storedRowId = await AsyncStorage.getItem(PLAN_ROW_KEY);
-      rowIdRef.current = storedRowId;
+      // ── PRIMARY LOOKUP: by owner_id, not by cached row id ──────────────
+      // Same fix as useGrocerySync().load(): the cached PLAN_ROW_KEY is
+      // wiped on sign-out (see settings.tsx), and if it were the only way
+      // load() could find a person's plan, signing back in as the same
+      // owner would look like "no plan yet" and silently insert a brand
+      // new empty row while the real one sits orphaned in Supabase. There's
+      // no is_default concept on meal_plans (one row per owner), so this is
+      // just an owner_id lookup, picking the most recently updated row if
+      // more than one somehow exists for this owner (this does not merge
+      // or clean up any such duplicates — that would need a manual fix).
+      const { data: ownerRows, error: ownerLookupError } = await supabase
+        .from("meal_plans")
+        .select("id, slots, share_token, permission, name")
+        .eq("owner_id", userId)
+        .order("updated_at", { ascending: false })
+        .limit(1);
 
-      if (storedRowId) {
-        const { data, error } = await supabase
-          .from("meal_plans")
-          .select("id, slots, share_token, permission, name")
-          .eq("id", storedRowId)
-          .single();
+      const ownerRow = !ownerLookupError && ownerRows && ownerRows.length > 0 ? ownerRows[0] : null;
 
-        if (!error && data) {
-          setPlan(data.slots ?? {});
-          setShareToken(data.share_token);
-          setPermission(data.permission as SharePermission);
-          setName(data.name ?? null);
-          await AsyncStorage.setItem(PLAN_LOCAL_KEY, JSON.stringify(data.slots ?? {}));
-          setStatus("synced");
-          return;
-        }
+      if (ownerRow) {
+        // Found the person's real plan row. Heal the cached row id in case
+        // it was missing, stale, or never set.
+        rowIdRef.current = ownerRow.id;
+        await AsyncStorage.setItem(PLAN_ROW_KEY, ownerRow.id);
+
+        setPlan(ownerRow.slots ?? {});
+        setShareToken(ownerRow.share_token);
+        setPermission(ownerRow.permission as SharePermission);
+        setName(ownerRow.name ?? null);
+        await AsyncStorage.setItem(PLAN_LOCAL_KEY, JSON.stringify(ownerRow.slots ?? {}));
+        setStatus("synced");
+        return;
       }
 
+      // No plan row exists for this owner at all — genuinely new. Only now
+      // do we create one.
       const local = await AsyncStorage.getItem(PLAN_LOCAL_KEY);
       const localPlan: MealPlan = local ? JSON.parse(local) : {};
       const { data: newRow } = await supabase
