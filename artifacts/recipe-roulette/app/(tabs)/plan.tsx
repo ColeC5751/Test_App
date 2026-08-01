@@ -27,7 +27,42 @@ import {
 } from "@/lib/sync";
 
 import { buildShareUrl } from "@/lib/supabase";
-import type { MealPlan, PersonalRecipe, PlanSlot, SharePermission } from "@/lib/types";
+import { estimateMacrosPerServing } from "@/lib/macros";
+import { MacroBar, MacroPills } from "@/components/MacroDisplay";
+import type { MealPlan, PersonalRecipe, PlanSlot, SharePermission, Macros } from "@/lib/types";
+
+// Nutrition source for a personal recipe: use real API-provided macros if
+// the recipe has them (bookmarked from a Spoonacular search result, see
+// handleToggleSaveRecipe in index.tsx), otherwise fall back to the
+// ingredient-based estimator for recipes that never had a nutrition
+// source at all (manual entry, photo import, URL scrape). Either way this
+// is a fixed per-serving figure — it does NOT scale with the plan slot's
+// servings stepper (see MacroDisplay.tsx's comment on why).
+function getRecipeMacros(recipe: PersonalRecipe): Macros {
+  return recipe.macros ?? estimateMacrosPerServing(recipe.ingredients, recipe.servings ?? 1);
+}
+
+// Scales numeric values in a freeform ingredient string by a multiplier.
+// Small, self-contained duplicate of the same approach used in the My
+// Dinners recipe detail view (roulette.tsx) — that screen's current
+// source wasn't available when this was written, so this couldn't be
+// consolidated into a shared lib yet. Worth moving there once it is.
+function scaleIngredientText(text: string, multiplier: number): string {
+  if (multiplier === 1) return text;
+  return text.replace(/(\d+\/\d+|\d+\.?\d*)/g, (match) => {
+    let val: number;
+    if (match.includes("/")) {
+      const [num, den] = match.split("/").map(Number);
+      val = den ? num / den : 0;
+    } else {
+      val = parseFloat(match);
+    }
+    if (isNaN(val)) return match;
+    const scaled = val * multiplier;
+    const rounded = Math.round(scaled * 100) / 100;
+    return rounded % 1 === 0 ? String(Math.round(rounded)) : rounded.toFixed(1);
+  });
+}
 
 // ─── Date helpers ─────────────────────────────────────────────────────────────
 
@@ -54,6 +89,11 @@ const planDetailStyles = StyleSheet.create({
   photo: { width: "100%", height: 200, borderRadius: 14 },
   photoPlaceholder: { width: "100%", height: 200, borderRadius: 14, alignItems: "center", justifyContent: "center" },
   recipeName: { fontSize: 22, fontFamily: "Inter_700Bold" },
+  servingsRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", borderRadius: 14, borderWidth: 1, paddingHorizontal: 16, paddingVertical: 12 },
+  servingsLabel: { fontSize: 11, fontFamily: "Inter_600SemiBold", letterSpacing: 1.5 },
+  stepper: { flexDirection: "row", alignItems: "center", gap: 16 },
+  stepperBtn: { width: 34, height: 34, borderRadius: 17, borderWidth: 1, alignItems: "center", justifyContent: "center" },
+  stepperValue: { fontSize: 18, fontFamily: "Inter_700Bold", minWidth: 28, textAlign: "center" },
   ingredientsCard: { borderRadius: 12, borderWidth: 1, padding: 14, gap: 8, width: "100%" },
   ingredientsLabel: { fontSize: 10, fontFamily: "Inter_600SemiBold", letterSpacing: 2 },
   ingredientsText: { fontSize: 14, fontFamily: "Inter_400Regular", lineHeight: 22 },
@@ -288,9 +328,12 @@ function SlotPickerModal({
                     <Feather name="coffee" size={18} color={colors.mutedForeground} />
                   </View>
                 )}
-                <Text style={[pickerStyles.recipeName, { color: colors.foreground }]} numberOfLines={2}>
-                  {recipe.name}
-                </Text>
+                <View style={{ flex: 1, gap: 4 }}>
+                  <Text style={[pickerStyles.recipeName, { color: colors.foreground }]} numberOfLines={2}>
+                    {recipe.name}
+                  </Text>
+                  <MacroPills macros={getRecipeMacros(recipe)} colors={colors} />
+                </View>
                 <Feather name="chevron-right" size={16} color={colors.mutedForeground} />
               </Pressable>
             ))
@@ -340,13 +383,13 @@ function PlanShareModal({
   const shareUrl = shareToken ? buildShareUrl("plan", shareToken) : null;
 
   const handleShare = async () => {
-  if (!shareUrl) return;
-  await Share.share({
-    message: `Join my meal plan on That's Dinner:\n${shareUrl}`,
-  });
-  Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-};
-
+    if (!shareUrl) return;
+    await Share.share({
+      message: `Join my meal plan on That's Dinner:\n${shareUrl}`,
+      url: shareUrl,
+    });
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+  };
 
   return (
     <Modal visible={visible} animationType="slide" presentationStyle="pageSheet" onRequestClose={onClose}>
@@ -434,6 +477,10 @@ export default function PlanScreen() {
   const [addingToGrocery, setAddingToGrocery] = useState(false);
   const [viewingSlot, setViewingSlot] = useState<{ slot: PlanSlot; date: Date } | null>(null);
   const [viewingRecipe, setViewingRecipe] = useState<PersonalRecipe | null>(null);
+  // Local, editable copy of the currently-viewed slot's servings — kept
+  // separate from viewingSlot.slot.servings so the stepper feels
+  // immediate, then persisted via commitSlotServings below.
+  const [slotServings, setSlotServings] = useState<number | null>(null);
 
   // ─── Styled confirm modal control ──────────────────────────────────────
   // Generic promise-resolving replacement for Alert.alert/window.confirm.
@@ -532,10 +579,26 @@ export default function PlanScreen() {
       const fullRecipe = personalRecipes.find((r) => r.id === slot.recipeId) ?? null;
       setViewingRecipe(fullRecipe);
       setViewingSlot({ slot, date });
+      setSlotServings(slot.servings ?? fullRecipe?.servings ?? 4);
     } else {
       setPickerDate(date);
     }
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+  };
+
+  // Fired by the +/- stepper in the plan detail view. Persists immediately
+  // (same pattern as every other plan mutation in this screen — see
+  // handleRemoveSlot/handlePickRecipe below) rather than waiting for the
+  // modal to close, so the change survives even if the person just taps
+  // the stepper and swipes away without an explicit "save" action.
+  const commitSlotServings = async (newServings: number) => {
+    if (!viewingSlot) return;
+    const clamped = Math.max(1, Math.min(20, newServings));
+    setSlotServings(clamped);
+    const key = isoDateKey(viewingSlot.date);
+    const updatedSlot: PlanSlot = { ...viewingSlot.slot, servings: clamped };
+    setViewingSlot({ slot: updatedSlot, date: viewingSlot.date });
+    await save({ ...plan, [key]: updatedSlot });
   };
 
   // Fixed: previously this fired Alert.alert with no web fallback, and
@@ -564,6 +627,7 @@ export default function PlanScreen() {
   const handleSwapSlot = (date: Date) => {
     setViewingSlot(null);
     setViewingRecipe(null);
+    setSlotServings(null);
     setPickerDate(date);
   };
 
@@ -576,6 +640,14 @@ export default function PlanScreen() {
       recipePhoto: recipe.photoUrl,
       source: "personal",
       addedAt: Date.now(),
+      // Carries over the serving size most recently set for this recipe
+      // in the That's Dinner tab (persisted onto recipe.servings when
+      // bookmarked there — see handleToggleSaveRecipe in index.tsx).
+      // Falls back to 4 for recipes that never passed through that flow
+      // (manual entry, photo import, URL scrape). This is only the
+      // *default* for this plan slot — editable afterward from the plan
+      // detail view without touching the recipe's own stored default.
+      servings: recipe.servings ?? 4,
     };
     await save({ ...plan, [key]: slot });
     setPickerDate(null);
@@ -828,7 +900,7 @@ export default function PlanScreen() {
         visible={!!viewingSlot}
         animationType="slide"
         presentationStyle="pageSheet"
-        onRequestClose={() => { setViewingSlot(null); setViewingRecipe(null); }}
+        onRequestClose={() => { setViewingSlot(null); setViewingRecipe(null); setSlotServings(null); }}
       >
         <SafeAreaView style={[planDetailStyles.root, { backgroundColor: colors.background }]}>
           <View style={[planDetailStyles.header, { borderBottomColor: colors.border }]}>
@@ -839,7 +911,7 @@ export default function PlanScreen() {
             <Text style={[planDetailStyles.title, { color: colors.foreground }]} numberOfLines={1}>
               {viewingSlot?.slot.recipeName}
             </Text>
-            <Pressable onPress={() => setViewingSlot(null)}>
+            <Pressable onPress={() => { setViewingSlot(null); setViewingRecipe(null); setSlotServings(null); }}>
               <Feather name="x" size={22} color={colors.foreground} />
             </Pressable>
           </View>
@@ -856,14 +928,50 @@ export default function PlanScreen() {
               {viewingSlot?.slot.recipeName}
             </Text>
 
-            {viewingRecipe?.ingredients ? (
-              <View style={[planDetailStyles.ingredientsCard, { backgroundColor: colors.card, borderColor: colors.border }]}>
-                <Text style={[planDetailStyles.ingredientsLabel, { color: colors.mutedForeground }]}>INGREDIENTS</Text>
-                <Text style={[planDetailStyles.ingredientsText, { color: colors.foreground }]} numberOfLines={6}>
-                  {viewingRecipe.ingredients}
-                </Text>
-              </View>
-            ) : null}
+            {viewingRecipe && (() => {
+              // The recipe's own yield (from PersonalRecipe.servings, set
+              // when bookmarked in the That's Dinner tab — see
+              // handleToggleSaveRecipe in index.tsx), vs. the servings
+              // this specific plan slot is set to. Scale = 1 (no change to
+              // the ingredients text) until the person adjusts the
+              // stepper away from the recipe's default.
+              const recipeBaseServings = viewingRecipe.servings ?? 4;
+              const effectiveServings = slotServings ?? recipeBaseServings;
+              const scale = effectiveServings / recipeBaseServings;
+              return (
+                <>
+                  <View style={[planDetailStyles.servingsRow, { backgroundColor: colors.card, borderColor: colors.border }]}>
+                    <Text style={[planDetailStyles.servingsLabel, { color: colors.mutedForeground }]}>SERVINGS</Text>
+                    <View style={planDetailStyles.stepper}>
+                      <Pressable
+                        onPress={() => { commitSlotServings(effectiveServings - 1); Haptics.selectionAsync(); }}
+                        style={[planDetailStyles.stepperBtn, { backgroundColor: colors.secondary, borderColor: colors.border }]}
+                      >
+                        <Feather name="minus" size={16} color={colors.foreground} />
+                      </Pressable>
+                      <Text style={[planDetailStyles.stepperValue, { color: colors.foreground }]}>{effectiveServings}</Text>
+                      <Pressable
+                        onPress={() => { commitSlotServings(effectiveServings + 1); Haptics.selectionAsync(); }}
+                        style={[planDetailStyles.stepperBtn, { backgroundColor: colors.secondary, borderColor: colors.border }]}
+                      >
+                        <Feather name="plus" size={16} color={colors.foreground} />
+                      </Pressable>
+                    </View>
+                  </View>
+
+                  <MacroBar macros={getRecipeMacros(viewingRecipe)} colors={colors} />
+
+                  {viewingRecipe.ingredients ? (
+                    <View style={[planDetailStyles.ingredientsCard, { backgroundColor: colors.card, borderColor: colors.border }]}>
+                      <Text style={[planDetailStyles.ingredientsLabel, { color: colors.mutedForeground }]}>INGREDIENTS</Text>
+                      <Text style={[planDetailStyles.ingredientsText, { color: colors.foreground }]} numberOfLines={6}>
+                        {scaleIngredientText(viewingRecipe.ingredients, scale)}
+                      </Text>
+                    </View>
+                  ) : null}
+                </>
+              );
+            })()}
 
             {viewingRecipe?.steps ? (
               <View style={[planDetailStyles.ingredientsCard, { backgroundColor: colors.card, borderColor: colors.border }]}>
