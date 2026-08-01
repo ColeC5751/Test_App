@@ -14,6 +14,19 @@ export interface GroceryItem {
   servingMultiplier?: number; // multiplier applied when added
 }
 
+export interface Macros {
+  calories: number;
+  protein: number;
+  carbs: number;
+  fat: number;
+  fiber: number;
+  // True when these numbers came from lib/macros.ts's ingredient-based
+  // estimator rather than a real nutrition API (e.g. Spoonacular via
+  // /api/recipes/search). Not currently read anywhere in the UI — left
+  // available so a screen can label estimated vs. sourced macros later.
+  estimated?: boolean;
+}
+
 export interface PersonalRecipe {
   id: string;
   name: string;
@@ -23,6 +36,18 @@ export interface PersonalRecipe {
   createdAt: number;
   updatedAt?: number;
   source?: "manual" | "photo" | "url";
+  // The recipe's own serving yield. For recipes bookmarked from the That's
+  // Dinner tab, this is set to whatever the servings stepper was showing
+  // at the moment of bookmarking (see handleToggleSaveRecipe in index.tsx)
+  // — it is NOT re-synced on every later view, only at save time. For
+  // manually-created / photo-imported / URL-scraped recipes (which never
+  // pass through that stepper), this is undefined; callers should fall
+  // back to a sensible default (4 is used elsewhere in the app).
+  servings?: number;
+  // Per-serving nutrition. Populated with real API data when bookmarked
+  // from a Spoonacular search result; otherwise absent until something
+  // calls lib/macros.ts's estimateMacrosPerServing() to fill the gap.
+  macros?: Macros;
 }
 
 export interface PlanSlot {
@@ -31,6 +56,12 @@ export interface PlanSlot {
   recipePhoto?: string;
   source: "personal" | "spoonacular";
   addedAt: number;
+  // Customizable per-planned-meal serving size. Defaults from the
+  // recipe's own PersonalRecipe.servings when the slot is first created
+  // (see handlePickRecipe in plan.tsx), but is independently editable
+  // afterward from the plan detail view — changing it here does NOT
+  // change the recipe's own stored default.
+  servings?: number;
 }
 
 export interface MealPlan {
