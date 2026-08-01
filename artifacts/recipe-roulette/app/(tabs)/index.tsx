@@ -1,7 +1,7 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { Feather } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
-import React, { useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
   Animated,
   Easing,
@@ -18,6 +18,7 @@ import {
   TextInput,
   View,
 } from "react-native";
+import { useFocusEffect } from "expo-router";
 
 import { useColors } from "@/hooks/useColors";
 import { useGrocerySync, useRecipeSync } from "@/lib/sync";
@@ -130,14 +131,21 @@ async function fetchRecipes(ingredients: string): Promise<FetchResult> {
   }
 }
 
-function MacroBar({ macros, servings, baseServings, colors }: { macros: Macros; servings: number; baseServings: number; colors: ReturnType<typeof useColors> }) {
-  const scale = servings / baseServings;
+// Nutrition here is inherently a per-serving figure (as returned by the
+// recipe API) — it does NOT change based on how many servings the person
+// is scaling the ingredients to cook. Previously this multiplied by
+// servings/baseServings, which meant "NUTRITION PER SERVING" was actually
+// showing nutrition scaled by batch size (e.g. doubling the servings
+// stepper doubled the "per serving" calories) — the opposite of what a
+// per-serving figure should do. Ingredient amounts still scale (see
+// handleAddToGrocery / the ingredients list below); nutrition just doesn't.
+function MacroBar({ macros, colors }: { macros: Macros; colors: ReturnType<typeof useColors> }) {
   const items: { label: string; value: number; unit: string; color: string }[] = [
-    { label: "Calories", value: Math.round(macros.calories * scale), unit: "kcal", color: colors.primary },
-    { label: "Protein", value: Math.round(macros.protein * scale), unit: "g", color: "#7C8C5E" },
-    { label: "Carbs", value: Math.round(macros.carbs * scale), unit: "g", color: "#C8A86B" },
-    { label: "Fat", value: Math.round(macros.fat * scale), unit: "g", color: "#B87333" },
-    { label: "Fiber", value: Math.round(macros.fiber * scale), unit: "g", color: "#6B8E6B" },
+    { label: "Calories", value: Math.round(macros.calories), unit: "kcal", color: colors.primary },
+    { label: "Protein", value: Math.round(macros.protein), unit: "g", color: "#7C8C5E" },
+    { label: "Carbs", value: Math.round(macros.carbs), unit: "g", color: "#C8A86B" },
+    { label: "Fat", value: Math.round(macros.fat), unit: "g", color: "#B87333" },
+    { label: "Fiber", value: Math.round(macros.fiber), unit: "g", color: "#6B8E6B" },
   ];
   return (
     <View style={[macroStyles.wrap, { backgroundColor: colors.card, borderColor: colors.border }]}>
@@ -418,11 +426,14 @@ function RecipeDetailModal({
         <SavedToast visible={showSavedToast} label="Saved to My Dinners!" />
         <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 48 }}>
           <Image source={{ uri: recipe.image }} style={styles.recipeModalImage} />
+          {/* Bookmark/save-to-My-Dinners used to float here in the top
+              right of the photo. It's been moved down into the action
+              button stack below (next to Add to Grocery List / Start
+              Cooking) so every primary recipe action lives in one place
+              instead of being split between the photo overlay and the
+              body. */}
           <Pressable onPress={handleClose} style={[styles.floatBtn, styles.floatBtnRight, { backgroundColor: colors.card, borderColor: colors.border }]}>
             <Feather name="x" size={18} color={colors.foreground} />
-          </Pressable>
-          <Pressable onPress={handleSave} style={[styles.floatBtn, styles.floatBtnRight2, { backgroundColor: isSaved ? colors.primary : colors.card, borderColor: isSaved ? colors.primary : colors.border }]}>
-            <Feather name="bookmark" size={18} color={isSaved ? colors.primaryForeground : colors.foreground} />
           </Pressable>
           <Pressable onPress={handleShare} style={[styles.floatBtn, styles.floatBtnLeft, { backgroundColor: colors.primary }]}>
             <Feather name="share" size={18} color={colors.primaryForeground} />
@@ -449,47 +460,76 @@ function RecipeDetailModal({
               </View>
             </View>
 
+            {/* Start Cooking is now the highlighted (primary-filled)
+                action when the recipe has steps — it's the thing most
+                people tap next after landing here. */}
+            {recipe.instructions.length > 0 && (
+              <Pressable
+                onPress={() => setShowCookMode(true)}
+                style={({ pressed }) => [
+                  styles.groceryBtn,
+                  { backgroundColor: colors.primary },
+                  pressed && { opacity: 0.9 },
+                ]}
+              >
+                <Feather name="play-circle" size={16} color={colors.primaryForeground} />
+                <Text style={[styles.groceryBtnText, { color: colors.primaryForeground }]}>
+                  Start Cooking
+                </Text>
+              </Pressable>
+            )}
+
+            {/* Add to Grocery List steps back to an outline style whenever
+                Start Cooking is present, so there's a single clear
+                highlighted action rather than two competing filled
+                buttons. If a recipe has no steps, this is the only action
+                available, so it keeps the primary-filled treatment. */}
             <Pressable
               onPress={handleAddToGrocery}
               style={({ pressed }) => [
                 styles.groceryBtn,
-                { backgroundColor: addedToGrocery ? colors.secondary : colors.primary },
+                addedToGrocery
+                  ? { backgroundColor: colors.secondary }
+                  : recipe.instructions.length > 0
+                  ? { backgroundColor: colors.secondary, borderWidth: 1.5, borderColor: colors.primary }
+                  : { backgroundColor: colors.primary },
                 pressed && { opacity: 0.9 },
               ]}
             >
               <Feather
                 name={addedToGrocery ? "check" : "shopping-cart"}
                 size={16}
-                color={addedToGrocery ? colors.foreground : colors.primaryForeground}
+                color={addedToGrocery ? colors.foreground : recipe.instructions.length > 0 ? colors.primary : colors.primaryForeground}
               />
               <Text
                 style={[
                   styles.groceryBtnText,
-                  { color: addedToGrocery ? colors.foreground : colors.primaryForeground },
+                  { color: addedToGrocery ? colors.foreground : recipe.instructions.length > 0 ? colors.primary : colors.primaryForeground },
                 ]}
               >
                 {addedToGrocery ? "Added to Grocery List" : "Add to Grocery List"}
               </Text>
             </Pressable>
 
-            {recipe.instructions.length > 0 && (
-              <Pressable
-                onPress={() => setShowCookMode(true)}
-                style={({ pressed }) => [
-                  styles.groceryBtn,
-                  { backgroundColor: colors.secondary, borderWidth: 1.5, borderColor: colors.primary },
-                  pressed && { opacity: 0.9 },
-                ]}
-              >
-                <Feather name="play-circle" size={16} color={colors.primary} />
-                <Text style={[styles.groceryBtnText, { color: colors.primary }]}>
-                  Start Cooking
-                </Text>
-              </Pressable>
-            )}
+            {/* Save to My Dinners — moved here from the floating top-right
+                bookmark icon over the photo, grouped with the other two
+                actions instead of sitting apart from them. */}
+            <Pressable
+              onPress={handleSave}
+              style={({ pressed }) => [
+                styles.groceryBtn,
+                { backgroundColor: colors.card, borderWidth: 1.5, borderColor: isSaved ? colors.primary : colors.border },
+                pressed && { opacity: 0.9 },
+              ]}
+            >
+              <Feather name="bookmark" size={16} color={isSaved ? colors.primary : colors.foreground} />
+              <Text style={[styles.groceryBtnText, { color: isSaved ? colors.primary : colors.foreground }]}>
+                {isSaved ? "Saved to My Dinners" : "Save to My Dinners"}
+              </Text>
+            </Pressable>
 
             {recipe.macros && (
-              <MacroBar macros={recipe.macros} servings={servings} baseServings={baseServings} colors={colors} />
+              <MacroBar macros={recipe.macros} colors={colors} />
             )}
 
             {recipe.ingredients.length > 0 && (
@@ -567,7 +607,36 @@ export default function SpinScreen() {
   // This replaces the broken `import { addIngredientsToGrocery } from
   // "@/app/(tabs)/grocery"`, which referenced an export that no longer
   // exists and was failing the whole Metro bundle.
-  const { addIngredients } = useGrocerySync();
+  //
+  // `load` is pulled out too (aliased to loadGrocery) — this screen never
+  // called it at all, unlike grocery.tsx (which loads on focus) and
+  // plan.tsx (which does the same). Without it, this hook instance's
+  // internal row id could sit at null for as long as this tab is open,
+  // silently downgrading every "Add to Grocery List" tap here to "saved
+  // locally only" and never reaching Supabase — see useFocusEffect and
+  // handleAddToGrocery below.
+  const { load: loadGrocery, addIngredients } = useGrocerySync();
+
+  useFocusEffect(
+    useCallback(() => {
+      loadGrocery();
+    }, [loadGrocery])
+  );
+
+  // Race-safety belt-and-suspenders, matching plan.tsx's
+  // handleAddWeekToGrocery: the useFocusEffect above already loads the
+  // grocery row on focus, but if the person opens a recipe and taps "Add
+  // to Grocery List" faster than that load() resolves, rowIdRef.current
+  // inside useGrocerySync could still be null. Re-awaiting load() here is
+  // cheap and safe (guarded by savingRef in sync.ts) and guarantees the
+  // row id is in place before addIngredients runs.
+  const handleAddToGrocery = useCallback(
+    async (raw: string, opts: { fromRecipe: string; servingMultiplier: number }) => {
+      await loadGrocery();
+      await addIngredients(raw, opts);
+    },
+    [loadGrocery, addIngredients]
+  );
 
   // Canonical, Supabase-backed personal recipe store — used here so that
   // bookmarking a Spoonacular recipe ("save to My Dinners") persists the
@@ -939,7 +1008,7 @@ export default function SpinScreen() {
       <RecipeDetailModal
         recipe={selectedRecipe}
         onClose={() => setSelectedRecipe(null)}
-        onAddToGrocery={addIngredients}
+        onAddToGrocery={handleAddToGrocery}
         isSaved={isRecipeSaved(selectedRecipe)}
         onToggleSave={handleToggleSaveRecipe}
       />
@@ -1013,7 +1082,6 @@ const styles = StyleSheet.create({
   floatBtn: { position: "absolute", top: 16, width: 38, height: 38, borderRadius: 19, borderWidth: 1, alignItems: "center", justifyContent: "center" },
   floatBtnLeft: { left: 16 },
   floatBtnRight: { right: 16 },
-  floatBtnRight2: { right: 62 },
   modalBody: { padding: 20, gap: 6 },
   recipeModalTitle: { fontSize: 22, fontFamily: "Inter_700Bold", lineHeight: 28, marginBottom: 4 },
   metaRow: { flexDirection: "row", gap: 12, marginBottom: 4 },
