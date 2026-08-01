@@ -338,6 +338,14 @@ function WheelSettingsModal({
 // this component reading/writing AsyncStorage directly. That keeps
 // Spoonacular bookmarks on the same Supabase-backed path as the rest of
 // My Dinners, so they also survive sign-out/sign-in.
+//
+// "Add to Grocery List" now mirrors that same persisting-state pattern:
+// once tapped, it flips to a locked "Added to Grocery List" state (same
+// outline/checkmark styling as "Save to My Dinners") so it can't be
+// spam-tapped into adding duplicate ingredients. That lock is scoped to
+// the current serving size — nudging the servings stepper re-arms the
+// button, since a different serving size means different quantities the
+// person may legitimately want to add.
 function RecipeDetailModal({
   recipe,
   onClose,
@@ -354,11 +362,17 @@ function RecipeDetailModal({
   const colors = useColors();
   const [currentServings, setCurrentServings] = useState<number | null>(null);
   const [addedToGrocery, setAddedToGrocery] = useState(false);
+  const [addingToGrocery, setAddingToGrocery] = useState(false);
   const [showSavedToast, setShowSavedToast] = useState(false);
   const [showCookMode, setShowCookMode] = useState(false);
 
   useEffect(() => {
-    if (!recipe) { setAddedToGrocery(false); setShowSavedToast(false); setShowCookMode(false); }
+    if (!recipe) {
+      setAddedToGrocery(false);
+      setAddingToGrocery(false);
+      setShowSavedToast(false);
+      setShowCookMode(false);
+    }
   }, [recipe?.id]);
 
   const handleSave = async () => {
@@ -374,8 +388,20 @@ function RecipeDetailModal({
   const baseServings = recipe?.servings ?? 4;
   const servings = currentServings ?? baseServings;
 
+  // Changing servings changes the quantities that would be added, so the
+  // "Added to Grocery List" lock is scoped to the serving size it was set
+  // at — adjusting the stepper re-arms the button rather than leaving it
+  // permanently stuck on a stale serving size.
+  const adjustServings = (delta: number) => {
+    setCurrentServings((s) => Math.max(1, Math.min(20, (s ?? baseServings) + delta)));
+    setAddedToGrocery(false);
+    Haptics.selectionAsync();
+  };
+
   const handleAddToGrocery = async () => {
-    if (!recipe) return;
+    if (!recipe || addedToGrocery || addingToGrocery) return;
+    setAddingToGrocery(true);
+
     const scale = servings / baseServings;
     const ingredientsString = recipe.ingredients
       .map((ing) => {
@@ -392,9 +418,9 @@ function RecipeDetailModal({
       servingMultiplier: scale,
     });
 
+    setAddingToGrocery(false);
     setAddedToGrocery(true);
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-    setTimeout(() => setAddedToGrocery(false), 2000);
   };
 
   const handleClose = () => { setCurrentServings(null); onClose(); };
@@ -450,11 +476,11 @@ function RecipeDetailModal({
             <View style={[styles.servingsRow, { backgroundColor: colors.card, borderColor: colors.border }]}>
               <Text style={[styles.servingsLabel, { color: colors.mutedForeground }]}>SERVINGS</Text>
               <View style={styles.stepper}>
-                <Pressable onPress={() => { setCurrentServings((s) => Math.max(1, (s ?? baseServings) - 1)); Haptics.selectionAsync(); }} style={[styles.stepperBtn, { backgroundColor: colors.secondary, borderColor: colors.border }]}>
+                <Pressable onPress={() => adjustServings(-1)} style={[styles.stepperBtn, { backgroundColor: colors.secondary, borderColor: colors.border }]}>
                   <Feather name="minus" size={16} color={colors.foreground} />
                 </Pressable>
                 <Text style={[styles.stepperValue, { color: colors.foreground }]}>{servings}</Text>
-                <Pressable onPress={() => { setCurrentServings((s) => Math.min(20, (s ?? baseServings) + 1)); Haptics.selectionAsync(); }} style={[styles.stepperBtn, { backgroundColor: colors.secondary, borderColor: colors.border }]}>
+                <Pressable onPress={() => adjustServings(1)} style={[styles.stepperBtn, { backgroundColor: colors.secondary, borderColor: colors.border }]}>
                   <Feather name="plus" size={16} color={colors.foreground} />
                 </Pressable>
               </View>
@@ -479,35 +505,29 @@ function RecipeDetailModal({
               </Pressable>
             )}
 
-            {/* Add to Grocery List steps back to an outline style whenever
-                Start Cooking is present, so there's a single clear
-                highlighted action rather than two competing filled
-                buttons. If a recipe has no steps, this is the only action
-                available, so it keeps the primary-filled treatment. */}
+            {/* Add to Grocery List now mirrors the "Save to My Dinners"
+                treatment below: a card-background button with a border
+                that turns primary-colored once actioned, and a persisting
+                "Added to Grocery List" label + disabled state so it can't
+                be spam-tapped into duplicate additions. It re-arms if the
+                servings stepper changes (see adjustServings above), since
+                that changes what would actually be added. */}
             <Pressable
               onPress={handleAddToGrocery}
+              disabled={addedToGrocery || addingToGrocery}
               style={({ pressed }) => [
                 styles.groceryBtn,
-                addedToGrocery
-                  ? { backgroundColor: colors.secondary }
-                  : recipe.instructions.length > 0
-                  ? { backgroundColor: colors.secondary, borderWidth: 1.5, borderColor: colors.primary }
-                  : { backgroundColor: colors.primary },
-                pressed && { opacity: 0.9 },
+                { backgroundColor: colors.card, borderWidth: 1.5, borderColor: addedToGrocery ? colors.primary : colors.border },
+                pressed && !addedToGrocery && !addingToGrocery && { opacity: 0.9 },
               ]}
             >
               <Feather
                 name={addedToGrocery ? "check" : "shopping-cart"}
                 size={16}
-                color={addedToGrocery ? colors.foreground : recipe.instructions.length > 0 ? colors.primary : colors.primaryForeground}
+                color={addedToGrocery ? colors.primary : colors.foreground}
               />
-              <Text
-                style={[
-                  styles.groceryBtnText,
-                  { color: addedToGrocery ? colors.foreground : recipe.instructions.length > 0 ? colors.primary : colors.primaryForeground },
-                ]}
-              >
-                {addedToGrocery ? "Added to Grocery List" : "Add to Grocery List"}
+              <Text style={[styles.groceryBtnText, { color: addedToGrocery ? colors.primary : colors.foreground }]}>
+                {addingToGrocery ? "Adding…" : addedToGrocery ? "Added to Grocery List" : "Add to Grocery List"}
               </Text>
             </Pressable>
 
