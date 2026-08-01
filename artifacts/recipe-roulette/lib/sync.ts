@@ -257,6 +257,12 @@ export function useGrocerySync() {
   const [status, setStatus] = useState<SyncStatus>("synced");
   const [shareToken, setShareToken] = useState<string | null>(null);
   const [name, setName] = useState<string | null>(null);
+  // The owner-side sharing permission for this list (i.e. what level of
+  // access anyone who opens the share link gets). Previously this wasn't
+  // tracked here at all — grocery.tsx kept its own local useState that
+  // reset to "view" on every mount and never reached Supabase, which is
+  // why toggling the Share modal's switch appeared to do nothing.
+  const [permission, setPermission] = useState<SharePermission>("view");
 
   // Diagnostics
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -420,6 +426,7 @@ export function useGrocerySync() {
         setName(ownerRow.name ?? null);
         setOwnerId(ownerRow.owner_id ?? null);
         setIsOwner(true);
+        setPermission((ownerRow.permission ?? "view") as SharePermission);
 
         setStatus("synced");
         setLastOperation("Loaded grocery list successfully");
@@ -453,6 +460,7 @@ export function useGrocerySync() {
         setName(newRow.name ?? null);
         setOwnerId(newRow.owner_id ?? null);
         setIsOwner(newRow.owner_id === currentUserId);
+        setPermission((newRow.permission ?? "view") as SharePermission);
 
         await AsyncStorage.setItem(GROCERY_ROW_KEY, newRow.id);
 
@@ -713,6 +721,48 @@ export function useGrocerySync() {
   );
 
   // ─────────────────────────────────────────────────────────────
+  // SET SHARE PERMISSION
+  // ─────────────────────────────────────────────────────────────
+  //
+  // Previously there was no way to persist this at all: grocery.tsx kept
+  // its own local `sharePermission` useState, which the Share modal's
+  // toggle wrote to, but that state was never sent to Supabase and reset
+  // to "view" on every remount. This mirrors usePlanSync's
+  // setSharePermission — it updates the owner-side `permission` column on
+  // the grocery_lists row, which useSharedGrocerySync's realtime
+  // subscription (see below) now also re-reads so already-open viewers
+  // pick up the change without needing to rejoin via the link.
+
+  const setSharePermission = useCallback(
+    async (perm: SharePermission) => {
+      setPermission(perm);
+
+      const activeRowId = rowIdRef.current;
+
+      if (!activeRowId) {
+        return;
+      }
+
+      try {
+        const { error } = await supabase
+          .from("grocery_lists")
+          .update({ permission: perm })
+          .eq("id", activeRowId);
+
+        if (error) {
+          recordSupabaseError("Update grocery list permission", error);
+          return;
+        }
+
+        setLastOperation(`Grocery list permission set to ${perm}`);
+      } catch (error: any) {
+        recordSupabaseError("Update grocery list permission", error);
+      }
+    },
+    [recordSupabaseError]
+  );
+
+  // ─────────────────────────────────────────────────────────────
   // RETURN
   // ─────────────────────────────────────────────────────────────
 
@@ -721,10 +771,12 @@ export function useGrocerySync() {
     status,
     shareToken,
     name,
+    permission,
 
     save,
     load,
     rename,
+    setSharePermission,
     addIngredients,
     deleteItem,
     toggleItem,
@@ -809,7 +861,14 @@ export function useSharedGrocerySync(token: string | undefined) {
         { event: "UPDATE", schema: "public", table: "grocery_lists", filter: `id=eq.${id}` },
         (payload) => {
           const remoteItems: GroceryItem[] = (payload.new as any).items ?? [];
+          // Previously only `items` was re-read here, so a viewer who had
+          // already opened the link kept whichever permission they joined
+          // with forever — the owner flipping view/edit afterward never
+          // reached them without a fresh page load. Re-read `permission`
+          // off the same UPDATE payload so it updates live alongside items.
+          const remotePermission = (payload.new as any).permission as SharePermission | undefined;
           setItems(remoteItems);
+          if (remotePermission) setPermission(remotePermission);
         }
       )
       .subscribe();
@@ -1247,7 +1306,15 @@ export function useSharedPlanSync(token: string | undefined) {
         { event: "UPDATE", schema: "public", table: "meal_plans", filter: `id=eq.${id}` },
         (payload) => {
           const remoteSlots: MealPlan = (payload.new as any).slots ?? {};
+          // Previously only `slots` was re-read here, so a viewer who had
+          // already opened the link kept whichever permission they joined
+          // with forever — the owner flipping the Share modal's switch
+          // never reached them without closing and reopening from a fresh
+          // link. Re-read `permission` off the same UPDATE payload so it
+          // updates live alongside the plan contents.
+          const remotePermission = (payload.new as any).permission as SharePermission | undefined;
           setPlan(remoteSlots);
+          if (remotePermission) setPermission(remotePermission);
         }
       )
       .subscribe();
