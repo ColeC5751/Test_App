@@ -185,13 +185,15 @@ function ShareModal({
   const shareUrl = shareToken ? buildShareUrl("grocery", shareToken) : null;
 
   const handleShare = async () => {
-  if (!shareUrl) return;
-  await Share.share({
-    message: `Join my grocery list on That's Dinner:\n${shareUrl}`,
-  });
-  Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-};
-
+    if (!shareUrl) return;
+    // Only pass `message` — Share.share() on iOS appends `url` to the end
+    // of `message` rather than treating them as alternatives, so passing
+    // both produced the link twice in the share sheet text.
+    await Share.share({
+      message: `Join my grocery list on That's Dinner:\n${shareUrl}`,
+    });
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+  };
 
   return (
     <Modal visible={visible} animationType="slide" presentationStyle="pageSheet" onRequestClose={onClose}>
@@ -268,6 +270,11 @@ export default function GroceryScreen() {
     items,
     status,
     shareToken,
+    // Now sourced from useGrocerySync (backed by the grocery_lists.permission
+    // column) instead of a local component useState that never reached
+    // Supabase and reset to "view" on every remount.
+    permission,
+    setSharePermission,
     save,
     load,
     addIngredients,
@@ -291,7 +298,6 @@ export default function GroceryScreen() {
   const [editValue, setEditValue] = useState("");
   const [manualInput, setManualInput] = useState("");
   const [showShareModal, setShowShareModal] = useState(false);
-  const [sharePermission, setSharePermission] = useState<"view" | "edit">("view");
 
   // Styled confirmation for "Clear list". Previously this used
   // Alert.alert(...) directly inside handleClear, which silently fails to
@@ -640,7 +646,7 @@ export default function GroceryScreen() {
         visible={showShareModal}
         onClose={() => setShowShareModal(false)}
         shareToken={shareToken}
-        permission={sharePermission}
+        permission={permission}
         onSetPermission={setSharePermission}
       />
 
