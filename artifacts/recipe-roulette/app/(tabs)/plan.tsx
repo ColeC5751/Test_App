@@ -340,13 +340,13 @@ function PlanShareModal({
   const shareUrl = shareToken ? buildShareUrl("plan", shareToken) : null;
 
   const handleShare = async () => {
-    if (!shareUrl) return;
-    await Share.share({
-      message: `Join my meal plan on That's Dinner:\n${shareUrl}`,
-      url: shareUrl,
-    });
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-  };
+  if (!shareUrl) return;
+  await Share.share({
+    message: `Join my meal plan on That's Dinner:\n${shareUrl}`,
+  });
+  Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+};
+
 
   return (
     <Modal visible={visible} animationType="slide" presentationStyle="pageSheet" onRequestClose={onClose}>
