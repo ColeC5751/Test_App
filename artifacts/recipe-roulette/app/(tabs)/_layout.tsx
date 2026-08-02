@@ -46,7 +46,12 @@ function NativeTabLayout({ sharedLocked }: { sharedLocked: boolean }) {
             so when locked we swap to a lock glyph entirely as the clearest
             signal available within its API. Tapping still lands on
             shared.tsx, which redirects to /auth via useRequireSession. */}
-        <Icon sf={{ default: sharedLocked ? "lock" : "person.2", selected: sharedLocked ? "lock.fill" : "person.2.fill" }} />
+        <Icon
+          sf={{
+            default: sharedLocked ? "lock" : "person.2",
+            selected: sharedLocked ? "lock.fill" : "person.2.fill",
+          }}
+        />
         <Label>{sharedLocked ? "Shared 🔒" : "Shared"}</Label>
       </NativeTabs.Trigger>
     </NativeTabs>
@@ -155,7 +160,12 @@ function ClassicTabLayout({ sharedLocked }: { sharedLocked: boolean }) {
                 <Feather name="users" size={22} color={color} />
               )}
               {sharedLocked && (
-                <View style={[styles.lockBadge, { backgroundColor: colors.card, borderColor: colors.background }]}>
+                <View
+                  style={[
+                    styles.lockBadge,
+                    { backgroundColor: colors.card, borderColor: colors.background },
+                  ]}
+                >
                   <Feather name="lock" size={9} color={colors.mutedForeground} />
                 </View>
               )}
