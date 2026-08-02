@@ -216,7 +216,15 @@ export function estimateMacrosPerServing(rawIngredientsText: string, servings: n
  * fallback logic.
  */
 export function getRecipeMacros(recipe: PersonalRecipe): Macros {
-  return recipe.macros ?? estimateMacrosPerServing(recipe.ingredients, recipe.servings ?? 1);
+  // Falls back to 4 when a recipe has no stored serving count — matching
+  // the same default already used elsewhere (index.tsx, plan.tsx) rather
+  // than assuming 1. Falling back to 1 here previously meant: for any
+  // recipe without a real servings value (i.e. every manually-typed,
+  // photo-imported, or URL-scraped recipe — only Spoonacular bookmarks
+  // ever get servings set), the estimator's *whole-recipe* total got
+  // reported as if it were a single serving, inflating calories by
+  // roughly however many servings the recipe actually makes.
+  return recipe.macros ?? estimateMacrosPerServing(recipe.ingredients, recipe.servings ?? 4);
 }
 
 /**
