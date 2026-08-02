@@ -9,6 +9,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { Stack, useRouter, useSegments } from "expo-router";
 import * as SplashScreen from "expo-splash-screen";
 import * as WebBrowser from "expo-web-browser";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 import React, { useEffect, useState } from "react";
 import { Linking, Platform } from "react-native";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
@@ -25,17 +26,23 @@ SplashScreen.preventAutoHideAsync();
 const queryClient = new QueryClient();
 
 // ─── Auth gate ────────────────────────────────────────────────────────────────
-// Watches the Supabase session and redirects accordingly:
-//   • No session + not on auth screen → redirect to /auth
-//   • Session exists + on auth screen → redirect to /(tabs)
-// "Continue without account" sets a local flag to skip the gate.
+// Watches the Supabase session (and the local "skip auth" flag) and
+// redirects accordingly:
+//   • No session + no skip flag + not on auth screen → redirect to /auth
+//   • Session or skip flag present + on auth screen  → redirect to /(tabs)
+// "Continue without account" sets the local flag (see app/auth.tsx) to
+// skip the gate without creating a Supabase session.
 // This is the ONLY place that should decide navigation based on session
 // state — it's path-aware (checks segments) so it never clobbers a user
 // who landed on a shared link.
 
-const SKIP_AUTH_KEY = "@recipe_roulette_skip_auth";
+export const SKIP_AUTH_KEY = "@recipe_roulette_skip_auth";
 
-function useAuthGate(session: Session | null, sessionLoaded: boolean) {
+function useAuthGate(
+  session: Session | null,
+  sessionLoaded: boolean,
+  skipAuth: boolean
+) {
   const router = useRouter();
   const segments = useSegments();
 
@@ -48,29 +55,35 @@ function useAuthGate(session: Session | null, sessionLoaded: boolean) {
     // Don't interrupt shared link flows
     if (inSharedGroup) return;
 
-    if (session) {
-      // Signed in — push to tabs if on auth screen
+    if (session || skipAuth) {
+      // Signed in or explicitly skipped — push to tabs if on auth screen
       if (inAuthGroup) {
         router.replace("/(tabs)");
       }
     } else {
-      // Not signed in — go to auth unless already there
+      // Not signed in and hasn't skipped — go to auth unless already there
       if (!inAuthGroup) {
         router.replace("/auth");
       }
     }
-  }, [session, sessionLoaded, segments]);
+  }, [session, sessionLoaded, skipAuth, segments]);
 }
 
 function RootLayoutNav() {
   const router = useRouter();
   const [session, setSession] = useState<Session | null>(null);
   const [sessionLoaded, setSessionLoaded] = useState(false);
+  const [skipAuth, setSkipAuth] = useState(false);
 
-  // Load initial session
+  // Load initial session + skip-auth flag together so the gate doesn't
+  // fire on a false "no session" state while storage is still loading.
   useEffect(() => {
-    supabase.auth.getSession().then(({ data }) => {
+    Promise.all([
+      supabase.auth.getSession(),
+      AsyncStorage.getItem(SKIP_AUTH_KEY),
+    ]).then(([{ data }, skip]) => {
       setSession(data.session);
+      setSkipAuth(skip === "true");
       setSessionLoaded(true);
     });
   }, []);
@@ -84,9 +97,16 @@ function RootLayoutNav() {
   // shared plan/grocery links — before that screen ever got to render.
   // useAuthGate above is the single source of truth for navigation
   // because it's path-aware (it checks segments before redirecting).
+  //
+  // On a real sign-in we also clear the skip-auth flag, so a user who
+  // previously tapped "continue without account" and later signs in
+  // properly doesn't leave a stale flag sitting in storage.
   useEffect(() => {
-    const { data: listener } = supabase.auth.onAuthStateChange((_event, newSession) => {
+    const { data: listener } = supabase.auth.onAuthStateChange((event, newSession) => {
       setSession(newSession);
+      if (event === "SIGNED_IN" && newSession) {
+        AsyncStorage.removeItem(SKIP_AUTH_KEY).then(() => setSkipAuth(false));
+      }
     });
     return () => listener.subscription.unsubscribe();
   }, []);
@@ -148,7 +168,7 @@ function RootLayoutNav() {
     return () => subscription.remove();
   }, []);
 
-  useAuthGate(session, sessionLoaded);
+  useAuthGate(session, sessionLoaded, skipAuth);
 
   // Transition tuning per screen. Kept subtle and purposeful rather than
   // decorative: auth fades in/out (a calm, low-motion moment rather than
