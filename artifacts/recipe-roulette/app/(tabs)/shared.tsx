@@ -2,6 +2,12 @@
 // "Shared with me" — plans and grocery lists the signed-in user has
 // previously opened via a share link (joined automatically on open,
 // see useSharedPlanSync / useSharedGrocerySync in lib/sync.ts).
+//
+// Locked behind a real Supabase session via useRequireSession — this
+// feature isn't available in "continue without account" mode, even though
+// the rest of the app is. Skip-auth users tapping this tab get redirected
+// to /auth with a contextual "Sign in to view shared plans" banner (see
+// REASON_MESSAGES in app/auth.tsx, keyed by the "shared" reason below).
 
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { Feather } from "@expo/vector-icons";
@@ -22,6 +28,7 @@ import {
 } from "react-native";
 
 import { useColors } from "@/hooks/useColors";
+import { useRequireSession } from "@/hooks/useRequireSession";
 import { supabase } from "@/lib/supabase";
 import {
   useSharedWithMePlans,
@@ -157,6 +164,8 @@ export default function SharedWithMeScreen() {
   const router = useRouter();
   const topPad = Platform.OS === "web" ? 67 : 0;
 
+  const { loading: sessionLoading, locked } = useRequireSession("shared");
+
   const { plans, status: plansStatus, reload: reloadPlans } = useSharedWithMePlans();
   const { lists, status: listsStatus, reload: reloadLists } = useSharedWithMeGroceryLists();
 
@@ -262,6 +271,18 @@ export default function SharedWithMeScreen() {
       setRemoving(false);
     }
   };
+
+  // Session check hasn't resolved yet, or it resolved to "no session" and
+  // useRequireSession is already redirecting to /auth — render nothing in
+  // both cases rather than flashing shared content that isn't accessible
+  // in skip-auth mode.
+  if (sessionLoading || locked) {
+    return (
+      <View style={[styles.center, { backgroundColor: colors.background }]}>
+        <ActivityIndicator color={colors.primary} size="large" />
+      </View>
+    );
+  }
 
   const loading = plansStatus === "syncing" && listsStatus === "syncing" && plans.length === 0 && lists.length === 0;
   const refreshing = plansStatus === "syncing" || listsStatus === "syncing";
@@ -473,4 +494,3 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
 });
-
