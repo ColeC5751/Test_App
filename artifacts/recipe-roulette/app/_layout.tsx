@@ -29,7 +29,13 @@ const queryClient = new QueryClient();
 // Watches the Supabase session (and the local "skip auth" flag) and
 // redirects accordingly:
 //   • No session + no skip flag + not on auth screen → redirect to /auth
-//   • Session or skip flag present + on auth screen  → redirect to /(tabs)
+//   • Real session + on auth screen                  → redirect to /(tabs)
+//   • Skip flag, no real session                      → no forced redirect
+//     either direction. This lets a skip-auth user freely visit /auth
+//     later (e.g. to sign in for real) without being bounced straight back
+//     to /(tabs) by this gate — that bounce was the earlier "can't exit
+//     skip mode" bug. Individual screens that require a real account (see
+//     Shared tab) enforce that themselves via useRequireSession, not here.
 // "Continue without account" sets the local flag (see app/auth.tsx) to
 // skip the gate without creating a Supabase session.
 // This is the ONLY place that should decide navigation based on session
@@ -55,13 +61,17 @@ function useAuthGate(
     // Don't interrupt shared link flows
     if (inSharedGroup) return;
 
-    if (session || skipAuth) {
-      // Signed in or explicitly skipped — push to tabs if on auth screen
+    if (session) {
+      // Real session — never let a signed-in user sit on the auth screen
       if (inAuthGroup) {
         router.replace("/(tabs)");
       }
+    } else if (skipAuth) {
+      // Skipped auth, no real session — free to browse tabs, and free to
+      // navigate to /auth on their own without being forced back out.
+      // No redirect fires in this branch, either direction.
     } else {
-      // Not signed in and hasn't skipped — go to auth unless already there
+      // Never skipped, no session — always push to auth
       if (!inAuthGroup) {
         router.replace("/auth");
       }
