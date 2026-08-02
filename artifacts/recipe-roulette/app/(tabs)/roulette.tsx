@@ -2,7 +2,7 @@ import { useFocusEffect } from "expo-router";
 import { Feather } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
 import * as ImagePicker from "expo-image-picker";
-import React, { useRef, useState } from "react";
+import React, { useCallback, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
@@ -21,8 +21,9 @@ import {
 } from "react-native";
 
 import { useColors } from "@/hooks/useColors";
-import { useRecipeSync } from "@/lib/sync";
-import { addIngredientsToGrocery } from "@/app/(tabs)/grocery";
+import { useGrocerySync, useRecipeSync } from "@/lib/sync";
+import { getRecipeMacros, scaleIngredientText } from "@/lib/macros";
+import { MacroBar, MacroPills } from "@/components/MacroDisplay";
 import { SavedToast } from "@/components/SavedToast";
 import { CookMode } from "@/components/CookMode";
 import type { PersonalRecipe } from "@/lib/types";
@@ -403,29 +404,19 @@ function parseSteps(text: string): string[] {
   return [text.trim()];
 }
 
-// Scales numeric values in a freeform ingredient string by a multiplier.
-// e.g. "2 tbsp butter, 1 cup milk" × 2 → "4 tbsp butter, 2 cup milk"
-// Handles integers, decimals, and simple fractions (1/2, 3/4 etc.)
-function scaleIngredientText(text: string, multiplier: number): string {
-  if (multiplier === 1) return text;
-  return text.replace(
-    /(\d+\/\d+|\d+\.?\d*)/g,
-    (match) => {
-      let val: number;
-      if (match.includes("/")) {
-        const [num, den] = match.split("/").map(Number);
-        val = num / den;
-      } else {
-        val = parseFloat(match);
-      }
-      const scaled = val * multiplier;
-      const rounded = Math.round(scaled * 100) / 100;
-      return rounded % 1 === 0 ? String(Math.round(rounded)) : rounded.toFixed(1);
-    }
-  );
-}
-
-function RecipeDetailModal({ recipe, onClose, onDelete, onEdit }: { recipe: PersonalRecipe | null; onClose: () => void; onDelete: (id: string) => void; onEdit: (recipe: PersonalRecipe) => void }) {
+function RecipeDetailModal({
+  recipe,
+  onClose,
+  onDelete,
+  onEdit,
+  onAddToGrocery,
+}: {
+  recipe: PersonalRecipe | null;
+  onClose: () => void;
+  onDelete: (id: string) => void;
+  onEdit: (recipe: PersonalRecipe) => void;
+  onAddToGrocery: (ingredientsText: string, opts: { fromRecipe: string; servingMultiplier: number }) => Promise<void>;
+}) {
   const colors = useColors();
   const [addedToGrocery, setAddedToGrocery] = useState(false);
   const [servings, setServings] = useState(1);
@@ -447,7 +438,15 @@ function RecipeDetailModal({ recipe, onClose, onDelete, onEdit }: { recipe: Pers
   const scaledIngredients = scaleIngredientText(recipe.ingredients, multiplier);
 
   const handleAddToGrocery = async () => {
-    await addIngredientsToGrocery(scaledIngredients);
+    // Canonical path: parses + merges + persists (local, then Supabase)
+    // through the same useGrocerySync() state that grocery.tsx displays —
+    // this used to call a broken `addIngredientsToGrocery` import from
+    // app/(tabs)/grocery that didn't exist there, which was failing the
+    // whole Metro bundle.
+    await onAddToGrocery(scaledIngredients, {
+      fromRecipe: recipe.name,
+      servingMultiplier: multiplier,
+    });
     setAddedToGrocery(true);
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     setTimeout(() => setAddedToGrocery(false), 2000);
@@ -495,6 +494,14 @@ function RecipeDetailModal({ recipe, onClose, onDelete, onEdit }: { recipe: Pers
               </Pressable>
             </View>
           </View>
+
+          {/* Nutrition is a fixed per-serving figure — it does NOT scale
+              with the ×N multiplier stepper above (same principle as the
+              That's Dinner tab's MacroBar; see MacroDisplay.tsx). Uses
+              real API-sourced macros if this recipe was bookmarked from a
+              Spoonacular search result, otherwise an ingredient-based
+              estimate — see getRecipeMacros in lib/macros.ts. */}
+          <MacroBar macros={getRecipeMacros(recipe)} colors={colors} />
 
           <Pressable
             onPress={handleAddToGrocery}
@@ -670,6 +677,16 @@ export default function RouletteScreen() {
   // living in the local cache that settings.tsx clears on sign-out.
   const { recipes, load: loadRecipes, save: saveRecipe, remove: removeRecipe } = useRecipeSync();
 
+  // Canonical grocery sync. This screen previously imported a
+  // `addIngredientsToGrocery` function from app/(tabs)/grocery that
+  // didn't exist there, which was failing the whole Metro bundle. `load`
+  // is pulled out too (aliased to loadGrocery) — this screen never
+  // bootstrapped its own grocery row id at all, so even once the broken
+  // import is fixed, every "Add to Grocery List" tap would silently
+  // downgrade to "saved locally only" and never reach Supabase without it
+  // — see the useFocusEffect and handleAddToGrocery below.
+  const { load: loadGrocery, addIngredients } = useGrocerySync();
+
   const [loaded, setLoaded] = useState(false);
   const [showImport, setShowImport] = useState(false);
   const [spinning, setSpinning] = useState(false);
@@ -684,7 +701,24 @@ export default function RouletteScreen() {
   useFocusEffect(
     React.useCallback(() => {
       loadRecipes().then(() => setLoaded(true));
-    }, [loadRecipes])
+      loadGrocery();
+    }, [loadRecipes, loadGrocery])
+  );
+
+  // Race-safety belt-and-suspenders, matching plan.tsx's
+  // handleAddWeekToGrocery and index.tsx's handleAddToGrocery: the
+  // useFocusEffect above already loads the grocery row on focus, but if
+  // someone opens a recipe and taps "Add to Grocery List" faster than
+  // that resolves, rowIdRef.current inside useGrocerySync could still be
+  // null. Re-awaiting load() here is cheap and safe (guarded by
+  // savingRef in sync.ts) and guarantees the row id is in place before
+  // addIngredients runs.
+  const handleAddToGrocery = useCallback(
+    async (raw: string, opts: { fromRecipe: string; servingMultiplier: number }) => {
+      await loadGrocery();
+      await addIngredients(raw, opts);
+    },
+    [loadGrocery, addIngredients]
   );
 
   // Reset the wheel to a resting position once the recipe list first
@@ -865,6 +899,7 @@ export default function RouletteScreen() {
                   <View style={styles.recipeText}>
                     <Text style={[styles.recipeName, { color: colors.foreground }]} numberOfLines={1}>{recipe.name}</Text>
                     <Text style={[styles.recipeIngredientPreview, { color: colors.mutedForeground }]} numberOfLines={1}>{recipe.ingredients}</Text>
+                    <MacroPills macros={getRecipeMacros(recipe)} colors={colors} />
                   </View>
                   <View style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
                     <Feather name={sourceIcon(recipe.source)} size={14} color={colors.mutedForeground} />
@@ -890,6 +925,7 @@ export default function RouletteScreen() {
         onClose={() => setSelectedRecipe(null)}
         onDelete={deleteRecipe}
         onEdit={(recipe) => { setEditingRecipe(recipe); setSelectedRecipe(null); }}
+        onAddToGrocery={handleAddToGrocery}
       />
     </>
   );
@@ -975,7 +1011,7 @@ const styles = StyleSheet.create({
   stepsPreviewToggle: { fontSize: 11, fontFamily: "Inter_600SemiBold" },
   stepsPreviewCard:   { borderRadius: 12, borderWidth: 1, padding: 14, marginBottom: 16, gap: 12 },
   stepsPreviewLabel:  { fontSize: 10, fontFamily: "Inter_600SemiBold", letterSpacing: 2, marginBottom: 4 },
-  stepsPreviewRow:    { flexDirection: "CD row", alignItems: "flex-start", gap: 10 },
+  stepsPreviewRow:    { flexDirection: "row", alignItems: "flex-start", gap: 10 },
   stepsPreviewNum:    { width: 22, height: 22, borderRadius: 11, alignItems: "center", justifyContent: "center", flexShrink: 0, marginTop: 1 },
   stepsPreviewNumText:{ fontSize: 11, fontFamily: "Inter_700Bold" },
   stepsPreviewStep:   { flex: 1, fontSize: 13, fontFamily: "Inter_400Regular", lineHeight: 19 },
