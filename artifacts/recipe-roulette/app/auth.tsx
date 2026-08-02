@@ -4,7 +4,6 @@
 
 import { Feather } from "@expo/vector-icons";
 import { useLocalSearchParams, useRouter } from "expo-router";
-import AsyncStorage from "@react-native-async-storage/async-storage";
 import React, { useRef, useState } from "react";
 import {
 ActivityIndicator,
@@ -21,7 +20,7 @@ View,
 
 import { supabase } from "@/lib/supabase";
 import { useColors } from "@/hooks/useColors";
-import { SKIP_AUTH_KEY } from "./_layout";
+import { useSkipAuth } from "@/contexts/SkipAuthContext";
 
 const CODE_LENGTH = 6;
 
@@ -36,6 +35,7 @@ export default function AuthScreen() {
 const colors = useColors();
 const router = useRouter();
 const params = useLocalSearchParams<{ reason?: string }>();
+const { setSkipAuth } = useSkipAuth();
 const reasonMessage = params.reason ? REASON_MESSAGES[params.reason] : undefined;
 
 // Step control: "email" -> "code"
@@ -154,7 +154,12 @@ const handleSkip = async () => {
 if (skipping) return;
 setSkipping(true);
 try {
-await AsyncStorage.setItem(SKIP_AUTH_KEY, "true");
+// setSkipAuth updates the shared context state immediately (before the
+// AsyncStorage write even resolves), so by the time router.replace
+// triggers the root layout's auth gate to re-check, it already sees
+// skipAuth === true instead of a stale cached value. That stale-read
+// race was the original cause of this button appearing unresponsive.
+await setSkipAuth(true);
 router.replace("/(tabs)");
 } catch (err) {
 setError("Couldn't continue without an account. Please try again.");
