@@ -20,7 +20,20 @@ export function MacroBar({ macros, colors }: { macros: Macros; colors: ReturnTyp
   ];
   return (
     <View style={[macroStyles.wrap, { backgroundColor: colors.card, borderColor: colors.border }]}>
-      <Text style={[macroStyles.heading, { color: colors.mutedForeground }]}>NUTRITION PER SERVING</Text>
+      <View style={macroStyles.headingRow}>
+        <Text style={[macroStyles.heading, { color: colors.mutedForeground }]}>NUTRITION PER SERVING</Text>
+        {/* Distinguishes real API-sourced macros (Spoonacular bookmarks)
+            from lib/macros.ts's USDA/local-table estimate, so it's
+            obvious at a glance which one you're looking at — useful for
+            spotting a recipe that should have real data but doesn't
+            (e.g. bookmarked before servings/macros persistence existed,
+            or before this build was deployed). */}
+        {macros.estimated && (
+          <Text style={[macroStyles.estimatedBadge, { color: colors.mutedForeground, borderColor: colors.border }]}>
+            estimated
+          </Text>
+        )}
+      </View>
       <View style={macroStyles.row}>
         {items.map((item) => (
           <View key={item.label} style={macroStyles.cell}>
@@ -35,10 +48,14 @@ export function MacroBar({ macros, colors }: { macros: Macros; colors: ReturnTyp
 }
 
 export function MacroPills({ macros, colors }: { macros: Macros; colors: ReturnType<typeof useColors> }) {
+  // Same real-vs-estimated distinction as MacroBar's badge, just
+  // compact enough to fit a list row: a "~" prefix on calories rather
+  // than a separate label.
+  const caloriesPrefix = macros.estimated ? "~" : "";
   return (
     <View style={macroStyles.pillRow}>
       <View style={[macroStyles.pill, { backgroundColor: colors.secondary }]}>
-        <Text style={[macroStyles.pillVal, { color: colors.foreground }]}>{Math.round(macros.calories)}</Text>
+        <Text style={[macroStyles.pillVal, { color: colors.foreground }]}>{caloriesPrefix}{Math.round(macros.calories)}</Text>
         <Text style={[macroStyles.pillLabel, { color: colors.mutedForeground }]}>kcal</Text>
       </View>
       <View style={[macroStyles.pill, { backgroundColor: colors.secondary }]}>
@@ -59,7 +76,9 @@ export function MacroPills({ macros, colors }: { macros: Macros; colors: ReturnT
 
 const macroStyles = StyleSheet.create({
   wrap: { borderRadius: 14, borderWidth: 1, padding: 16, marginTop: 8, marginBottom: 4 },
-  heading: { fontSize: 10, fontFamily: "Inter_600SemiBold", letterSpacing: 2, marginBottom: 12 },
+  heading: { fontSize: 10, fontFamily: "Inter_600SemiBold", letterSpacing: 2 },
+  headingRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: 12 },
+  estimatedBadge: { fontSize: 9, fontFamily: "Inter_600SemiBold", borderWidth: 1, borderRadius: 8, paddingHorizontal: 6, paddingVertical: 2, textTransform: "uppercase", letterSpacing: 0.5 },
   row: { flexDirection: "row", justifyContent: "space-between" },
   cell: { alignItems: "center", flex: 1 },
   value: { fontSize: 17, fontFamily: "Inter_700Bold" },
