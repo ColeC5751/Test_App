@@ -2,6 +2,7 @@ import { Feather } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
+  ActivityIndicator,
   Alert,
   Animated,
   Easing,
@@ -27,42 +28,9 @@ import {
 } from "@/lib/sync";
 
 import { buildShareUrl } from "@/lib/supabase";
-import { estimateMacrosPerServing } from "@/lib/macros";
+import { useRecipeMacros, scaleIngredientText } from "@/lib/macros";
 import { MacroBar, MacroPills } from "@/components/MacroDisplay";
-import type { MealPlan, PersonalRecipe, PlanSlot, SharePermission, Macros } from "@/lib/types";
-
-// Nutrition source for a personal recipe: use real API-provided macros if
-// the recipe has them (bookmarked from a Spoonacular search result, see
-// handleToggleSaveRecipe in index.tsx), otherwise fall back to the
-// ingredient-based estimator for recipes that never had a nutrition
-// source at all (manual entry, photo import, URL scrape). Either way this
-// is a fixed per-serving figure — it does NOT scale with the plan slot's
-// servings stepper (see MacroDisplay.tsx's comment on why).
-function getRecipeMacros(recipe: PersonalRecipe): Macros {
-  return recipe.macros ?? estimateMacrosPerServing(recipe.ingredients, recipe.servings ?? 1);
-}
-
-// Scales numeric values in a freeform ingredient string by a multiplier.
-// Small, self-contained duplicate of the same approach used in the My
-// Dinners recipe detail view (roulette.tsx) — that screen's current
-// source wasn't available when this was written, so this couldn't be
-// consolidated into a shared lib yet. Worth moving there once it is.
-function scaleIngredientText(text: string, multiplier: number): string {
-  if (multiplier === 1) return text;
-  return text.replace(/(\d+\/\d+|\d+\.?\d*)/g, (match) => {
-    let val: number;
-    if (match.includes("/")) {
-      const [num, den] = match.split("/").map(Number);
-      val = den ? num / den : 0;
-    } else {
-      val = parseFloat(match);
-    }
-    if (isNaN(val)) return match;
-    const scaled = val * multiplier;
-    const rounded = Math.round(scaled * 100) / 100;
-    return rounded % 1 === 0 ? String(Math.round(rounded)) : rounded.toFixed(1);
-  });
-}
+import type { MealPlan, PersonalRecipe, PlanSlot, SharePermission } from "@/lib/types";
 
 // ─── Date helpers ─────────────────────────────────────────────────────────────
 
@@ -90,6 +58,8 @@ const planDetailStyles = StyleSheet.create({
   photoPlaceholder: { width: "100%", height: 200, borderRadius: 14, alignItems: "center", justifyContent: "center" },
   recipeName: { fontSize: 22, fontFamily: "Inter_700Bold" },
   servingsRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", borderRadius: 14, borderWidth: 1, paddingHorizontal: 16, paddingVertical: 12 },
+  macrosLoadingRow: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, paddingVertical: 14 },
+  macrosLoadingText: { fontSize: 12, fontFamily: "Inter_400Regular" },
   servingsLabel: { fontSize: 11, fontFamily: "Inter_600SemiBold", letterSpacing: 1.5 },
   stepper: { flexDirection: "row", alignItems: "center", gap: 16 },
   stepperBtn: { width: 34, height: 34, borderRadius: 17, borderWidth: 1, alignItems: "center", justifyContent: "center" },
@@ -230,6 +200,52 @@ const confirmStyles = StyleSheet.create({
 
 // ─── Slot Picker Modal ────────────────────────────────────────────────────────
 
+// ─── Picker Recipe Row ────────────────────────────────────────────────────────
+// Its own component (not inlined in a .map() callback) specifically so
+// useRecipeMacros can be called for it — hooks can't be called inside a
+// loop/callback, only at a component's top level.
+
+function PickerRecipeRow({
+  recipe,
+  colors,
+  onPress,
+}: {
+  recipe: PersonalRecipe;
+  colors: ReturnType<typeof useColors>;
+  onPress: () => void;
+}) {
+  const { macros } = useRecipeMacros(recipe);
+
+  return (
+    <Pressable
+      onPress={onPress}
+      style={({ pressed }) => [
+        pickerStyles.recipeRow,
+        { backgroundColor: colors.card, borderColor: colors.border },
+        pressed && { opacity: 0.8 },
+      ]}
+    >
+      {recipe.photoUrl ? (
+        <Image source={{ uri: recipe.photoUrl }} style={pickerStyles.thumb} />
+      ) : (
+        <View style={[pickerStyles.thumbPlaceholder, { backgroundColor: colors.muted }]}>
+          <Feather name="coffee" size={18} color={colors.mutedForeground} />
+        </View>
+      )}
+      <View style={{ flex: 1, gap: 4 }}>
+        <Text style={[pickerStyles.recipeName, { color: colors.foreground }]} numberOfLines={2}>
+          {recipe.name}
+        </Text>
+        {/* No loading indicator here — a spinner per row while a whole
+            list resolves would be noisier than just letting the pills
+            pop in once ready (same choice as roulette.tsx's list). */}
+        {macros && <MacroPills macros={macros} colors={colors} />}
+      </View>
+      <Feather name="chevron-right" size={16} color={colors.mutedForeground} />
+    </Pressable>
+  );
+}
+
 function SlotPickerModal({
   visible,
   dateLabel,
@@ -312,30 +328,12 @@ function SlotPickerModal({
             </View>
           ) : (
             recipes.map((recipe) => (
-              <Pressable
+              <PickerRecipeRow
                 key={recipe.id}
+                recipe={recipe}
+                colors={colors}
                 onPress={() => { onPickRecipe(recipe); Haptics.selectionAsync(); }}
-                style={({ pressed }) => [
-                  pickerStyles.recipeRow,
-                  { backgroundColor: colors.card, borderColor: colors.border },
-                  pressed && { opacity: 0.8 },
-                ]}
-              >
-                {recipe.photoUrl ? (
-                  <Image source={{ uri: recipe.photoUrl }} style={pickerStyles.thumb} />
-                ) : (
-                  <View style={[pickerStyles.thumbPlaceholder, { backgroundColor: colors.muted }]}>
-                    <Feather name="coffee" size={18} color={colors.mutedForeground} />
-                  </View>
-                )}
-                <View style={{ flex: 1, gap: 4 }}>
-                  <Text style={[pickerStyles.recipeName, { color: colors.foreground }]} numberOfLines={2}>
-                    {recipe.name}
-                  </Text>
-                  <MacroPills macros={getRecipeMacros(recipe)} colors={colors} />
-                </View>
-                <Feather name="chevron-right" size={16} color={colors.mutedForeground} />
-              </Pressable>
+              />
             ))
           )}
         </ScrollView>
@@ -384,11 +382,9 @@ function PlanShareModal({
 
   const handleShare = async () => {
     if (!shareUrl) return;
-    // Only pass `message` — Share.share() on iOS appends `url` to the end
-    // of `message` rather than treating them as alternatives, so passing
-    // both produced the link twice in the share sheet text.
     await Share.share({
       message: `Join my meal plan on That's Dinner:\n${shareUrl}`,
+      url: shareUrl,
     });
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
   };
@@ -479,6 +475,11 @@ export default function PlanScreen() {
   const [addingToGrocery, setAddingToGrocery] = useState(false);
   const [viewingSlot, setViewingSlot] = useState<{ slot: PlanSlot; date: Date } | null>(null);
   const [viewingRecipe, setViewingRecipe] = useState<PersonalRecipe | null>(null);
+  // Called at the top level (not inside the IIFE further down that
+  // renders the plan detail view) per the rules of hooks. useRecipeMacros
+  // handles a null viewingRecipe gracefully — { macros: null, loading:
+  // false } — so it's safe to call this unconditionally on every render.
+  const { macros: viewingMacros, loading: viewingMacrosLoading } = useRecipeMacros(viewingRecipe);
   // Local, editable copy of the currently-viewed slot's servings — kept
   // separate from viewingSlot.slot.servings so the stepper feels
   // immediate, then persisted via commitSlotServings below.
@@ -961,7 +962,22 @@ export default function PlanScreen() {
                     </View>
                   </View>
 
-                  <MacroBar macros={getRecipeMacros(viewingRecipe)} colors={colors} />
+                  {/* Nutrition is a fixed per-serving figure — it does NOT
+                      scale with the servings stepper above (same
+                      principle as the That's Dinner tab's MacroBar; see
+                      MacroDisplay.tsx). Uses real API-sourced macros if
+                      this recipe was bookmarked from a Spoonacular search
+                      result, otherwise a USDA-backed estimate that may
+                      take a moment to resolve — see useRecipeMacros in
+                      lib/macros.ts, called at the top of PlanScreen. */}
+                  {viewingMacrosLoading ? (
+                    <View style={planDetailStyles.macrosLoadingRow}>
+                      <ActivityIndicator size="small" color={colors.mutedForeground} />
+                      <Text style={[planDetailStyles.macrosLoadingText, { color: colors.mutedForeground }]}>Calculating nutrition…</Text>
+                    </View>
+                  ) : viewingMacros ? (
+                    <MacroBar macros={viewingMacros} colors={colors} />
+                  ) : null}
 
                   {viewingRecipe.ingredients ? (
                     <View style={[planDetailStyles.ingredientsCard, { backgroundColor: colors.card, borderColor: colors.border }]}>
