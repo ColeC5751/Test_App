@@ -9,7 +9,6 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { Stack, useRouter, useSegments } from "expo-router";
 import * as SplashScreen from "expo-splash-screen";
 import * as WebBrowser from "expo-web-browser";
-import AsyncStorage from "@react-native-async-storage/async-storage";
 import React, { useEffect, useState } from "react";
 import { Linking, Platform } from "react-native";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
@@ -18,6 +17,7 @@ import { SafeAreaProvider } from "react-native-safe-area-context";
 import type { Session } from "@supabase/supabase-js";
 
 import { ErrorBoundary } from "@/components/ErrorBoundary";
+import { SkipAuthProvider, useSkipAuth } from "@/contexts/SkipAuthContext";
 import { supabase } from "@/lib/supabase";
 
 WebBrowser.maybeCompleteAuthSession();
@@ -26,34 +26,37 @@ SplashScreen.preventAutoHideAsync();
 const queryClient = new QueryClient();
 
 // ─── Auth gate ────────────────────────────────────────────────────────────────
-// Watches the Supabase session (and the local "skip auth" flag) and
-// redirects accordingly:
+// Watches the Supabase session (and the shared "skip auth" context — see
+// contexts/SkipAuthContext.tsx) and redirects accordingly:
 //   • No session + no skip flag + not on auth screen → redirect to /auth
 //   • Real session + on auth screen                  → redirect to /(tabs)
 //   • Skip flag, no real session                      → no forced redirect
 //     either direction. This lets a skip-auth user freely visit /auth
 //     later (e.g. to sign in for real) without being bounced straight back
-//     to /(tabs) by this gate — that bounce was the earlier "can't exit
-//     skip mode" bug. Individual screens that require a real account (see
-//     Shared tab) enforce that themselves via useRequireSession, not here.
-// "Continue without account" sets the local flag (see app/auth.tsx) to
-// skip the gate without creating a Supabase session.
+//     to /(tabs) by this gate. Individual screens that require a real
+//     account (see Shared tab) enforce that themselves via
+//     useRequireSession, not here.
+// skipAuth comes from context (not local state) specifically so that
+// tapping "Continue without account" in app/auth.tsx updates this gate's
+// view of the world on the very next render — no stale value, no bounce.
 // This is the ONLY place that should decide navigation based on session
 // state — it's path-aware (checks segments) so it never clobbers a user
 // who landed on a shared link.
 
-export const SKIP_AUTH_KEY = "@recipe_roulette_skip_auth";
-
 function useAuthGate(
   session: Session | null,
   sessionLoaded: boolean,
-  skipAuth: boolean
+  skipAuth: boolean,
+  skipAuthLoaded: boolean
 ) {
   const router = useRouter();
   const segments = useSegments();
 
   useEffect(() => {
-    if (!sessionLoaded) return;
+    // Wait for BOTH sources before making any navigation decision — acting
+    // on session state while skipAuth is still mid-load (or vice versa)
+    // is exactly the kind of stale-read race that caused the original bug.
+    if (!sessionLoaded || !skipAuthLoaded) return;
 
     const inAuthGroup = segments[0] === "auth";
     const inSharedGroup = segments[0] === "(shared)";
@@ -76,24 +79,19 @@ function useAuthGate(
         router.replace("/auth");
       }
     }
-  }, [session, sessionLoaded, skipAuth, segments]);
+  }, [session, sessionLoaded, skipAuth, skipAuthLoaded, segments]);
 }
 
 function RootLayoutNav() {
   const router = useRouter();
   const [session, setSession] = useState<Session | null>(null);
   const [sessionLoaded, setSessionLoaded] = useState(false);
-  const [skipAuth, setSkipAuth] = useState(false);
+  const { skipAuth, skipAuthLoaded, setSkipAuth } = useSkipAuth();
 
-  // Load initial session + skip-auth flag together so the gate doesn't
-  // fire on a false "no session" state while storage is still loading.
+  // Load initial session.
   useEffect(() => {
-    Promise.all([
-      supabase.auth.getSession(),
-      AsyncStorage.getItem(SKIP_AUTH_KEY),
-    ]).then(([{ data }, skip]) => {
+    supabase.auth.getSession().then(({ data }) => {
       setSession(data.session);
-      setSkipAuth(skip === "true");
       setSessionLoaded(true);
     });
   }, []);
@@ -108,14 +106,14 @@ function RootLayoutNav() {
   // useAuthGate above is the single source of truth for navigation
   // because it's path-aware (it checks segments before redirecting).
   //
-  // On a real sign-in we also clear the skip-auth flag, so a user who
-  // previously tapped "continue without account" and later signs in
-  // properly doesn't leave a stale flag sitting in storage.
+  // On a real sign-in we also clear the skip-auth flag via context, so a
+  // user who previously tapped "continue without account" and later signs
+  // in properly doesn't leave a stale flag sitting around.
   useEffect(() => {
     const { data: listener } = supabase.auth.onAuthStateChange((event, newSession) => {
       setSession(newSession);
       if (event === "SIGNED_IN" && newSession) {
-        AsyncStorage.removeItem(SKIP_AUTH_KEY).then(() => setSkipAuth(false));
+        setSkipAuth(false).catch((err) => console.error("Failed to clear skip-auth flag:", err));
       }
     });
     return () => listener.subscription.unsubscribe();
@@ -178,7 +176,7 @@ function RootLayoutNav() {
     return () => subscription.remove();
   }, []);
 
-  useAuthGate(session, sessionLoaded, skipAuth);
+  useAuthGate(session, sessionLoaded, skipAuth, skipAuthLoaded);
 
   // Transition tuning per screen. Kept subtle and purposeful rather than
   // decorative: auth fades in/out (a calm, low-motion moment rather than
@@ -223,7 +221,9 @@ export default function RootLayout() {
         <QueryClientProvider client={queryClient}>
           <GestureHandlerRootView>
             <KeyboardProvider>
-              <RootLayoutNav />
+              <SkipAuthProvider>
+                <RootLayoutNav />
+              </SkipAuthProvider>
             </KeyboardProvider>
           </GestureHandlerRootView>
         </QueryClientProvider>
