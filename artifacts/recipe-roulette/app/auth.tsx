@@ -4,6 +4,7 @@
 
 import { Feather } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 import React, { useRef, useState } from "react";
 import {
 ActivityIndicator,
@@ -20,6 +21,7 @@ View,
 
 import { supabase } from "@/lib/supabase";
 import { useColors } from "@/hooks/useColors";
+import { SKIP_AUTH_KEY } from "./_layout";
 
 const CODE_LENGTH = 6;
 
@@ -36,6 +38,7 @@ const [error, setError] = useState("");
 
 const [digits, setDigits] = useState<string[]>(Array(CODE_LENGTH).fill(""));
 const [verifying, setVerifying] = useState(false);
+const [skipping, setSkipping] = useState(false);
 const inputRefs = useRef<Array<TextInput | null>>([]);
 
 const code = digits.join("");
@@ -138,8 +141,17 @@ setDigits(Array(CODE_LENGTH).fill(""));
 setError("");
 };
 
-const handleSkip = () => {
+const handleSkip = async () => {
+if (skipping) return;
+setSkipping(true);
+try {
+await AsyncStorage.setItem(SKIP_AUTH_KEY, "true");
 router.replace("/(tabs)");
+} catch (err) {
+setError("Couldn't continue without an account. Please try again.");
+} finally {
+setSkipping(false);
+}
 };
 
 return (
@@ -266,10 +278,13 @@ Verify Code
 )}
 
 {/* Skip / continue without account */}
-<Pressable onPress={handleSkip} style={styles.skipBtn}>
-<Text style={[styles.skipText, { color: colors.mutedForeground }]}>
+<Pressable onPress={handleSkip} style={styles.skipBtn} disabled={skipping}>
+{skipping
+? <ActivityIndicator color={colors.mutedForeground} size="small" />
+: <Text style={[styles.skipText, { color: colors.mutedForeground }]}>
 Continue without an account →
 </Text>
+}
 </Pressable>
 </View>
 </KeyboardAvoidingView>
