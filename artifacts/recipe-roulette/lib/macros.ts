@@ -15,19 +15,12 @@
 // something to build strict calorie-counting features on top of.
 
 import { parseIngredientLine, splitIngredientLines } from "./sync";
+import type { Macros, PersonalRecipe } from "./types";
 
-export type Macros = {
-  calories: number;
-  protein: number;
-  carbs: number;
-  fat: number;
-  fiber: number;
-  // Set on anything produced by estimateMacrosPerServing() below, so
-  // consumers can distinguish a real API-sourced figure (e.g. Spoonacular)
-  // from this rough estimate if they want to label it differently. Not
-  // currently read anywhere in the UI — left available for that later.
-  estimated?: boolean;
-};
+// Re-exported so existing `import type { Macros } from "@/lib/macros"`
+// call sites keep working — the canonical definition now lives in
+// lib/types.ts alongside every other shared data shape.
+export type { Macros };
 
 // ─── Nutrition table (per 100g, edible portion, approximate) ──────────────
 //
@@ -211,4 +204,44 @@ export function estimateMacrosPerServing(rawIngredientsText: string, servings: n
     fiber: totals.fiber / safeServings,
     estimated: true,
   };
+}
+
+/**
+ * Resolves the best available per-serving macros for a personal recipe:
+ * real API-sourced data if it has any (set when bookmarked from a
+ * Spoonacular search result — see handleToggleSaveRecipe in index.tsx),
+ * otherwise falls back to the ingredient-based estimate above. Shared by
+ * roulette.tsx (My Dinners) and plan.tsx (Planner) so both screens
+ * resolve/display macros the same way instead of duplicating this
+ * fallback logic.
+ */
+export function getRecipeMacros(recipe: PersonalRecipe): Macros {
+  return recipe.macros ?? estimateMacrosPerServing(recipe.ingredients, recipe.servings ?? 1);
+}
+
+/**
+ * Scales numeric values in a freeform ingredient string by a multiplier.
+ * e.g. "2 tbsp butter, 1 cup milk" × 2 → "4 tbsp butter, 2 cup milk"
+ * Handles integers, decimals, and simple fractions (1/2, 3/4 etc.)
+ *
+ * Consolidated here from what were previously two identical copies (one
+ * in roulette.tsx, one in plan.tsx). Not really "macro" logic, but this
+ * is the closest existing shared home for ingredient-text utilities —
+ * worth a dedicated lib/ingredients.ts if more of these show up.
+ */
+export function scaleIngredientText(text: string, multiplier: number): string {
+  if (multiplier === 1) return text;
+  return text.replace(/(\d+\/\d+|\d+\.?\d*)/g, (match) => {
+    let val: number;
+    if (match.includes("/")) {
+      const [num, den] = match.split("/").map(Number);
+      val = den ? num / den : 0;
+    } else {
+      val = parseFloat(match);
+    }
+    if (isNaN(val)) return match;
+    const scaled = val * multiplier;
+    const rounded = Math.round(scaled * 100) / 100;
+    return rounded % 1 === 0 ? String(Math.round(rounded)) : rounded.toFixed(1);
+  });
 }
