@@ -3,7 +3,7 @@
 // 6-digit code, enters it here, session is established automatically.
 
 import { Feather } from "@expo/vector-icons";
-import { useRouter } from "expo-router";
+import { useLocalSearchParams, useRouter } from "expo-router";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import React, { useRef, useState } from "react";
 import {
@@ -25,9 +25,18 @@ import { SKIP_AUTH_KEY } from "./_layout";
 
 const CODE_LENGTH = 6;
 
+// Contextual banner copy shown when a locked screen (e.g. Shared) redirects
+// here — keyed by the `reason` query param set in useRequireSession callers.
+// Keep keys short and stable since they're embedded in URLs/redirects.
+const REASON_MESSAGES: Record<string, string> = {
+  shared: "Sign in to view shared plans",
+};
+
 export default function AuthScreen() {
 const colors = useColors();
 const router = useRouter();
+const params = useLocalSearchParams<{ reason?: string }>();
+const reasonMessage = params.reason ? REASON_MESSAGES[params.reason] : undefined;
 
 // Step control: "email" -> "code"
 const [step, setStep] = useState<"email" | "code">("email");
@@ -169,6 +178,13 @@ behavior={Platform.OS === "ios" ? "padding" : undefined}
 Plan meals, spin for ideas, shop together
 </Text>
 
+{reasonMessage ? (
+<View style={[styles.reasonBanner, { backgroundColor: colors.secondary, borderColor: colors.border }]}>
+<Feather name="lock" size={14} color={colors.mutedForeground} />
+<Text style={[styles.reasonText, { color: colors.foreground }]}>{reasonMessage}</Text>
+</View>
+) : null}
+
 {step === "email" ? (
 /* Step 1 — email input */
 <View style={styles.form}>
@@ -298,6 +314,17 @@ brandRow: { flexDirection: "row", alignItems: "center", gap: 12, justifyContent:
 brandEmoji: { fontSize: 40 },
 brandName: { fontSize: 32, fontFamily: "Inter_700Bold" },
 tagline: { fontSize: 15, fontFamily: "Inter_400Regular", textAlign: "center", lineHeight: 22 },
+reasonBanner: {
+flexDirection: "row",
+alignItems: "center",
+justifyContent: "center",
+gap: 8,
+borderRadius: 12,
+borderWidth: 1,
+paddingVertical: 10,
+paddingHorizontal: 14,
+},
+reasonText: { fontSize: 13, fontFamily: "Inter_500Medium", textAlign: "center" },
 form: { gap: 10 },
 label: { fontSize: 10, fontFamily: "Inter_600SemiBold", letterSpacing: 2 },
 input: {
