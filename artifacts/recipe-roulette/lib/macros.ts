@@ -1,19 +1,24 @@
 // ─── Ingredient-based macro estimation ─────────────────────────────────────
 //
-// There is no backend endpoint that computes nutrition from an arbitrary
-// ingredients list — the spin tab's `recipe.macros` comes pre-computed from
-// the `/api/recipes/search` response for Spoonacular-sourced recipes only.
-// Manually-entered, photo-imported, and URL-scraped recipes have no
-// nutrition source at all. This module fills that gap with a small,
-// self-contained, rough estimator: match each ingredient line against a
-// keyword-based nutrition table (same pattern as AISLE_MAP/getAisle in
-// sync.ts), convert its amount to grams, and sum per-100g nutrition scaled
-// by weight.
+// Primary source: USDA FoodData Central (fdc.nal.usda.gov) — a free,
+// government-run nutrition database, queried per ingredient. Falls back to
+// the small local NUTRITION_DB table below when USDA has no match for an
+// ingredient or the request fails (offline, rate-limited, etc.), so this
+// never regresses below fully-local behavior.
 //
-// This is explicitly a *rough* estimate, not the accuracy of a real
-// nutrition API — treat it as "close enough for planning a meal," not as
-// something to build strict calorie-counting features on top of.
+// This only ever runs for recipes with no real nutrition source at all —
+// manually-entered, photo-imported, or URL-scraped recipes. Spoonacular
+// bookmarks already carry real API-provided macros (see
+// handleToggleSaveRecipe in index.tsx) and skip all of this.
+//
+// Because this now makes network requests, it's async and cached (both
+// in-memory for the session and in AsyncStorage across app restarts) —
+// see useRecipeMacros() at the bottom, which is what screens should
+// actually call. Still an approximation even with USDA data — ingredient
+// name matching and unit-to-gram conversion are both heuristic.
 
+import AsyncStorage from "@react-native-async-storage/async-storage";
+import { useEffect, useState } from "react";
 import { parseIngredientLine, splitIngredientLines } from "./sync";
 import type { Macros, PersonalRecipe } from "./types";
 
@@ -22,13 +27,18 @@ import type { Macros, PersonalRecipe } from "./types";
 // lib/types.ts alongside every other shared data shape.
 export type { Macros };
 
-// ─── Nutrition table (per 100g, edible portion, approximate) ──────────────
+// ─── Local fallback nutrition table (per 100g, edible portion, approximate) ──
 //
-// `gramsPerUnit` lets a specific ingredient override the generic unit
-// conversions below for units that don't behave like a simple liquid
-// (e.g. a "cup" of flour is much lighter than a "cup" of olive oil). Keys
-// are lowercased unit strings matching KNOWN_UNITS in sync.ts, plus the
-// special key "each" for countable/no-unit items ("3 eggs", "2 cloves").
+// Used only when USDA FoodData Central has no match for an ingredient or
+// the request fails. `gramsPerUnit` lets a specific ingredient override the
+// generic unit conversions below for units that don't behave like a simple
+// liquid (e.g. a "cup" of flour is much lighter than a "cup" of olive oil).
+// These gramsPerUnit overrides are also reused for USDA-sourced nutrient
+// values (see toGrams below) — USDA's search results don't reliably include
+// household-unit portion weights, so unit-to-gram conversion stays local
+// regardless of where the per-100g nutrient values themselves came from.
+// Keys are lowercased unit strings matching KNOWN_UNITS in sync.ts, plus
+// the special key "each" for countable/no-unit items ("3 eggs", "2 cloves").
 
 type NutritionEntry = {
   keywords: string[];
@@ -167,34 +177,183 @@ function toGrams(amount: number, unit: string, entry: NutritionEntry): number {
   return amount * perItem;
 }
 
+// ─── USDA FoodData Central integration ─────────────────────────────────────
+//
+// Personal free API key (fdc.nal.usda.gov/api-key-signup) — not rate-shared
+// with other DEMO_KEY users, so this is fine for real usage.
+const USDA_FDC_API_KEY = "bfoO0yWqAOcdRUWF4gPkCcuUxiG9FKMO4K9lkHG3";
+const USDA_FDC_SEARCH_URL = "https://api.nal.usda.gov/fdc/v1/foods/search";
+
+type Per100g = { calories: number; protein: number; carbs: number; fat: number; fiber: number };
+
+function extractNutrient(foodNutrients: any[], nutrientName: string, unitName?: string): number {
+  const match = foodNutrients.find(
+    (n) => n?.nutrientName === nutrientName && (!unitName || n?.unitName === unitName)
+  );
+  return typeof match?.value === "number" ? match.value : 0;
+}
+
+// Restricted to Foundation + SR Legacy data types: both report nutrients
+// per 100g consistently (matching this module's whole architecture).
+// Branded-food results get excluded — those report per-serving-as-labeled
+// rather than per-100g, and would need a completely different unit-
+// handling path to use correctly.
+async function fetchUsdaNutrition(
+  name: string
+): Promise<{ status: "found"; data: Per100g } | { status: "not_found" } | { status: "error" }> {
+  try {
+    const url =
+      `${USDA_FDC_SEARCH_URL}?api_key=${USDA_FDC_API_KEY}` +
+      `&query=${encodeURIComponent(name)}&pageSize=1&dataType=Foundation,SR%20Legacy`;
+    const res = await fetch(url);
+    if (!res.ok) return { status: "error" };
+
+    const data = await res.json();
+    const food = data?.foods?.[0];
+    if (!food) return { status: "not_found" };
+
+    const nutrients: any[] = food.foodNutrients ?? [];
+    return {
+      status: "found",
+      data: {
+        calories: extractNutrient(nutrients, "Energy", "KCAL"),
+        protein: extractNutrient(nutrients, "Protein"),
+        carbs: extractNutrient(nutrients, "Carbohydrate, by difference"),
+        fat: extractNutrient(nutrients, "Total lipid (fat)"),
+        fiber: extractNutrient(nutrients, "Fiber, total dietary"),
+      },
+    };
+  } catch {
+    return { status: "error" };
+  }
+}
+
+// ─── Per-ingredient nutrition cache ─────────────────────────────────────────
+//
+// Recipe lists render macros for every row, and a single recipe has
+// multiple ingredients — without caching, that's a fresh network call per
+// ingredient per recipe on every render, which would blow through even a
+// generous free-tier limit almost immediately. Cached at the ingredient
+// name level (not the recipe level) since common ingredients like "olive
+// oil" or "salt" are shared across many recipes.
+//
+// Two tiers: an in-memory Map for the current session (instant, no
+// AsyncStorage round-trip), backed by AsyncStorage so lookups survive app
+// restarts too. Nutrition facts don't change, so entries never expire.
+
+const NUTRITION_CACHE_PREFIX = "@nutrition_cache:";
+const memoryNutritionCache = new Map<string, Per100g>();
+
+function cacheKeyFor(name: string): string {
+  return name.toLowerCase().trim();
+}
+
+async function getCachedNutrition(name: string): Promise<Per100g | null> {
+  const key = cacheKeyFor(name);
+  if (memoryNutritionCache.has(key)) return memoryNutritionCache.get(key)!;
+  try {
+    const stored = await AsyncStorage.getItem(NUTRITION_CACHE_PREFIX + key);
+    if (stored) {
+      const parsed = JSON.parse(stored) as Per100g;
+      memoryNutritionCache.set(key, parsed);
+      return parsed;
+    }
+  } catch {
+    // Corrupt/unreadable cache entry — treat as a miss and re-resolve.
+  }
+  return null;
+}
+
+async function setCachedNutrition(name: string, data: Per100g): Promise<void> {
+  const key = cacheKeyFor(name);
+  memoryNutritionCache.set(key, data);
+  try {
+    await AsyncStorage.setItem(NUTRITION_CACHE_PREFIX + key, JSON.stringify(data));
+  } catch {
+    // Non-fatal — just means this ingredient re-resolves next session
+    // instead of hitting the persistent cache.
+  }
+}
+
+// Resolves per-100g nutrition + the local entry (for its gramsPerUnit
+// overrides) for one ingredient name: cache → USDA → local table.
+//
+// Deliberately does NOT cache "error" results (network failure, API
+// down) — those are worth retrying next time rather than permanently
+// locking in the rough local fallback because of a transient issue. A
+// genuine "not_found" from USDA (the ingredient just isn't in their
+// database under this name) DOES get cached, since that's unlikely to
+// change and re-querying USDA for it every time would be wasted calls.
+async function resolveIngredientNutrition(name: string): Promise<{ per100g: Per100g; entry: NutritionEntry }> {
+  const localEntry = matchNutritionEntry(name);
+
+  const cached = await getCachedNutrition(name);
+  if (cached) return { per100g: cached, entry: localEntry };
+
+  const usda = await fetchUsdaNutrition(name);
+
+  if (usda.status === "found") {
+    await setCachedNutrition(name, usda.data);
+    return { per100g: usda.data, entry: localEntry };
+  }
+  if (usda.status === "not_found") {
+    await setCachedNutrition(name, localEntry.per100g);
+  }
+  return { per100g: localEntry.per100g, entry: localEntry };
+}
+
 /**
- * Estimates PER-SERVING macros for a raw ingredients string.
+ * Estimates PER-SERVING macros for a raw ingredients string, resolving
+ * each ingredient's nutrition via USDA FoodData Central (cached, with a
+ * local-table fallback) — see resolveIngredientNutrition above.
  *
  * `servings` must be the recipe's own yield (how many servings the full
  * ingredients list produces) — NOT a live "how many do you want to cook"
  * multiplier. Per-serving nutrition is a fixed property of the recipe; it
  * doesn't change when someone scales the batch size up or down (same
- * principle the spin tab's MacroBar already relies on — see its comment).
- * Callers scaling ingredient amounts for a bigger batch should still pass
- * the recipe's original servings count here, not the scaled target.
+ * principle MacroDisplay.tsx's MacroBar already relies on). Callers
+ * scaling ingredient amounts for a bigger batch should still pass the
+ * recipe's original servings count here, not the scaled target.
  */
-export function estimateMacrosPerServing(rawIngredientsText: string, servings: number): Macros {
-  const totals = { calories: 0, protein: 0, carbs: 0, fat: 0, fiber: 0 };
+export async function estimateMacrosPerServing(rawIngredientsText: string, servings: number): Promise<Macros> {
+  const lines = splitIngredientLines(rawIngredientsText);
 
-  for (const line of splitIngredientLines(rawIngredientsText)) {
-    const { name, amount, unit } = parseIngredientLine(line);
-    const entry = matchNutritionEntry(name);
-    const grams = toGrams(amount, unit, entry);
-    const scale = grams / 100;
+  const perIngredientTotals = await Promise.all(
+    lines.map(async (line) => {
+      const { name, amount, unit } = parseIngredientLine(line);
+      const { per100g, entry } = await resolveIngredientNutrition(name);
+      const grams = toGrams(amount, unit, entry);
+      const scale = grams / 100;
+      return {
+        calories: per100g.calories * scale,
+        protein: per100g.protein * scale,
+        carbs: per100g.carbs * scale,
+        fat: per100g.fat * scale,
+        fiber: per100g.fiber * scale,
+      };
+    })
+  );
 
-    totals.calories += entry.per100g.calories * scale;
-    totals.protein += entry.per100g.protein * scale;
-    totals.carbs += entry.per100g.carbs * scale;
-    totals.fat += entry.per100g.fat * scale;
-    totals.fiber += entry.per100g.fiber * scale;
-  }
+  const totals = perIngredientTotals.reduce(
+    (acc, t) => ({
+      calories: acc.calories + t.calories,
+      protein: acc.protein + t.protein,
+      carbs: acc.carbs + t.carbs,
+      fat: acc.fat + t.fat,
+      fiber: acc.fiber + t.fiber,
+    }),
+    { calories: 0, protein: 0, carbs: 0, fat: 0, fiber: 0 }
+  );
 
-  const safeServings = servings > 0 ? servings : 1;
+  // Falls back to 4 when passed an invalid/unknown serving count — matching
+  // the same default already used elsewhere (index.tsx, plan.tsx) rather
+  // than assuming 1. Assuming 1 here previously meant: for any recipe
+  // without a real servings value (i.e. every manually-typed,
+  // photo-imported, or URL-scraped recipe — only Spoonacular bookmarks
+  // ever get servings set), the estimator's *whole-recipe* total got
+  // reported as if it were a single serving, inflating calories by
+  // roughly however many servings the recipe actually makes.
+  const safeServings = servings > 0 ? servings : 4;
 
   return {
     calories: totals.calories / safeServings,
@@ -207,24 +366,54 @@ export function estimateMacrosPerServing(rawIngredientsText: string, servings: n
 }
 
 /**
- * Resolves the best available per-serving macros for a personal recipe:
- * real API-sourced data if it has any (set when bookmarked from a
- * Spoonacular search result — see handleToggleSaveRecipe in index.tsx),
- * otherwise falls back to the ingredient-based estimate above. Shared by
- * roulette.tsx (My Dinners) and plan.tsx (Planner) so both screens
- * resolve/display macros the same way instead of duplicating this
- * fallback logic.
+ * React hook: resolves the best available per-serving macros for a
+ * personal recipe. Real API-sourced data (bookmarked from a Spoonacular
+ * search result — see handleToggleSaveRecipe in index.tsx) resolves
+ * synchronously with no loading state; anything else triggers the async
+ * USDA-backed estimate above and reports `loading: true` until it
+ * resolves. Shared by roulette.tsx (My Dinners) and plan.tsx (Planner) so
+ * both screens resolve/display macros the same way.
+ *
+ * Must be called at a component's top level per the rules of hooks — for
+ * a list of recipes, that means each row needs to be its own component
+ * (see RecipeListRow in roulette.tsx / PickerRecipeRow in plan.tsx for the
+ * pattern), not called inline inside a .map() callback.
  */
-export function getRecipeMacros(recipe: PersonalRecipe): Macros {
-  // Falls back to 4 when a recipe has no stored serving count — matching
-  // the same default already used elsewhere (index.tsx, plan.tsx) rather
-  // than assuming 1. Falling back to 1 here previously meant: for any
-  // recipe without a real servings value (i.e. every manually-typed,
-  // photo-imported, or URL-scraped recipe — only Spoonacular bookmarks
-  // ever get servings set), the estimator's *whole-recipe* total got
-  // reported as if it were a single serving, inflating calories by
-  // roughly however many servings the recipe actually makes.
-  return recipe.macros ?? estimateMacrosPerServing(recipe.ingredients, recipe.servings ?? 4);
+export function useRecipeMacros(recipe: PersonalRecipe | null): { macros: Macros | null; loading: boolean } {
+  const [macros, setMacros] = useState<Macros | null>(recipe?.macros ?? null);
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    if (!recipe) {
+      setMacros(null);
+      setLoading(false);
+      return;
+    }
+    if (recipe.macros) {
+      setMacros(recipe.macros);
+      setLoading(false);
+      return;
+    }
+
+    let cancelled = false;
+    setMacros(null);
+    setLoading(true);
+
+    estimateMacrosPerServing(recipe.ingredients, recipe.servings ?? 4).then((result) => {
+      if (!cancelled) {
+        setMacros(result);
+        setLoading(false);
+      }
+    });
+
+    return () => {
+      cancelled = true;
+    };
+    // Re-resolve when the recipe's identity, ingredients, servings, or
+    // real macros change — not on every render.
+  }, [recipe?.id, recipe?.ingredients, recipe?.servings, recipe?.macros]);
+
+  return { macros, loading };
 }
 
 /**
