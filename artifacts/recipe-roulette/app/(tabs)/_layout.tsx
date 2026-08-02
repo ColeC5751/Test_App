@@ -8,6 +8,7 @@ import React from "react";
 import { Platform, StyleSheet, View, useColorScheme } from "react-native";
 
 import { useColors } from "@/hooks/useColors";
+import { useSessionStatus } from "@/hooks/useSessionStatus";
 
 // Per-tab active tint. Keeps each icon visually distinct when selected
 // instead of every tab sharing one accent color. Inactive state still
@@ -21,7 +22,7 @@ const TAB_TINTS = {
   shared: "#C084FC", // Shared — purple
 } as const;
 
-function NativeTabLayout() {
+function NativeTabLayout({ sharedLocked }: { sharedLocked: boolean }) {
   return (
     <NativeTabs>
       <NativeTabs.Trigger name="index">
@@ -41,14 +42,18 @@ function NativeTabLayout() {
         <Label>Plan</Label>
       </NativeTabs.Trigger>
       <NativeTabs.Trigger name="shared">
-        <Icon sf={{ default: "person.2", selected: "person.2.fill" }} />
-        <Label>Shared</Label>
+        {/* NativeTabs doesn't support arbitrary badge overlays on the icon,
+            so when locked we swap to a lock glyph entirely as the clearest
+            signal available within its API. Tapping still lands on
+            shared.tsx, which redirects to /auth via useRequireSession. */}
+        <Icon sf={{ default: sharedLocked ? "lock" : "person.2", selected: sharedLocked ? "lock.fill" : "person.2.fill" }} />
+        <Label>{sharedLocked ? "Shared 🔒" : "Shared"}</Label>
       </NativeTabs.Trigger>
     </NativeTabs>
   );
 }
 
-function ClassicTabLayout() {
+function ClassicTabLayout({ sharedLocked }: { sharedLocked: boolean }) {
   const colors = useColors();
   const colorScheme = useColorScheme();
   const isDark = colorScheme === "dark";
@@ -140,14 +145,22 @@ function ClassicTabLayout() {
       <Tabs.Screen
         name="shared"
         options={{
-          title: "Shared",
+          title: sharedLocked ? "Shared 🔒" : "Shared",
           tabBarActiveTintColor: TAB_TINTS.shared,
-          tabBarIcon: ({ color }) =>
-            isIOS ? (
-              <SymbolView name="person.2" tintColor={color} size={24} />
-            ) : (
-              <Feather name="users" size={22} color={color} />
-            ),
+          tabBarIcon: ({ color }) => (
+            <View>
+              {isIOS ? (
+                <SymbolView name="person.2" tintColor={color} size={24} />
+              ) : (
+                <Feather name="users" size={22} color={color} />
+              )}
+              {sharedLocked && (
+                <View style={[styles.lockBadge, { backgroundColor: colors.card, borderColor: colors.background }]}>
+                  <Feather name="lock" size={9} color={colors.mutedForeground} />
+                </View>
+              )}
+            </View>
+          ),
         }}
       />
     </Tabs>
@@ -155,10 +168,24 @@ function ClassicTabLayout() {
 }
 
 export default function TabLayout() {
+  const { locked } = useSessionStatus();
+
   if (isLiquidGlassAvailable()) {
-    return <NativeTabLayout />;
+    return <NativeTabLayout sharedLocked={locked} />;
   }
-  return <ClassicTabLayout />;
+  return <ClassicTabLayout sharedLocked={locked} />;
 }
 
-
+const styles = StyleSheet.create({
+  lockBadge: {
+    position: "absolute",
+    right: -6,
+    bottom: -3,
+    width: 16,
+    height: 16,
+    borderRadius: 8,
+    borderWidth: 1.5,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+});
