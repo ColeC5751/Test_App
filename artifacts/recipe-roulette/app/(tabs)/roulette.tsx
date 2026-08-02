@@ -22,7 +22,7 @@ import {
 
 import { useColors } from "@/hooks/useColors";
 import { useGrocerySync, useRecipeSync } from "@/lib/sync";
-import { getRecipeMacros, scaleIngredientText } from "@/lib/macros";
+import { useRecipeMacros, scaleIngredientText } from "@/lib/macros";
 import { MacroBar, MacroPills } from "@/components/MacroDisplay";
 import { SavedToast } from "@/components/SavedToast";
 import { CookMode } from "@/components/CookMode";
@@ -431,6 +431,11 @@ function RecipeDetailModal({
     setShowStepsPreview(false);
   }, [recipe?.id]);
 
+  // Called unconditionally (before the `if (!recipe) return null` below)
+  // per the rules of hooks — useRecipeMacros itself handles a null recipe
+  // gracefully, returning { macros: null, loading: false }.
+  const { macros, loading: macrosLoading } = useRecipeMacros(recipe);
+
   if (!recipe) return null;
 
   const sourceBadge = recipe.source === "photo" ? "📷 Photo import" : recipe.source === "url" ? "🔗 Link import" : "✍️ Manual";
@@ -499,9 +504,17 @@ function RecipeDetailModal({
               with the ×N multiplier stepper above (same principle as the
               That's Dinner tab's MacroBar; see MacroDisplay.tsx). Uses
               real API-sourced macros if this recipe was bookmarked from a
-              Spoonacular search result, otherwise an ingredient-based
-              estimate — see getRecipeMacros in lib/macros.ts. */}
-          <MacroBar macros={getRecipeMacros(recipe)} colors={colors} />
+              Spoonacular search result, otherwise a USDA-backed estimate
+              that may take a moment to resolve — see useRecipeMacros in
+              lib/macros.ts. */}
+          {macrosLoading ? (
+            <View style={styles.macrosLoadingRow}>
+              <ActivityIndicator size="small" color={colors.mutedForeground} />
+              <Text style={[styles.macrosLoadingText, { color: colors.mutedForeground }]}>Calculating nutrition…</Text>
+            </View>
+          ) : macros ? (
+            <MacroBar macros={macros} colors={colors} />
+          ) : null}
 
           <Pressable
             onPress={handleAddToGrocery}
@@ -661,6 +674,64 @@ function RecipeWheelViewport({
         })}
       </Animated.View>
     </View>
+  );
+}
+
+// ─── Recipe List Row ──────────────────────────────────────────────────────────
+// Its own component (not inlined in a .map() callback) specifically so
+// useRecipeMacros can be called for it — hooks can't be called inside a
+// loop/callback, only at a component's top level.
+
+function RecipeListRow({
+  recipe,
+  isPick,
+  colors,
+  onPress,
+  onDelete,
+  sourceIcon,
+}: {
+  recipe: PersonalRecipe;
+  isPick: boolean;
+  colors: ReturnType<typeof useColors>;
+  onPress: () => void;
+  onDelete: () => void;
+  sourceIcon: (source?: string) => keyof typeof Feather.glyphMap;
+}) {
+  const { macros } = useRecipeMacros(recipe);
+
+  return (
+    <Pressable
+      onPress={onPress}
+      style={({ pressed }) => [
+        styles.recipeCard,
+        { backgroundColor: isPick ? colors.secondary : colors.card, borderColor: isPick ? colors.primary : colors.border },
+        pressed && { opacity: 0.8 },
+      ]}
+    >
+      <View style={styles.recipeRow}>
+        {recipe.photoUrl ? (
+          <Image source={{ uri: recipe.photoUrl }} style={styles.thumb} />
+        ) : (
+          <View style={[styles.thumbPlaceholder, { backgroundColor: colors.muted }]}>
+            <Feather name="coffee" size={20} color={colors.mutedForeground} />
+          </View>
+        )}
+        <View style={styles.recipeText}>
+          <Text style={[styles.recipeName, { color: colors.foreground }]} numberOfLines={1}>{recipe.name}</Text>
+          <Text style={[styles.recipeIngredientPreview, { color: colors.mutedForeground }]} numberOfLines={1}>{recipe.ingredients}</Text>
+          {/* No loading indicator here (unlike the detail modal) — a
+              spinner per row while a whole list resolves would be
+              noisier than just letting the pills pop in once ready. */}
+          {macros && <MacroPills macros={macros} colors={colors} />}
+        </View>
+        <View style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
+          <Feather name={sourceIcon(recipe.source)} size={14} color={colors.mutedForeground} />
+          <Pressable onPress={onDelete} hitSlop={12}>
+            <Feather name="trash-2" size={16} color={colors.mutedForeground} />
+          </Pressable>
+        </View>
+      </View>
+    </Pressable>
   );
 }
 
@@ -876,39 +947,18 @@ export default function RouletteScreen() {
             <Text style={[styles.emptyText, { color: colors.mutedForeground }]}>Tap the + button to add your first recipe</Text>
           </View>
         ) : (
-          recipes.map((recipe, idx) => {
+          recipes.map((recipe) => {
             const isPick = !spinning && tonightsPick?.id === recipe.id;
             return (
-              <Pressable
+              <RecipeListRow
                 key={recipe.id}
+                recipe={recipe}
+                isPick={isPick}
+                colors={colors}
                 onPress={() => setSelectedRecipe(recipe)}
-                style={({ pressed }) => [
-                  styles.recipeCard,
-                  { backgroundColor: isPick ? colors.secondary : colors.card, borderColor: isPick ? colors.primary : colors.border },
-                  pressed && { opacity: 0.8 },
-                ]}
-              >
-                <View style={styles.recipeRow}>
-                  {recipe.photoUrl ? (
-                    <Image source={{ uri: recipe.photoUrl }} style={styles.thumb} />
-                  ) : (
-                    <View style={[styles.thumbPlaceholder, { backgroundColor: colors.muted }]}>
-                      <Feather name="coffee" size={20} color={colors.mutedForeground} />
-                    </View>
-                  )}
-                  <View style={styles.recipeText}>
-                    <Text style={[styles.recipeName, { color: colors.foreground }]} numberOfLines={1}>{recipe.name}</Text>
-                    <Text style={[styles.recipeIngredientPreview, { color: colors.mutedForeground }]} numberOfLines={1}>{recipe.ingredients}</Text>
-                    <MacroPills macros={getRecipeMacros(recipe)} colors={colors} />
-                  </View>
-                  <View style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
-                    <Feather name={sourceIcon(recipe.source)} size={14} color={colors.mutedForeground} />
-                    <Pressable onPress={() => deleteRecipe(recipe.id)} hitSlop={12}>
-                      <Feather name="trash-2" size={16} color={colors.mutedForeground} />
-                    </Pressable>
-                  </View>
-                </View>
-              </Pressable>
+                onDelete={() => deleteRecipe(recipe.id)}
+                sourceIcon={sourceIcon}
+              />
             );
           })
         )}
@@ -996,6 +1046,8 @@ const styles = StyleSheet.create({
   sourceBadge:        { alignSelf: "flex-start", borderRadius: 20, paddingHorizontal: 10, paddingVertical: 4, marginBottom: 16 },
   sourceBadgeText:    { fontSize: 11, fontFamily: "Inter_400Regular" },
   servingsRow:        { flexDirection: "row", alignItems: "center", justifyContent: "space-between", borderRadius: 14, borderWidth: 1, paddingHorizontal: 16, paddingVertical: 12, marginBottom: 12 },
+  macrosLoadingRow:   { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, paddingVertical: 14, marginBottom: 4 },
+  macrosLoadingText:  { fontSize: 12, fontFamily: "Inter_400Regular" },
   servingsLabel:      { fontSize: 11, fontFamily: "Inter_600SemiBold", letterSpacing: 1.5 },
   stepper:            { flexDirection: "row", alignItems: "center", gap: 16 },
   stepperBtn:         { width: 34, height: 34, borderRadius: 17, borderWidth: 1, alignItems: "center", justifyContent: "center" },
