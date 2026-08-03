@@ -478,6 +478,7 @@ function RecipeDetailModal({
   const [servings, setServings] = useState(1);
   const [showCookMode, setShowCookMode] = useState(false);
   const [showStepsPreview, setShowStepsPreview] = useState(false);
+  const [showDebugBreakdown, setShowDebugBreakdown] = useState(false); // TEMP
   const baseServings = 1;
 
   React.useEffect(() => {
@@ -485,6 +486,7 @@ function RecipeDetailModal({
     setServings(1);
     setShowCookMode(false);
     setShowStepsPreview(false);
+    setShowDebugBreakdown(false); // TEMP
   }, [recipe?.id]);
 
   // Called unconditionally (before the `if (!recipe) return null` below)
@@ -591,19 +593,32 @@ function RecipeDetailModal({
               breakdown on-screen, no logs/terminal needed. Remove once
               the calorie mystery is confirmed fixed. Only shows up when
               debugLines is actually present (i.e. macros came from the
-              estimator, not real API-sourced data). */}
+              estimator, not real API-sourced data).
+              Rendered inline rather than via Alert.alert — Alert.alert
+              triggered from inside an already-open <Modal> can silently
+              fail to appear on Android (known RN issue: it can attach to
+              the wrong native window layer), which is what was likely
+              happening here. Inline rendering has no such failure mode. */}
           {macros?.debugLines && macros.debugLines.length > 0 && (
-            <Pressable
-              onPress={() => {
-                console.log("debug button pressed"); // harmless even if logs aren't visible
-                Alert.alert("Macro breakdown", macros.debugLines!.join("\n\n"));
-              }}
-              style={{ alignSelf: "center", marginTop: 6, marginBottom: 10 }}
-            >
-              <Text style={{ fontSize: 12, color: colors.mutedForeground, textDecorationLine: "underline" }}>
-                Show macro breakdown (debug)
-              </Text>
-            </Pressable>
+            <>
+              <Pressable
+                onPress={() => setShowDebugBreakdown((v) => !v)}
+                style={{ alignSelf: "center", marginTop: 6, marginBottom: 10 }}
+              >
+                <Text style={{ fontSize: 12, color: colors.mutedForeground, textDecorationLine: "underline" }}>
+                  {showDebugBreakdown ? "Hide" : "Show"} macro breakdown (debug)
+                </Text>
+              </Pressable>
+              {showDebugBreakdown && (
+                <View style={{ borderRadius: 10, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.card, padding: 12, marginBottom: 14 }}>
+                  {macros.debugLines.map((line, i) => (
+                    <Text key={i} style={{ fontSize: 11, color: colors.foreground, marginBottom: 10, fontFamily: "Courier" }}>
+                      {line}
+                    </Text>
+                  ))}
+                </View>
+              )}
+            </>
           )}
 
           <Pressable
