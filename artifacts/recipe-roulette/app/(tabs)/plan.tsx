@@ -32,6 +32,26 @@ import { useRecipeMacros, scaleIngredientText } from "@/lib/macros";
 import { MacroBar, MacroPills } from "@/components/MacroDisplay";
 import type { MealPlan, PersonalRecipe, PlanSlot, SharePermission } from "@/lib/types";
 
+// ─── Extended slot shape ───────────────────────────────────────────────────
+// lib/types.ts's PlanSlot doesn't (yet) declare these fields. Add them there
+// as optional so both this file and the shared [token].tsx get proper
+// type-checking:
+//   recipeIngredients?: string;
+//   recipeSteps?: string;
+//   recipeBaseServings?: number;
+// Until then this local intersection type keeps things type-safe here.
+//
+// Why this exists: a plan slot's recipeId can belong to a collaborator's
+// account (if THEY added that meal from their own My Dinners), not this
+// account's. Denormalizing ingredients/steps/base-servings onto the slot
+// itself means the detail view always has something to show, regardless of
+// whose account the underlying recipe actually lives in.
+type PlanSlotWithRecipeDetails = PlanSlot & {
+  recipeIngredients?: string;
+  recipeSteps?: string;
+  recipeBaseServings?: number;
+};
+
 // ─── Date helpers ─────────────────────────────────────────────────────────────
 
 function getMondayOfWeek(date: Date): Date {
@@ -45,6 +65,22 @@ function getMondayOfWeek(date: Date): Date {
 
 function formatWeekLabel(monday: Date): string {
   return monday.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+}
+
+function formatMonthLabel(anchor: Date): string {
+  return anchor.toLocaleDateString("en-US", { month: "long", year: "numeric" });
+}
+
+// 6 full weeks (42 days), Monday-anchored, covering the whole month plus
+// leading/trailing days from adjacent months — standard calendar-grid shape.
+function getCalendarGridDays(anchor: Date): Date[] {
+  const firstOfMonth = new Date(anchor.getFullYear(), anchor.getMonth(), 1);
+  const start = getMondayOfWeek(firstOfMonth);
+  return Array.from({ length: 42 }, (_, i) => {
+    const d = new Date(start);
+    d.setDate(start.getDate() + i);
+    return d;
+  });
 }
 
 const planDetailStyles = StyleSheet.create({
@@ -451,6 +487,89 @@ const shareModalStyles = StyleSheet.create({
   shareBtnText: { fontSize: 15, fontFamily: "Inter_600SemiBold" },
 });
 
+// ─── Month Calendar ─────────────────────────────────────────────────────────
+// Just a photo grid: each cell is a day number plus that day's dinner
+// thumbnail (if any). Tapping a filled day opens the recipe card; tapping an
+// empty day opens the picker — the parent decides via onSelectDay (it
+// reuses handleSlotPress).
+
+function MonthCalendar({
+  monthAnchor,
+  plan,
+  onSelectDay,
+}: {
+  monthAnchor: Date;
+  plan: Record<string, PlanSlotWithRecipeDetails | null | undefined>;
+  onSelectDay: (date: Date) => void;
+}) {
+  const colors = useColors();
+  const days = getCalendarGridDays(monthAnchor);
+  const weekdayLabels = ["M", "T", "W", "T", "F", "S", "S"];
+
+  return (
+    <View>
+      <View style={calendarStyles.weekdayRow}>
+        {weekdayLabels.map((label, i) => (
+          <Text key={i} style={[calendarStyles.weekdayLabel, { color: colors.mutedForeground }]}>{label}</Text>
+        ))}
+      </View>
+      <View style={calendarStyles.grid}>
+        {days.map((date) => {
+          const key = isoDateKey(date);
+          const slot = plan[key];
+          const inMonth = date.getMonth() === monthAnchor.getMonth();
+          const today = isToday(date);
+          const interactive = inMonth; // owner can always add/view within the month
+
+          return (
+            <View key={key} style={calendarStyles.cellOuter}>
+              <Pressable
+                onPress={() => interactive && onSelectDay(date)}
+                disabled={!interactive}
+                style={[
+                  calendarStyles.cellInner,
+                  {
+                    backgroundColor: colors.card,
+                    borderColor: today ? colors.primary : colors.border,
+                    borderWidth: today ? 1.5 : 1,
+                    opacity: inMonth ? 1 : 0.35,
+                  },
+                ]}
+              >
+                <Text style={[calendarStyles.cellNum, { color: today ? colors.primary : colors.foreground }]}>
+                  {date.getDate()}
+                </Text>
+                {slot ? (
+                  slot.recipePhoto ? (
+                    <Image source={{ uri: slot.recipePhoto }} style={calendarStyles.cellPhoto} />
+                  ) : (
+                    <View style={[calendarStyles.cellPhotoPlaceholder, { backgroundColor: colors.muted }]}>
+                      <Feather name="coffee" size={14} color={colors.mutedForeground} />
+                    </View>
+                  )
+                ) : (
+                  inMonth && <Feather name="plus" size={12} color={colors.mutedForeground} />
+                )}
+              </Pressable>
+            </View>
+          );
+        })}
+      </View>
+    </View>
+  );
+}
+
+const calendarStyles = StyleSheet.create({
+  weekdayRow: { flexDirection: "row", marginBottom: 4 },
+  weekdayLabel: { width: `${100 / 7}%`, textAlign: "center", fontSize: 11, fontFamily: "Inter_600SemiBold" },
+  grid: { flexDirection: "row", flexWrap: "wrap" },
+  cellOuter: { width: `${100 / 7}%`, aspectRatio: 1, padding: 3 },
+  cellInner: { flex: 1, borderRadius: 10, alignItems: "center", justifyContent: "center", overflow: "hidden" },
+  cellNum: { position: "absolute", top: 4, left: 6, fontSize: 11, fontFamily: "Inter_600SemiBold" },
+  cellPhoto: { width: "72%", height: "72%", borderRadius: 8, marginTop: 8 },
+  cellPhotoPlaceholder: { width: "72%", height: "72%", borderRadius: 8, alignItems: "center", justifyContent: "center", marginTop: 8 },
+});
+
 // ─── Main Screen ──────────────────────────────────────────────────────────────
 
 export default function PlanScreen() {
@@ -470,20 +589,52 @@ export default function PlanScreen() {
   const { recipes: personalRecipes, load: loadPersonalRecipes } = useRecipeSync();
 
   const [weekOffset, setWeekOffset] = useState(0);
+  const [viewMode, setViewMode] = useState<"list" | "calendar">("list");
+  const [calendarMonth, setCalendarMonth] = useState<Date>(() => new Date());
   const [pickerDate, setPickerDate] = useState<Date | null>(null);
   const [showShareModal, setShowShareModal] = useState(false);
   const [addingToGrocery, setAddingToGrocery] = useState(false);
-  const [viewingSlot, setViewingSlot] = useState<{ slot: PlanSlot; date: Date } | null>(null);
+  const [viewingSlot, setViewingSlot] = useState<{ slot: PlanSlotWithRecipeDetails; date: Date } | null>(null);
   const [viewingRecipe, setViewingRecipe] = useState<PersonalRecipe | null>(null);
-  // Called at the top level (not inside the IIFE further down that
-  // renders the plan detail view) per the rules of hooks. useRecipeMacros
-  // handles a null viewingRecipe gracefully — { macros: null, loading:
-  // false } — so it's safe to call this unconditionally on every render.
-  const { macros: viewingMacros, loading: viewingMacrosLoading } = useRecipeMacros(viewingRecipe);
   // Local, editable copy of the currently-viewed slot's servings — kept
   // separate from viewingSlot.slot.servings so the stepper feels
   // immediate, then persisted via commitSlotServings below.
   const [slotServings, setSlotServings] = useState<number | null>(null);
+
+  // Prefer the live personalRecipes match (reflects any edits made since —
+  // this is still an owner's own recipe most of the time); fall back to the
+  // snapshot denormalized onto the slot when it was added. The fallback
+  // matters when a collaborator added this meal from THEIR OWN My Dinners —
+  // this account won't have that recipe, but the slot still carries enough
+  // to render it. See PlanSlotWithRecipeDetails above.
+  const recipeDetails = viewingRecipe
+    ? { ingredients: viewingRecipe.ingredients, steps: viewingRecipe.steps, baseServings: viewingRecipe.servings ?? 4 }
+    : viewingSlot
+    ? {
+        ingredients: viewingSlot.slot.recipeIngredients,
+        steps: viewingSlot.slot.recipeSteps,
+        baseServings: viewingSlot.slot.recipeBaseServings ?? 4,
+      }
+    : null;
+
+  // useRecipeMacros needs a full-enough object either way — either the
+  // live PersonalRecipe, or a synthetic one built from the slot's
+  // denormalized snapshot (macro estimation only needs id/ingredients).
+  // Called at the top level (not inside the IIFE further down that renders
+  // the plan detail view) per the rules of hooks — useRecipeMacros handles
+  // a null input gracefully, so this is safe to call unconditionally.
+  const macroInput = (viewingRecipe ??
+    (viewingSlot?.slot.recipeIngredients
+      ? ({
+          id: viewingSlot.slot.recipeId,
+          name: viewingSlot.slot.recipeName,
+          photoUrl: viewingSlot.slot.recipePhoto,
+          ingredients: viewingSlot.slot.recipeIngredients,
+          steps: viewingSlot.slot.recipeSteps,
+          servings: viewingSlot.slot.recipeBaseServings ?? 4,
+        } as unknown as PersonalRecipe)
+      : null)) as PersonalRecipe | null;
+  const { macros: viewingMacros, loading: viewingMacrosLoading } = useRecipeMacros(macroInput);
 
   // ─── Styled confirm modal control ──────────────────────────────────────
   // Generic promise-resolving replacement for Alert.alert/window.confirm.
@@ -575,14 +726,29 @@ export default function PlanScreen() {
     setWeekOffset((o) => o + dir);
   };
 
+  const navigateMonth = (dir: -1 | 1) => {
+    Haptics.selectionAsync();
+    setCalendarMonth((m) => {
+      const d = new Date(m);
+      d.setMonth(d.getMonth() + dir);
+      return d;
+    });
+  };
+
+  const monthLabel = formatMonthLabel(calendarMonth);
+  const isCurrentMonth =
+    calendarMonth.getFullYear() === new Date().getFullYear() &&
+    calendarMonth.getMonth() === new Date().getMonth();
+
+  // Used by both the week list and the calendar view.
   const handleSlotPress = (date: Date) => {
     const key = isoDateKey(date);
-    const slot = plan[key] as PlanSlot | null | undefined;
+    const slot = plan[key] as PlanSlotWithRecipeDetails | null | undefined;
     if (slot) {
       const fullRecipe = personalRecipes.find((r) => r.id === slot.recipeId) ?? null;
       setViewingRecipe(fullRecipe);
       setViewingSlot({ slot, date });
-      setSlotServings(slot.servings ?? fullRecipe?.servings ?? 4);
+      setSlotServings(slot.servings ?? fullRecipe?.servings ?? slot.recipeBaseServings ?? 4);
     } else {
       setPickerDate(date);
     }
@@ -599,7 +765,7 @@ export default function PlanScreen() {
     const clamped = Math.max(1, Math.min(20, newServings));
     setSlotServings(clamped);
     const key = isoDateKey(viewingSlot.date);
-    const updatedSlot: PlanSlot = { ...viewingSlot.slot, servings: clamped };
+    const updatedSlot: PlanSlotWithRecipeDetails = { ...viewingSlot.slot, servings: clamped };
     setViewingSlot({ slot: updatedSlot, date: viewingSlot.date });
     await save({ ...plan, [key]: updatedSlot });
   };
@@ -637,7 +803,7 @@ export default function PlanScreen() {
   const handlePickRecipe = async (recipe: PersonalRecipe) => {
     if (!pickerDate) return;
     const key = isoDateKey(pickerDate);
-    const slot: PlanSlot = {
+    const slot: PlanSlotWithRecipeDetails = {
       recipeId: recipe.id,
       recipeName: recipe.name,
       recipePhoto: recipe.photoUrl,
@@ -651,6 +817,13 @@ export default function PlanScreen() {
       // *default* for this plan slot — editable afterward from the plan
       // detail view without touching the recipe's own stored default.
       servings: recipe.servings ?? 4,
+      // Denormalized so anyone viewing this plan — including a shared
+      // collaborator who doesn't have this recipe in their own My
+      // Dinners — can still see full recipe details. See
+      // PlanSlotWithRecipeDetails above.
+      recipeIngredients: recipe.ingredients,
+      recipeSteps: recipe.steps,
+      recipeBaseServings: recipe.servings ?? 4,
     };
     await save({ ...plan, [key]: slot });
     setPickerDate(null);
@@ -766,112 +939,151 @@ export default function PlanScreen() {
               <Feather name="share-2" size={16} color={colors.foreground} />
             </Pressable>
             <Pressable
-              onPress={() => Alert.alert("Coming soon", "Calendar month view is coming in a future update.")}
-              style={[styles.headerBtn, { backgroundColor: colors.card, borderColor: colors.border }]}
-            >
-              <Feather name="calendar" size={16} color={colors.foreground} />
-            </Pressable>
-          </View>
-        </View>
-
-        <View style={styles.weekNav}>
-          <Pressable
-            onPress={() => navigateWeek(-1)}
-            style={[styles.navBtn, { backgroundColor: colors.card, borderColor: colors.border }]}
-          >
-            <Feather name="chevron-left" size={18} color={colors.foreground} />
-          </Pressable>
-          <View style={styles.weekLabelWrap}>
-            <Text style={[styles.weekLabel, { color: colors.foreground }]}>{weekLabel}</Text>
-            {weekOffset !== 0 && (
-              <Pressable onPress={() => setWeekOffset(0)}>
-                <Text style={[styles.todayLink, { color: colors.primary }]}>Back to this week</Text>
-              </Pressable>
-            )}
-          </View>
-          <Pressable
-            onPress={() => navigateWeek(1)}
-            style={[styles.navBtn, { backgroundColor: colors.card, borderColor: colors.border }]}
-          >
-            <Feather name="chevron-right" size={18} color={colors.foreground} />
-          </Pressable>
-        </View>
-
-        <Animated.View style={{ transform: [{ translateX: slideAnim }] }}>
-          {weekDays.map((date) => {
-            const key = isoDateKey(date);
-            const slot = plan[key] as PlanSlot | null | undefined;
-            const today = isToday(date);
-            const { day, num } = formatDayLabel(date);
-
-            return (
-              <Pressable
-                key={key}
-                onPress={() => handleSlotPress(date)}
-                style={({ pressed }) => [
-                  styles.daySlot,
-                  {
-                    backgroundColor: colors.card,
-                    borderColor: today ? colors.primary : colors.border,
-                    borderWidth: today ? 1.5 : 1,
-                  },
-                  pressed && { opacity: 0.8 },
-                ]}
-              >
-                {today && (
-                  <View style={[styles.todayBadge, { backgroundColor: colors.primary }]}>
-                    <Text style={[styles.todayBadgeText, { color: colors.primaryForeground }]}>TODAY</Text>
-                  </View>
-                )}
-
-                <View style={styles.dateCol}>
-                  <Text style={[styles.dayText, { color: today ? colors.primary : colors.mutedForeground }]}>{day}</Text>
-                  <Text style={[styles.dayNum, { color: today ? colors.primary : colors.foreground }]}>{num}</Text>
-                </View>
-
-                {slot ? (
-                  <View style={[styles.slotFilled, { backgroundColor: colors.background, borderRadius: 10 }]}>
-                    {slot.recipePhoto ? (
-                      <Image source={{ uri: slot.recipePhoto }} style={styles.slotThumb} />
-                    ) : (
-                      <View style={[styles.slotThumbPlaceholder, { backgroundColor: colors.muted }]}>
-                        <Feather name="coffee" size={16} color={colors.mutedForeground} />
-                      </View>
-                    )}
-                    <Text style={[styles.slotName, { color: colors.foreground }]} numberOfLines={2}>
-                      {slot.recipeName}
-                    </Text>
-                    <Feather name="chevron-right" size={14} color={colors.mutedForeground} />
-                  </View>
-                ) : (
-                  <View style={[styles.slotEmpty, { borderColor: colors.border }]}>
-                    <Feather name="plus" size={16} color={colors.mutedForeground} />
-                    <Text style={[styles.slotEmptyText, { color: colors.mutedForeground }]}>Add dinner</Text>
-                  </View>
-                )}
-              </Pressable>
-            );
-          })}
-        </Animated.View>
-
-        {filledSlots.length > 0 && (
-          <>
-            <Pressable
-              onPress={handleAddWeekToGrocery}
-              disabled={addingToGrocery}
-              style={({ pressed }) => [
-                styles.groceryBtn,
-                { backgroundColor: colors.primary, opacity: addingToGrocery ? 0.7 : pressed ? 0.9 : 1 },
+              onPress={() => setViewMode((v) => (v === "calendar" ? "list" : "calendar"))}
+              style={[
+                styles.headerBtn,
+                { backgroundColor: viewMode === "calendar" ? colors.primary : colors.card, borderColor: colors.border },
               ]}
             >
-              <Feather name="shopping-cart" size={18} color={colors.primaryForeground} />
-              <Text style={[styles.groceryBtnText, { color: colors.primaryForeground }]}>
-                {addingToGrocery ? "Adding…" : "Add week to grocery list"}
-              </Text>
+              <Feather name="calendar" size={16} color={viewMode === "calendar" ? colors.primaryForeground : colors.foreground} />
             </Pressable>
-            <Text style={[styles.groceryMeta, { color: colors.mutedForeground }]}>
-              {filledSlots.length} recipe{filledSlots.length !== 1 ? "s" : ""} planned this week
-            </Text>
+          </View>
+        </View>
+
+        {viewMode === "calendar" ? (
+          <>
+            {/* Month navigation */}
+            <View style={styles.weekNav}>
+              <Pressable
+                onPress={() => navigateMonth(-1)}
+                style={[styles.navBtn, { backgroundColor: colors.card, borderColor: colors.border }]}
+              >
+                <Feather name="chevron-left" size={18} color={colors.foreground} />
+              </Pressable>
+              <View style={styles.weekLabelWrap}>
+                <Text style={[styles.weekLabel, { color: colors.foreground }]}>{monthLabel}</Text>
+                {!isCurrentMonth && (
+                  <Pressable onPress={() => setCalendarMonth(new Date())}>
+                    <Text style={[styles.todayLink, { color: colors.primary }]}>Back to this month</Text>
+                  </Pressable>
+                )}
+              </View>
+              <Pressable
+                onPress={() => navigateMonth(1)}
+                style={[styles.navBtn, { backgroundColor: colors.card, borderColor: colors.border }]}
+              >
+                <Feather name="chevron-right" size={18} color={colors.foreground} />
+              </Pressable>
+            </View>
+
+            <MonthCalendar
+              monthAnchor={calendarMonth}
+              plan={plan as Record<string, PlanSlotWithRecipeDetails | null | undefined>}
+              onSelectDay={handleSlotPress}
+            />
+          </>
+        ) : (
+          <>
+            <View style={styles.weekNav}>
+              <Pressable
+                onPress={() => navigateWeek(-1)}
+                style={[styles.navBtn, { backgroundColor: colors.card, borderColor: colors.border }]}
+              >
+                <Feather name="chevron-left" size={18} color={colors.foreground} />
+              </Pressable>
+              <View style={styles.weekLabelWrap}>
+                <Text style={[styles.weekLabel, { color: colors.foreground }]}>{weekLabel}</Text>
+                {weekOffset !== 0 && (
+                  <Pressable onPress={() => setWeekOffset(0)}>
+                    <Text style={[styles.todayLink, { color: colors.primary }]}>Back to this week</Text>
+                  </Pressable>
+                )}
+              </View>
+              <Pressable
+                onPress={() => navigateWeek(1)}
+                style={[styles.navBtn, { backgroundColor: colors.card, borderColor: colors.border }]}
+              >
+                <Feather name="chevron-right" size={18} color={colors.foreground} />
+              </Pressable>
+            </View>
+
+            <Animated.View style={{ transform: [{ translateX: slideAnim }] }}>
+              {weekDays.map((date) => {
+                const key = isoDateKey(date);
+                const slot = plan[key] as PlanSlot | null | undefined;
+                const today = isToday(date);
+                const { day, num } = formatDayLabel(date);
+
+                return (
+                  <Pressable
+                    key={key}
+                    onPress={() => handleSlotPress(date)}
+                    style={({ pressed }) => [
+                      styles.daySlot,
+                      {
+                        backgroundColor: colors.card,
+                        borderColor: today ? colors.primary : colors.border,
+                        borderWidth: today ? 1.5 : 1,
+                      },
+                      pressed && { opacity: 0.8 },
+                    ]}
+                  >
+                    {today && (
+                      <View style={[styles.todayBadge, { backgroundColor: colors.primary }]}>
+                        <Text style={[styles.todayBadgeText, { color: colors.primaryForeground }]}>TODAY</Text>
+                      </View>
+                    )}
+
+                    <View style={styles.dateCol}>
+                      <Text style={[styles.dayText, { color: today ? colors.primary : colors.mutedForeground }]}>{day}</Text>
+                      <Text style={[styles.dayNum, { color: today ? colors.primary : colors.foreground }]}>{num}</Text>
+                    </View>
+
+                    {slot ? (
+                      <View style={[styles.slotFilled, { backgroundColor: colors.background, borderRadius: 10 }]}>
+                        {slot.recipePhoto ? (
+                          <Image source={{ uri: slot.recipePhoto }} style={styles.slotThumb} />
+                        ) : (
+                          <View style={[styles.slotThumbPlaceholder, { backgroundColor: colors.muted }]}>
+                            <Feather name="coffee" size={16} color={colors.mutedForeground} />
+                          </View>
+                        )}
+                        <Text style={[styles.slotName, { color: colors.foreground }]} numberOfLines={2}>
+                          {slot.recipeName}
+                        </Text>
+                        <Feather name="chevron-right" size={14} color={colors.mutedForeground} />
+                      </View>
+                    ) : (
+                      <View style={[styles.slotEmpty, { borderColor: colors.border }]}>
+                        <Feather name="plus" size={16} color={colors.mutedForeground} />
+                        <Text style={[styles.slotEmptyText, { color: colors.mutedForeground }]}>Add dinner</Text>
+                      </View>
+                    )}
+                  </Pressable>
+                );
+              })}
+            </Animated.View>
+
+            {filledSlots.length > 0 && (
+              <>
+                <Pressable
+                  onPress={handleAddWeekToGrocery}
+                  disabled={addingToGrocery}
+                  style={({ pressed }) => [
+                    styles.groceryBtn,
+                    { backgroundColor: colors.primary, opacity: addingToGrocery ? 0.7 : pressed ? 0.9 : 1 },
+                  ]}
+                >
+                  <Feather name="shopping-cart" size={18} color={colors.primaryForeground} />
+                  <Text style={[styles.groceryBtnText, { color: colors.primaryForeground }]}>
+                    {addingToGrocery ? "Adding…" : "Add week to grocery list"}
+                  </Text>
+                </Pressable>
+                <Text style={[styles.groceryMeta, { color: colors.mutedForeground }]}>
+                  {filledSlots.length} recipe{filledSlots.length !== 1 ? "s" : ""} planned this week
+                </Text>
+              </>
+            )}
           </>
         )}
       </ScrollView>
@@ -931,14 +1143,16 @@ export default function PlanScreen() {
               {viewingSlot?.slot.recipeName}
             </Text>
 
-            {viewingRecipe && (() => {
+            {recipeDetails && (() => {
               // The recipe's own yield (from PersonalRecipe.servings, set
               // when bookmarked in the That's Dinner tab — see
-              // handleToggleSaveRecipe in index.tsx), vs. the servings
-              // this specific plan slot is set to. Scale = 1 (no change to
-              // the ingredients text) until the person adjusts the
-              // stepper away from the recipe's default.
-              const recipeBaseServings = viewingRecipe.servings ?? 4;
+              // handleToggleSaveRecipe in index.tsx — or the denormalized
+              // snapshot on the slot if this recipe belongs to a
+              // collaborator's account), vs. the servings this specific
+              // plan slot is set to. Scale = 1 (no change to the
+              // ingredients text) until the person adjusts the stepper
+              // away from the recipe's default.
+              const recipeBaseServings = recipeDetails.baseServings ?? 4;
               const effectiveServings = slotServings ?? recipeBaseServings;
               const scale = effectiveServings / recipeBaseServings;
               return (
@@ -979,11 +1193,11 @@ export default function PlanScreen() {
                     <MacroBar macros={viewingMacros} colors={colors} />
                   ) : null}
 
-                  {viewingRecipe.ingredients ? (
+                  {recipeDetails.ingredients ? (
                     <View style={[planDetailStyles.ingredientsCard, { backgroundColor: colors.card, borderColor: colors.border }]}>
                       <Text style={[planDetailStyles.ingredientsLabel, { color: colors.mutedForeground }]}>INGREDIENTS</Text>
                       <Text style={[planDetailStyles.ingredientsText, { color: colors.foreground }]} numberOfLines={6}>
-                        {scaleIngredientText(viewingRecipe.ingredients, scale)}
+                        {scaleIngredientText(recipeDetails.ingredients, scale)}
                       </Text>
                     </View>
                   ) : null}
@@ -991,11 +1205,11 @@ export default function PlanScreen() {
               );
             })()}
 
-            {viewingRecipe?.steps ? (
+            {recipeDetails?.steps ? (
               <View style={[planDetailStyles.ingredientsCard, { backgroundColor: colors.card, borderColor: colors.border }]}>
                 <Text style={[planDetailStyles.ingredientsLabel, { color: colors.mutedForeground }]}>STEPS</Text>
                 <Text style={[planDetailStyles.ingredientsText, { color: colors.foreground }]} numberOfLines={6}>
-                  {viewingRecipe.steps}
+                  {recipeDetails.steps}
                 </Text>
               </View>
             ) : null}
