@@ -317,20 +317,18 @@ async function setCachedNutrition(name: string, data: Per100g): Promise<void> {
 // need this combined signal, not just the local one.
 async function resolveIngredientNutrition(
   name: string
-): Promise<{ per100g: Per100g; entry: NutritionEntry; wasResolved: boolean }> {
+): Promise<{ per100g: Per100g; entry: NutritionEntry; wasResolved: boolean; matchedDescription?: string }> {
   const localEntry = matchNutritionEntry(name);
   const localMatched = localEntry !== GENERIC_FALLBACK;
 
   const cached = await getCachedNutrition(name);
-  if (cached) return { per100g: cached, entry: localEntry, wasResolved: true };
+  if (cached) return { per100g: cached, entry: localEntry, wasResolved: true, matchedDescription: "(cached)" };
 
   const usda = await fetchUsdaNutrition(name);
 
   if (usda.status === "found") {
-    // TEMP — remove once the 8k-calorie mystery is confirmed fixed.
-    console.log(`[macros] USDA matched "${name}" -> "${usda.matchedDescription}"`);
     await setCachedNutrition(name, usda.data);
-    return { per100g: usda.data, entry: localEntry, wasResolved: true };
+    return { per100g: usda.data, entry: localEntry, wasResolved: true, matchedDescription: usda.matchedDescription };
   }
   // Only cache the "not_found" result when the local table actually
   // matched something — i.e. only cache genuine resolutions. Caching a
@@ -342,7 +340,12 @@ async function resolveIngredientNutrition(
   if (usda.status === "not_found" && localMatched) {
     await setCachedNutrition(name, localEntry.per100g);
   }
-  return { per100g: localEntry.per100g, entry: localEntry, wasResolved: localMatched };
+  return {
+    per100g: localEntry.per100g,
+    entry: localEntry,
+    wasResolved: localMatched,
+    matchedDescription: localMatched ? `(local table: ${localEntry.keywords[0]})` : undefined,
+  };
 }
 
 /**
@@ -358,13 +361,17 @@ async function resolveIngredientNutrition(
  * scaling ingredient amounts for a bigger batch should still pass the
  * recipe's original servings count here, not the scaled target.
  */
-export async function estimateMacrosPerServing(rawIngredientsText: string, servings: number): Promise<Macros> {
+export async function estimateMacrosPerServing(
+  rawIngredientsText: string,
+  servings: number
+): Promise<Macros & { debugLines?: string[] }> {
   const lines = splitIngredientLines(rawIngredientsText);
+  const debugLines: string[] = []; // TEMP — remove once the calorie mystery is confirmed fixed.
 
   const perIngredientTotals = await Promise.all(
     lines.map(async (line) => {
       const { name, amount, unit, hasExplicitAmount } = parseIngredientLine(line);
-      const { per100g, entry, wasResolved } = await resolveIngredientNutrition(name);
+      const { per100g, entry, wasResolved, matchedDescription } = await resolveIngredientNutrition(name);
 
       // Comma-splitting can still leave stray non-ingredient fragments
       // (e.g. "minced", "cut into wedges" — trailing clauses that share a
@@ -388,11 +395,10 @@ export async function estimateMacrosPerServing(rawIngredientsText: string, servi
       const grams = isStrayFragment ? 0 : toGrams(amount, unit, entry);
       const scale = grams / 100;
       const lineCalories = per100g.calories * scale;
-      // TEMP — remove once the 8k-calorie mystery is confirmed fixed.
-      console.log(
-        `[macros] "${line}" -> name="${name}" grams=${grams.toFixed(0)} ` +
-          `per100g=${JSON.stringify(per100g)} -> ${lineCalories.toFixed(0)} kcal` +
-          (isStrayFragment ? " [SKIPPED: stray fragment]" : "")
+      debugLines.push(
+        `"${line}"\n  -> name="${name}"${isStrayFragment ? " [SKIPPED: stray fragment]" : ""}\n` +
+          `  -> matched: ${matchedDescription ?? "none"}\n` +
+          `  -> ${grams.toFixed(0)}g @ ${per100g.calories.toFixed(0)}kcal/100g = ${lineCalories.toFixed(0)} kcal`
       );
       return {
         calories: lineCalories,
@@ -432,6 +438,7 @@ export async function estimateMacrosPerServing(rawIngredientsText: string, servi
     fat: totals.fat / safeServings,
     fiber: totals.fiber / safeServings,
     estimated: true,
+    debugLines, // TEMP — remove once the calorie mystery is confirmed fixed.
   };
 }
 
@@ -449,8 +456,10 @@ export async function estimateMacrosPerServing(rawIngredientsText: string, servi
  * (see RecipeListRow in roulette.tsx / PickerRecipeRow in plan.tsx for the
  * pattern), not called inline inside a .map() callback.
  */
-export function useRecipeMacros(recipe: PersonalRecipe | null): { macros: Macros | null; loading: boolean } {
-  const [macros, setMacros] = useState<Macros | null>(recipe?.macros ?? null);
+export function useRecipeMacros(
+  recipe: PersonalRecipe | null
+): { macros: (Macros & { debugLines?: string[] }) | null; loading: boolean } {
+  const [macros, setMacros] = useState<(Macros & { debugLines?: string[] }) | null>(recipe?.macros ?? null);
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
