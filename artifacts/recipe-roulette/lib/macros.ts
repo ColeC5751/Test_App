@@ -284,22 +284,43 @@ async function setCachedNutrition(name: string, data: Per100g): Promise<void> {
 // genuine "not_found" from USDA (the ingredient just isn't in their
 // database under this name) DOES get cached, since that's unlikely to
 // change and re-querying USDA for it every time would be wasted calls.
-async function resolveIngredientNutrition(name: string): Promise<{ per100g: Per100g; entry: NutritionEntry }> {
+// `wasResolved: false` means NEITHER the local table NOR USDA actually
+// recognized this as a food (local match fell through to
+// GENERIC_FALLBACK, and USDA returned not_found/error) — as opposed to
+// `entry === GENERIC_FALLBACK` alone, which only tells you the *local*
+// table missed and says nothing about whether USDA came through instead.
+// Conflating those two previously would have meant treating a
+// USDA-resolved ingredient that simply isn't in the local table (e.g.
+// "juice of 1 lemon" — "lemon" isn't a NUTRITION_DB keyword, but USDA
+// almost certainly has it) as if it were unresolved. Callers that want
+// to detect genuinely-unmatched stray text (see estimateMacrosPerServing)
+// need this combined signal, not just the local one.
+async function resolveIngredientNutrition(
+  name: string
+): Promise<{ per100g: Per100g; entry: NutritionEntry; wasResolved: boolean }> {
   const localEntry = matchNutritionEntry(name);
+  const localMatched = localEntry !== GENERIC_FALLBACK;
 
   const cached = await getCachedNutrition(name);
-  if (cached) return { per100g: cached, entry: localEntry };
+  if (cached) return { per100g: cached, entry: localEntry, wasResolved: true };
 
   const usda = await fetchUsdaNutrition(name);
 
   if (usda.status === "found") {
     await setCachedNutrition(name, usda.data);
-    return { per100g: usda.data, entry: localEntry };
+    return { per100g: usda.data, entry: localEntry, wasResolved: true };
   }
-  if (usda.status === "not_found") {
+  // Only cache the "not_found" result when the local table actually
+  // matched something — i.e. only cache genuine resolutions. Caching a
+  // bare GENERIC_FALLBACK for every unmatched/stray fragment would (a)
+  // bloat AsyncStorage with identical values for things like "minced" or
+  // random unrecognized spices, and (b) make a later cache HIT
+  // indistinguishable from a real resolution, undermining the
+  // wasResolved signal below.
+  if (usda.status === "not_found" && localMatched) {
     await setCachedNutrition(name, localEntry.per100g);
   }
-  return { per100g: localEntry.per100g, entry: localEntry };
+  return { per100g: localEntry.per100g, entry: localEntry, wasResolved: localMatched };
 }
 
 /**
@@ -320,9 +341,29 @@ export async function estimateMacrosPerServing(rawIngredientsText: string, servi
 
   const perIngredientTotals = await Promise.all(
     lines.map(async (line) => {
-      const { name, amount, unit } = parseIngredientLine(line);
-      const { per100g, entry } = await resolveIngredientNutrition(name);
-      const grams = toGrams(amount, unit, entry);
+      const { name, amount, unit, hasExplicitAmount } = parseIngredientLine(line);
+      const { per100g, entry, wasResolved } = await resolveIngredientNutrition(name);
+
+      // Comma-splitting can still leave stray non-ingredient fragments
+      // (e.g. "minced", "cut into wedges" — trailing clauses that share a
+      // comma with the real ingredient line but aren't food themselves).
+      // Those never had a parseable leading quantity (hasExplicitAmount
+      // is false) AND don't resolve to anything real, whether from the
+      // local table OR USDA (wasResolved is false). That combination is a
+      // strong signal this fragment isn't really an ingredient, so it
+      // contributes 0g rather than the usual "assume 100g of something"
+      // default — which previously fabricated a full ~150 kcal / 20c / 5f
+      // "ingredient" out of leftover prep text.
+      //
+      // Note this deliberately checks wasResolved (local match OR USDA
+      // hit), not just the local entry — an ingredient with no leading
+      // quantity that ISN'T in the local table but IS found via USDA
+      // (e.g. "juice of 1 lemon") is a real ingredient and must still
+      // count. A genuine quantity-less ingredient (e.g. "salt to taste")
+      // also still has hasExplicitAmount: true from its own line, so this
+      // only affects fragments with neither a quantity nor any food match.
+      const isStrayFragment = !hasExplicitAmount && !wasResolved;
+      const grams = isStrayFragment ? 0 : toGrams(amount, unit, entry);
       const scale = grams / 100;
       return {
         calories: per100g.calories * scale,
