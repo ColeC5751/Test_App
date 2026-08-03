@@ -572,6 +572,22 @@ function RecipeDetailModal({
             <MacroBar macros={macros} colors={colors} />
           ) : null}
 
+          {/* TEMP — debug button to see the per-ingredient macro
+              breakdown on-screen, no logs/terminal needed. Remove once
+              the calorie mystery is confirmed fixed. Only shows up when
+              debugLines is actually present (i.e. macros came from the
+              estimator, not real API-sourced data). */}
+          {macros?.debugLines && macros.debugLines.length > 0 && (
+            <Pressable
+              onPress={() => Alert.alert("Macro breakdown", macros.debugLines!.join("\n\n"))}
+              style={{ alignSelf: "center", marginTop: 6, marginBottom: 10 }}
+            >
+              <Text style={{ fontSize: 12, color: colors.mutedForeground, textDecorationLine: "underline" }}>
+                Show macro breakdown (debug)
+              </Text>
+            </Pressable>
+          )}
+
           <Pressable
             onPress={handleAddToGrocery}
             style={({ pressed }) => [
