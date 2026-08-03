@@ -185,10 +185,32 @@ function parseAmount(raw: string): number {
 
 const AMOUNT_PREFIX = /^([\d./¼½¾⅓⅔⅕⅖⅗⅘⅛⅜⅝⅞]+(?:\s+[\d./¼½¾⅓⅔⅕⅖⅗⅘⅛⅜⅝⅞]+)?)\s+(.+)$/;
 
-export function parseIngredientLine(rawLine: string): { name: string; amount: number; unit: string } {
-  const line = decodeEntities(rawLine).trim();
+// Recipes very commonly write ranges like "1-2 pounds salmon" or "3-4
+// cloves of garlic". The character class in AMOUNT_PREFIX has no "-", so
+// without this step those lines fail to match AMOUNT_PREFIX entirely —
+// the whole line (unit included) falls back to `{ amount: 1, unit: "" }`,
+// which is silently wrong by however large the range is (e.g. treating
+// "1-2 pounds of salmon" as a single ~170g fillet instead of ~680g).
+// Expanding "X-Y" to its average up front lets the normal parsing path
+// take over correctly, unit and all.
+function expandLeadingRange(line: string): string {
+  const rangeMatch = line.match(/^(\d+(?:\.\d+)?)\s*-\s*(\d+(?:\.\d+)?)\b/);
+  if (!rangeMatch) return line;
+  const avg = (parseFloat(rangeMatch[1]) + parseFloat(rangeMatch[2])) / 2;
+  return line.slice(0, rangeMatch.index) + avg + line.slice(rangeMatch.index! + rangeMatch[0].length);
+}
+
+export function parseIngredientLine(
+  rawLine: string
+): { name: string; amount: number; unit: string; hasExplicitAmount: boolean } {
+  const line = expandLeadingRange(decodeEntities(rawLine).trim());
   const match = line.match(AMOUNT_PREFIX);
-  if (!match) return { name: line, amount: 1, unit: "" };
+  // `hasExplicitAmount: false` signals this line had no parseable leading
+  // quantity at all — used by macros.ts to distinguish a genuine
+  // quantity-less ingredient ("salt to taste") from a stray fragment left
+  // over from comma-splitting ("minced", "cut into wedges") that isn't
+  // really a separate ingredient. See macros.ts for how that's used.
+  if (!match) return { name: line, amount: 1, unit: "", hasExplicitAmount: false };
 
   const amount = parseAmount(match[1]);
   const rest = match[2].trim();
@@ -197,16 +219,37 @@ export function parseIngredientLine(rawLine: string): { name: string; amount: nu
   const firstTwoWords = words.slice(0, 2).join(" ").toLowerCase(); // catches "fl oz"
 
   if (words.length > 2 && KNOWN_UNITS.has(firstTwoWords)) {
-    return { name: words.slice(2).join(" "), amount, unit: words.slice(0, 2).join(" ") };
+    return { name: words.slice(2).join(" "), amount, unit: words.slice(0, 2).join(" "), hasExplicitAmount: true };
   }
   if (words.length > 1 && KNOWN_UNITS.has(firstWord)) {
-    return { name: words.slice(1).join(" "), amount, unit: words[0] };
+    return { name: words.slice(1).join(" "), amount, unit: words[0], hasExplicitAmount: true };
   }
-  return { name: rest, amount, unit: "" };
+  return { name: rest, amount, unit: "", hasExplicitAmount: true };
 }
 
 export function splitIngredientLines(raw: string): string[] {
-  return raw.split(/,|\n/).map((l) => l.trim()).filter(Boolean);
+  // Split on commas/newlines, but never inside parentheses — recipe text
+  // routinely has asides like "(optional, for color)" or "(I usually cut
+  // it into pieces)" where an internal comma is NOT a new ingredient.
+  // Splitting blindly on every comma (the previous behavior) chopped
+  // those asides into their own "ingredient" lines (e.g. "for color)"),
+  // which then got macro-estimated as if they were real food.
+  const lines: string[] = [];
+  let current = "";
+  let depth = 0;
+  for (const ch of raw) {
+    if (ch === "(") depth++;
+    else if (ch === ")") depth = Math.max(0, depth - 1);
+
+    if ((ch === "," || ch === "\n") && depth === 0) {
+      lines.push(current.trim());
+      current = "";
+    } else {
+      current += ch;
+    }
+  }
+  if (current.trim()) lines.push(current.trim());
+  return lines.filter(Boolean);
 }
 
 export function toGroceryItems(
