@@ -27,7 +27,10 @@ async function getUserId(): Promise<string | null> {
 // grocery.tsx (display/editing) and plan.tsx (meal-plan → grocery) both
 // call useGrocerySync() and use its addIngredients/deleteItem/toggleItem/
 // updateItemAmount methods rather than keeping their own storage, parsing,
-// or "compute next list from current items" logic.
+// or "compute next list from current items" logic. The shared-viewer
+// screen ([token].tsx) uses useSharedGrocerySync() below, which mirrors the
+// same mutation surface (save/addIngredients/deleteItem/rename) scoped to
+// the row identified by share_token instead of owner_id.
 
 const GROCERY_LOCAL_KEY = "@recipe_roulette_grocery";
 const GROCERY_ROW_KEY = "@recipe_roulette_grocery_row_id";
@@ -794,7 +797,15 @@ export function useGrocerySync() {
   };
 }
 
-// ─── Shared (read-only viewer) Grocery Sync ──────────────────────────────────
+// ─── Shared (view/edit) Grocery Sync ─────────────────────────────────────────
+//
+// Mirrors useGrocerySync's mutation surface (save/addIngredients/deleteItem/
+// rename), scoped to the row identified by share_token instead of owner_id,
+// and gated by the row's `permission` column rather than ownership. Added
+// itemsRef (mirroring useGrocerySync) so addIngredients/deleteItem compute
+// off the latest known list rather than a possibly-stale `items` closure,
+// and save() now returns a real boolean so callers (the shared list screen)
+// can tell success from failure instead of always getting `undefined`.
 
 export function useSharedGrocerySync(token: string | undefined) {
   const [items, setItems] = useState<GroceryItem[]>([]);
@@ -803,6 +814,8 @@ export function useSharedGrocerySync(token: string | undefined) {
   const [notFound, setNotFound] = useState(false);
   const [name, setName] = useState<string | null>(null);
   const rowIdRef = useRef<string | null>(null);
+  const itemsRef = useRef<GroceryItem[]>([]);
+  const permissionRef = useRef<SharePermission>("view");
 
   useEffect(() => {
     if (!token) return;
@@ -826,8 +839,12 @@ export function useSharedGrocerySync(token: string | undefined) {
         }
 
         rowIdRef.current = data.id;
-        setItems(data.items ?? []);
-        setPermission((data.permission ?? "view") as SharePermission);
+        const loadedItems: GroceryItem[] = data.items ?? [];
+        itemsRef.current = loadedItems;
+        setItems(loadedItems);
+        const loadedPermission = (data.permission ?? "view") as SharePermission;
+        permissionRef.current = loadedPermission;
+        setPermission(loadedPermission);
         setName(data.name ?? null);
         setStatus("synced");
 
@@ -867,15 +884,20 @@ export function useSharedGrocerySync(token: string | undefined) {
           // reached them without a fresh page load. Re-read `permission`
           // off the same UPDATE payload so it updates live alongside items.
           const remotePermission = (payload.new as any).permission as SharePermission | undefined;
+          itemsRef.current = remoteItems;
           setItems(remoteItems);
-          if (remotePermission) setPermission(remotePermission);
+          if (remotePermission) {
+            permissionRef.current = remotePermission;
+            setPermission(remotePermission);
+          }
         }
       )
       .subscribe();
     return () => { supabase.removeChannel(channel); };
   }, [rowIdRef.current]);
 
-  const save = useCallback(async (updated: GroceryItem[]) => {
+  const save = useCallback(async (updated: GroceryItem[]): Promise<boolean> => {
+    itemsRef.current = updated;
     setItems(updated);
 
     try {
@@ -886,7 +908,9 @@ export function useSharedGrocerySync(token: string | undefined) {
 
     if (!rowIdRef.current) {
       console.warn("No grocery row ID available. Saved locally only.");
-      return;
+      // Nothing remote to fail against — treat as success, matching
+      // useGrocerySync's local-only fallback.
+      return true;
     }
 
     setStatus("syncing");
@@ -900,29 +924,63 @@ export function useSharedGrocerySync(token: string | undefined) {
       if (error) {
         console.error("Failed to save grocery list to Supabase:", error);
         setStatus("error");
-        return;
+        return false;
       }
 
       setStatus("synced");
+      return true;
     } catch (error) {
       console.error("Unexpected grocery sync error:", error);
       setStatus("offline");
+      return false;
     }
   }, []);
+
+  // Mirrors useGrocerySync's addIngredients: parses + merges off the
+  // latest known list. No-ops (returns false) for view-only visitors —
+  // Supabase RLS should also enforce this, but this avoids a wasted round
+  // trip and keeps the UI's error path consistent.
+  const addIngredients = useCallback(
+    async (raw: string, opts?: { fromRecipe?: string; servingMultiplier?: number }): Promise<boolean> => {
+      if (permissionRef.current !== "edit") return false;
+      const incoming = toGroceryItems(raw, opts);
+      const combined = combineIngredients(itemsRef.current, incoming);
+      return save(combined);
+    },
+    [save]
+  );
+
+  // Mirrors useGrocerySync's deleteItem: race-safe (computed off itemsRef)
+  // with an optimistic-rollback on failure so the UI never shows an item
+  // as deleted when it wasn't actually persisted.
+  const deleteItem = useCallback(
+    async (id: string): Promise<boolean> => {
+      if (permissionRef.current !== "edit") return false;
+      const previous = itemsRef.current;
+      const updated = previous.filter((it) => it.id !== id);
+      const ok = await save(updated);
+      if (!ok) {
+        itemsRef.current = previous;
+        setItems(previous);
+      }
+      return ok;
+    },
+    [save]
+  );
 
   const rename = useCallback(async (newName: string) => {
     const trimmed = newName.trim();
     setName(trimmed || null);
-    if (!rowIdRef.current || permission !== "edit") return;
+    if (!rowIdRef.current || permissionRef.current !== "edit") return;
     try {
       await supabase
         .from("grocery_lists")
         .update({ name: trimmed || null })
         .eq("id", rowIdRef.current);
     } catch {}
-  }, [permission]);
+  }, []);
 
-  return { items, status, permission, notFound, name, save, rename };
+  return { items, status, permission, notFound, name, save, addIngredients, deleteItem, rename };
 }
 
 // ─── Recipe Sync ──────────────────────────────────────────────────────────────
