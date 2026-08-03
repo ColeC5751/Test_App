@@ -61,6 +61,31 @@ function generateId() {
   return Date.now().toString() + Math.random().toString(36).substring(2, 9);
 }
 
+// Recipe scrape/extract APIs commonly report yield as a plain number, a
+// numeric string ("4"), a range ("3-4" or "3 to 4 servings"), or wrapped
+// in text ("Serves 4", "4 servings"). This normalizes all of those into a
+// single integer, averaging ranges the same way sync.ts does for
+// ingredient amounts — a recipe that "serves 3-4" is best represented as
+// 4 (rounded up from the 3.5 average), since servings should be a whole
+// number of portions. Returns undefined (not a guessed default) when
+// nothing parseable is found, so callers can tell "we don't know" apart
+// from "we found a real value" instead of masking it with a hardcoded 4.
+function parseServingsValue(raw: unknown): number | undefined {
+  if (typeof raw === "number" && Number.isFinite(raw) && raw > 0) return Math.round(raw);
+  if (typeof raw !== "string") return undefined;
+  const rangeMatch = raw.match(/(\d+(?:\.\d+)?)\s*(?:-|to)\s*(\d+(?:\.\d+)?)/i);
+  if (rangeMatch) {
+    const avg = (parseFloat(rangeMatch[1]) + parseFloat(rangeMatch[2])) / 2;
+    return avg > 0 ? Math.round(avg) : undefined;
+  }
+  const singleMatch = raw.match(/\d+(?:\.\d+)?/);
+  if (singleMatch) {
+    const n = parseFloat(singleMatch[0]);
+    return n > 0 ? Math.round(n) : undefined;
+  }
+  return undefined;
+}
+
 // ─── Import Modal ─────────────────────────────────────────────────────────
 
 function ImportModal({
@@ -86,6 +111,7 @@ function ImportModal({
   const [formIngredients, setFormIngredients] = useState("");
   const [formSteps, setFormSteps] = useState("");
   const [formPhoto, setFormPhoto] = useState("");
+  const [formServings, setFormServings] = useState("");
   const [urlInput, setUrlInput] = useState("");
 
   React.useEffect(() => {
@@ -94,15 +120,16 @@ function ImportModal({
       setFormIngredients(editingRecipe.ingredients);
       setFormSteps(editingRecipe.steps);
       setFormPhoto(editingRecipe.photoUrl ?? "");
+      setFormServings(editingRecipe.servings ? String(editingRecipe.servings) : "");
       setMode("manual");
     } else if (visible && !editingRecipe) {
-      setFormName(""); setFormIngredients(""); setFormSteps(""); setFormPhoto("");
+      setFormName(""); setFormIngredients(""); setFormSteps(""); setFormPhoto(""); setFormServings("");
     }
   }, [visible, editingRecipe?.id]);
 
   const reset = () => {
     setFormName(""); setFormIngredients(""); setFormSteps("");
-    setFormPhoto(""); setUrlInput(""); setExtractError("");
+    setFormPhoto(""); setFormServings(""); setUrlInput(""); setExtractError("");
     setIsExtracting(false); setMode("manual");
   };
 
@@ -110,12 +137,14 @@ function ImportModal({
 
   const handleSave = () => {
     if (!formName.trim() || !formIngredients.trim() || !formSteps.trim()) return;
+    const parsedFormServings = formServings.trim() ? parseInt(formServings.trim(), 10) : undefined;
     onSave({
       id: editingRecipe ? editingRecipe.id : generateId(),
       name: formName.trim(),
       ingredients: formIngredients.trim(),
       steps: formSteps.trim(),
       photoUrl: formPhoto.trim() || undefined,
+      servings: parsedFormServings && parsedFormServings > 0 ? parsedFormServings : undefined,
       createdAt: editingRecipe ? editingRecipe.createdAt : Date.now(),
       source: editingRecipe ? editingRecipe.source : mode,
     });
@@ -149,6 +178,14 @@ function ImportModal({
       setFormName(data.name ?? "");
       setFormIngredients(Array.isArray(data.ingredients) ? data.ingredients.join(", ") : data.ingredients ?? "");
       setFormSteps(Array.isArray(data.steps) ? data.steps.map((s: string, i: number) => `${i + 1}. ${s}`).join("\n") : data.steps ?? "");
+      // Servings wasn't being captured at all here before — recipe.servings
+      // stayed undefined for every photo import, silently forcing
+      // estimateMacrosPerServing() into its hardcoded "?? 4" fallback
+      // regardless of what the recipe actually yields. Checking a few
+      // likely field names since the extract API's exact response shape
+      // for this isn't visible from the client.
+      const extractedServings = parseServingsValue(data.servings ?? data.yield ?? data.recipeYield ?? data.servingSize);
+      if (extractedServings) setFormServings(String(extractedServings));
       if (result.assets[0]?.base64) {
         setFormPhoto(`data:image/jpeg;base64,${result.assets[0].base64}`);
       } else if (result.assets[0]?.uri) {
@@ -183,6 +220,13 @@ function ImportModal({
       setFormIngredients(Array.isArray(data.ingredients) ? data.ingredients.join(", ") : data.ingredients ?? "");
       setFormSteps(Array.isArray(data.steps) ? data.steps.map((s: string, i: number) => `${i + 1}. ${s}`).join("\n") : data.steps ?? "");
       setFormPhoto(data.image ?? "");
+      // Same gap as the photo importer above: servings was never read from
+      // the scrape response, so every URL-imported recipe silently lost
+      // its real yield. Recipe sites commonly expose this via schema.org
+      // recipeYield, which scrapers often surface as `servings` or
+      // `recipeYield` — check both, plus a couple of likely alternates.
+      const scrapedServings = parseServingsValue(data.servings ?? data.yield ?? data.recipeYield ?? data.servingSize);
+      if (scrapedServings) setFormServings(String(scrapedServings));
     } catch (err: any) {
       setExtractError(err.message ?? "Could not scrape recipe. Check the URL and try again.");
     } finally {
@@ -293,6 +337,16 @@ function ImportModal({
 
               <Text style={[styles.formLabel, { color: colors.mutedForeground }]}>INGREDIENTS</Text>
               <TextInput style={[inputStyle, styles.multiInput]} value={formIngredients} onChangeText={setFormIngredients} placeholder="Salmon, garlic, butter, lemon..." placeholderTextColor={colors.mutedForeground} multiline numberOfLines={4} textAlignVertical="top" />
+
+              <Text style={[styles.formLabel, { color: colors.mutedForeground }]}>SERVINGS</Text>
+              <TextInput
+                style={[inputStyle, { maxWidth: 100 }]}
+                value={formServings}
+                onChangeText={(t) => setFormServings(t.replace(/[^0-9]/g, ""))}
+                placeholder="4"
+                placeholderTextColor={colors.mutedForeground}
+                keyboardType="number-pad"
+              />
 
               <Text style={[styles.formLabel, { color: colors.mutedForeground }]}>STEPS</Text>
               <TextInput style={[inputStyle, styles.multiInput]} value={formSteps} onChangeText={setFormSteps} placeholder="1. Preheat pan... 2. Season salmon..." placeholderTextColor={colors.mutedForeground} multiline numberOfLines={5} textAlignVertical="top" />
