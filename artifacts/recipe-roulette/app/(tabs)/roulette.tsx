@@ -572,6 +572,21 @@ function RecipeDetailModal({
             <MacroBar macros={macros} colors={colors} />
           ) : null}
 
+          {/* TEMP — always-visible diagnostic, remove alongside the debug
+              button below once this is sorted out. This tells us WHICH
+              case we're in without relying on the button working:
+              - "no macros yet" -> still loading or recipe has no ingredients
+              - "macros present, debugLines: none" -> recipe.macros was
+                already set (bookmarked/real API data, or a stale cached
+                value from before debugLines existed), so
+                estimateMacrosPerServing never ran this time
+              - "macros present, debugLines: N" -> should be showing the
+                button below; if it's not visible, it's a rendering issue,
+                not a data issue */}
+          <Text style={{ fontSize: 11, color: colors.mutedForeground, textAlign: "center", marginBottom: 4 }}>
+            DEBUG: {!macros ? "no macros yet" : `macros present, debugLines: ${macros.debugLines ? macros.debugLines.length : "none"}`}
+          </Text>
+
           {/* TEMP — debug button to see the per-ingredient macro
               breakdown on-screen, no logs/terminal needed. Remove once
               the calorie mystery is confirmed fixed. Only shows up when
@@ -579,7 +594,10 @@ function RecipeDetailModal({
               estimator, not real API-sourced data). */}
           {macros?.debugLines && macros.debugLines.length > 0 && (
             <Pressable
-              onPress={() => Alert.alert("Macro breakdown", macros.debugLines!.join("\n\n"))}
+              onPress={() => {
+                console.log("debug button pressed"); // harmless even if logs aren't visible
+                Alert.alert("Macro breakdown", macros.debugLines!.join("\n\n"));
+              }}
               style={{ alignSelf: "center", marginTop: 6, marginBottom: 10 }}
             >
               <Text style={{ fontSize: 12, color: colors.mutedForeground, textDecorationLine: "underline" }}>
