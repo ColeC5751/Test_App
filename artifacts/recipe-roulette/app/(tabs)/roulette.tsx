@@ -175,6 +175,7 @@ function ImportModal({
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? "Extraction failed");
+      console.log("[recipes/extract] raw response:", JSON.stringify(data, null, 2)); // TEMP — remove after checking field names
       setFormName(data.name ?? "");
       setFormIngredients(Array.isArray(data.ingredients) ? data.ingredients.join(", ") : data.ingredients ?? "");
       setFormSteps(Array.isArray(data.steps) ? data.steps.map((s: string, i: number) => `${i + 1}. ${s}`).join("\n") : data.steps ?? "");
@@ -216,6 +217,7 @@ function ImportModal({
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? "Scrape failed");
+      console.log("[recipes/scrape] raw response:", JSON.stringify(data, null, 2)); // TEMP — remove after checking field names
       setFormName(data.name ?? "");
       setFormIngredients(Array.isArray(data.ingredients) ? data.ingredients.join(", ") : data.ingredients ?? "");
       setFormSteps(Array.isArray(data.steps) ? data.steps.map((s: string, i: number) => `${i + 1}. ${s}`).join("\n") : data.steps ?? "");
