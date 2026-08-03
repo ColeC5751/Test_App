@@ -52,8 +52,9 @@ function groupByAisle(items: GroceryItem[]): { aisle: string; icon: string; item
 }
 
 // ─── Sync status dot ──────────────────────────────────────────────────────────
+// Exported so the shared list screen can reuse it instead of duplicating it.
 
-function SyncDot({ status }: { status: SyncStatus }) {
+export function SyncDot({ status }: { status: SyncStatus }) {
   const color =
     status === "synced" ? "#7C8C5E" :
     status === "syncing" ? "#C8A86B" :
@@ -75,8 +76,11 @@ const syncDotStyles = StyleSheet.create({
 // real React Native <Modal>, so it works identically on web and native, and
 // it matches the app's card/rounded-corner visual language instead of the
 // platform's native dialog chrome.
+//
+// Exported so the shared list screen can reuse the same styled confirmation
+// instead of duplicating it.
 
-function ConfirmModal({
+export function ConfirmModal({
   visible,
   title,
   message,
@@ -275,6 +279,10 @@ export default function GroceryScreen() {
     // Supabase and reset to "view" on every remount.
     permission,
     setSharePermission,
+    // List display name + rename, mirroring the shared-viewer hook so both
+    // screens can edit the same grocery_lists.name column.
+    name,
+    rename,
     save,
     load,
     addIngredients,
@@ -298,6 +306,20 @@ export default function GroceryScreen() {
   const [editValue, setEditValue] = useState("");
   const [manualInput, setManualInput] = useState("");
   const [showShareModal, setShowShareModal] = useState(false);
+
+  // Title editing — same pattern as the shared list screen. Tapping the
+  // heading swaps it for a TextInput; blurring or submitting commits the
+  // rename via the hook, which persists it to grocery_lists.name.
+  const [editingTitle, setEditingTitle] = useState(false);
+  const [titleInput, setTitleInput] = useState("");
+
+  const commitTitle = async () => {
+    setEditingTitle(false);
+    const trimmed = titleInput.trim();
+    if (trimmed && trimmed !== name) {
+      await rename(trimmed);
+    }
+  };
 
   // Styled confirmation for "Clear list". Previously this used
   // Alert.alert(...) directly inside handleClear, which silently fails to
@@ -421,7 +443,22 @@ export default function GroceryScreen() {
         {/* Header */}
         <View style={styles.headerRow}>
           <View style={styles.headerLeft}>
-            <Text style={[styles.heading, { color: colors.foreground }]}>Grocery List</Text>
+            {editingTitle ? (
+              <TextInput
+                style={[styles.headingInput, { color: colors.foreground, borderColor: colors.primary }]}
+                value={titleInput}
+                onChangeText={setTitleInput}
+                autoFocus
+                onBlur={commitTitle}
+                onSubmitEditing={commitTitle}
+                placeholder="Grocery List"
+                placeholderTextColor={colors.mutedForeground}
+              />
+            ) : (
+              <Pressable onPress={() => { setTitleInput(name ?? ""); setEditingTitle(true); }}>
+                <Text style={[styles.heading, { color: colors.foreground }]}>{name || "Grocery List"}</Text>
+              </Pressable>
+            )}
             <View style={styles.subRow}>
               <Text style={[styles.sub, { color: colors.mutedForeground }]}>
                 {items.length === 0
@@ -456,107 +493,6 @@ export default function GroceryScreen() {
             )}
           </View>
         </View>
-
-        {/*
-        ─── Sync Diagnostics panel (disabled) ───────────────────────────
-        To reinstate: uncomment the diagnostic destructuring above and the
-        block below, and add it back into the JSX where you want it shown.
-
-        <View
-          style={[
-            styles.diagnostics,
-            {
-              backgroundColor: colors.card,
-              borderColor: status === "error" ? colors.destructive : colors.border,
-            },
-          ]}
-        >
-          <View style={styles.diagnosticsHeader}>
-            <Feather
-              name={status === "error" ? "alert-triangle" : "activity"}
-              size={16}
-              color={status === "error" ? colors.destructive : colors.foreground}
-            />
-            <Text style={[styles.diagnosticsTitle, { color: colors.foreground }]}>Sync Diagnostics</Text>
-          </View>
-
-          <View style={styles.diagnosticRow}>
-            <Text style={[styles.diagnosticLabel, { color: colors.mutedForeground }]}>Status</Text>
-            <Text style={[styles.diagnosticValue, { color: status === "error" ? colors.destructive : colors.foreground }]}>
-              {status}
-            </Text>
-          </View>
-
-          <View style={styles.diagnosticRow}>
-            <Text style={[styles.diagnosticLabel, { color: colors.mutedForeground }]}>User ID</Text>
-            <Text style={[styles.diagnosticValue, { color: colors.foreground }]} numberOfLines={1}>
-              {userId ?? "No authenticated user"}
-            </Text>
-          </View>
-
-          <View style={styles.diagnosticRow}>
-            <Text style={[styles.diagnosticLabel, { color: colors.mutedForeground }]}>Grocery Row ID</Text>
-            <Text style={[styles.diagnosticValue, { color: colors.foreground }]} numberOfLines={1}>
-              {rowId ?? "No row ID"}
-            </Text>
-          </View>
-
-          <View style={styles.diagnosticRow}>
-            <Text style={[styles.diagnosticLabel, { color: colors.mutedForeground }]}>Owner ID</Text>
-            <Text style={[styles.diagnosticValue, { color: colors.foreground }]} numberOfLines={1}>
-              {ownerId ?? "Unknown"}
-            </Text>
-          </View>
-
-          <View style={styles.diagnosticRow}>
-            <Text style={[styles.diagnosticLabel, { color: colors.mutedForeground }]}>Is Owner</Text>
-            <Text
-              style={[
-                styles.diagnosticValue,
-                {
-                  color:
-                    userId && ownerId
-                      ? userId === ownerId
-                        ? colors.primary
-                        : colors.destructive
-                      : colors.mutedForeground,
-                },
-              ]}
-            >
-              {userId && ownerId ? (userId === ownerId ? "YES" : "NO") : "UNKNOWN"}
-            </Text>
-          </View>
-
-          <View style={styles.diagnosticRow}>
-            <Text style={[styles.diagnosticLabel, { color: colors.mutedForeground }]}>Last Operation</Text>
-            <Text style={[styles.diagnosticValue, { color: colors.foreground }]} numberOfLines={2}>
-              {lastOperation ?? "None"}
-            </Text>
-          </View>
-
-          {errorMessage && (
-            <View style={[styles.errorBox, { backgroundColor: colors.secondary, borderColor: colors.destructive }]}>
-              <Text style={[styles.errorTitle, { color: colors.destructive }]}>Supabase Error</Text>
-              <Text style={[styles.errorText, { color: colors.foreground }]}>{errorMessage}</Text>
-              {errorCode && (
-                <Text style={[styles.errorMeta, { color: colors.mutedForeground }]}>Code: {errorCode}</Text>
-              )}
-              {errorDetails && (
-                <Text style={[styles.errorMeta, { color: colors.mutedForeground }]}>Details: {errorDetails}</Text>
-              )}
-            </View>
-          )}
-
-          <Pressable
-            onPress={async () => { await save(items); }}
-            style={({ pressed }) => [styles.testSaveButton, { backgroundColor: colors.primary, opacity: pressed ? 0.7 : 1 }]}
-          >
-            <Feather name="database" size={15} color={colors.primaryForeground} />
-            <Text style={[styles.testSaveButtonText, { color: colors.primaryForeground }]}>Test Supabase Save</Text>
-          </Pressable>
-        </View>
-        ─────────────────────────────────────────────────────────────────
-        */}
 
         {/* Manual add input */}
         <View style={[styles.manualAddRow, { backgroundColor: colors.card, borderColor: colors.border }]}>
@@ -762,6 +698,7 @@ const styles = StyleSheet.create({
   headerLeft: { flex: 1, gap: 2 },
   subRow: { flexDirection: "row", alignItems: "center", gap: 6 },
   heading: { fontSize: 26, fontFamily: "Inter_700Bold", marginBottom: 2 },
+  headingInput: { fontSize: 26, fontFamily: "Inter_700Bold", marginBottom: 2, borderBottomWidth: 1.5, paddingBottom: 2 },
   sub: { fontSize: 13, fontFamily: "Inter_400Regular" },
   headerActions: { flexDirection: "row", gap: 8, marginTop: 4 },
   headerBtn: { width: 36, height: 36, borderRadius: 18, borderWidth: 1, alignItems: "center", justifyContent: "center" },
