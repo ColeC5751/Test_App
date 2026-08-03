@@ -356,11 +356,19 @@ const pickerStyles = StyleSheet.create({
   recipeName: { flex: 1, fontSize: 14, fontFamily: "Inter_600SemiBold", lineHeight: 19 },
 });
 
-// ─── Month Calendar (new) ──────────────────────────────────────────────────
+// ─── Month Calendar ────────────────────────────────────────────────────────
 // Just a photo grid: each cell is a day number plus that day's dinner
 // thumbnail (if any). Tapping a filled day opens the recipe card; tapping an
 // empty day opens the picker, same as the list view — the parent decides via
 // onSelectDay (it reuses handleSlotPress).
+//
+// CHANGED: icon content (the dinner photo/placeholder, and the "+" hint on
+// empty days for editors) is now only rendered when `inMonth` is true.
+// Previously the photo/placeholder rendered unconditionally for any day
+// that had a slot — including leading/trailing days from the adjacent
+// month, which for a view-only visitor weren't even tappable but were
+// still visually showing an icon. Only the day number still renders for
+// out-of-month days, so the grid keeps its shape.
 
 function MonthCalendar({
   monthAnchor,
@@ -390,7 +398,7 @@ function MonthCalendar({
           const slot = plan[key];
           const inMonth = date.getMonth() === monthAnchor.getMonth();
           const today = isToday(date);
-          const interactive = !!slot || (canEdit && inMonth);
+          const interactive = inMonth && (!!slot || canEdit);
 
           return (
             <View key={key} style={calendarStyles.cellOuter}>
@@ -410,16 +418,18 @@ function MonthCalendar({
                 <Text style={[calendarStyles.cellNum, { color: today ? colors.primary : colors.foreground }]}>
                   {date.getDate()}
                 </Text>
-                {slot ? (
-                  slot.recipePhoto ? (
-                    <Image source={{ uri: slot.recipePhoto }} style={calendarStyles.cellPhoto} />
+                {inMonth && (
+                  slot ? (
+                    slot.recipePhoto ? (
+                      <Image source={{ uri: slot.recipePhoto }} style={calendarStyles.cellPhoto} />
+                    ) : (
+                      <View style={[calendarStyles.cellPhotoPlaceholder, { backgroundColor: colors.muted }]}>
+                        <Feather name="coffee" size={14} color={colors.mutedForeground} />
+                      </View>
+                    )
                   ) : (
-                    <View style={[calendarStyles.cellPhotoPlaceholder, { backgroundColor: colors.muted }]}>
-                      <Feather name="coffee" size={14} color={colors.mutedForeground} />
-                    </View>
+                    canEdit && <Feather name="plus" size={12} color={colors.mutedForeground} />
                   )
-                ) : (
-                  canEdit && inMonth && <Feather name="plus" size={12} color={colors.mutedForeground} />
                 )}
               </Pressable>
             </View>
