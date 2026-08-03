@@ -492,6 +492,14 @@ const shareModalStyles = StyleSheet.create({
 // thumbnail (if any). Tapping a filled day opens the recipe card; tapping an
 // empty day opens the picker — the parent decides via onSelectDay (it
 // reuses handleSlotPress).
+//
+// CHANGED: icon content (the dinner photo/placeholder, and the "+" hint on
+// empty days) is now only rendered when `inMonth` is true. Previously the
+// photo/placeholder rendered unconditionally for any day that had a slot —
+// including leading/trailing days from the adjacent month, which aren't
+// tappable (`interactive` was already false for those) but were still
+// visually showing an icon. Only the day number still renders for
+// out-of-month days, so the grid keeps its shape.
 
 function MonthCalendar({
   monthAnchor,
@@ -539,16 +547,18 @@ function MonthCalendar({
                 <Text style={[calendarStyles.cellNum, { color: today ? colors.primary : colors.foreground }]}>
                   {date.getDate()}
                 </Text>
-                {slot ? (
-                  slot.recipePhoto ? (
-                    <Image source={{ uri: slot.recipePhoto }} style={calendarStyles.cellPhoto} />
+                {inMonth && (
+                  slot ? (
+                    slot.recipePhoto ? (
+                      <Image source={{ uri: slot.recipePhoto }} style={calendarStyles.cellPhoto} />
+                    ) : (
+                      <View style={[calendarStyles.cellPhotoPlaceholder, { backgroundColor: colors.muted }]}>
+                        <Feather name="coffee" size={14} color={colors.mutedForeground} />
+                      </View>
+                    )
                   ) : (
-                    <View style={[calendarStyles.cellPhotoPlaceholder, { backgroundColor: colors.muted }]}>
-                      <Feather name="coffee" size={14} color={colors.mutedForeground} />
-                    </View>
+                    <Feather name="plus" size={12} color={colors.mutedForeground} />
                   )
-                ) : (
-                  inMonth && <Feather name="plus" size={12} color={colors.mutedForeground} />
                 )}
               </Pressable>
             </View>
