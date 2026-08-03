@@ -193,28 +193,48 @@ function extractNutrient(foodNutrients: any[], nutrientName: string, unitName?: 
   return typeof match?.value === "number" ? match.value : 0;
 }
 
+// Ingredient names frequently carry parenthetical asides that are useful
+// for a human reading the recipe ("salmon (I usually buy it in one filet
+// and cut into pieces)") but actively hurt a full-text search API — extra
+// words dilute relevance and can push an irrelevant result to the top.
+// This is ONLY used for nutrition lookup (local match + USDA query); the
+// original name with its aside intact is still used everywhere else
+// (display, grocery list, etc.).
+function stripDescriptiveAsides(name: string): string {
+  return name.replace(/\([^)]*\)/g, "").trim() || name.trim();
+}
+
 // Restricted to Foundation + SR Legacy data types: both report nutrients
 // per 100g consistently (matching this module's whole architecture).
 // Branded-food results get excluded — those report per-serving-as-labeled
 // rather than per-100g, and would need a completely different unit-
 // handling path to use correctly.
 async function fetchUsdaNutrition(
-  name: string
-): Promise<{ status: "found"; data: Per100g } | { status: "not_found" } | { status: "error" }> {
+  rawName: string
+): Promise<{ status: "found"; data: Per100g; matchedDescription?: string } | { status: "not_found" } | { status: "error" }> {
+  const name = stripDescriptiveAsides(rawName);
   try {
     const url =
       `${USDA_FDC_SEARCH_URL}?api_key=${USDA_FDC_API_KEY}` +
-      `&query=${encodeURIComponent(name)}&pageSize=1&dataType=Foundation,SR%20Legacy`;
+      `&query=${encodeURIComponent(name)}&pageSize=5&dataType=Foundation,SR%20Legacy`;
     const res = await fetch(url);
     if (!res.ok) return { status: "error" };
 
     const data = await res.json();
-    const food = data?.foods?.[0];
-    if (!food) return { status: "not_found" };
+    const foods: any[] = data?.foods ?? [];
+    if (foods.length === 0) return { status: "not_found" };
+
+    // pageSize=1 previously trusted whatever ranked first, with no way to
+    // tell a good match from a bad one. Preferring a "raw"/plain result
+    // among the top few candidates avoids landing on a prepared dish or
+    // an unrelated cut/variant that happens to rank #1 for a noisy query.
+    const preferred = foods.find((f) => typeof f?.description === "string" && /\braw\b/i.test(f.description));
+    const food = preferred ?? foods[0];
 
     const nutrients: any[] = food.foodNutrients ?? [];
     return {
       status: "found",
+      matchedDescription: food.description,
       data: {
         calories: extractNutrient(nutrients, "Energy", "KCAL"),
         protein: extractNutrient(nutrients, "Protein"),
@@ -307,6 +327,8 @@ async function resolveIngredientNutrition(
   const usda = await fetchUsdaNutrition(name);
 
   if (usda.status === "found") {
+    // TEMP — remove once the 8k-calorie mystery is confirmed fixed.
+    console.log(`[macros] USDA matched "${name}" -> "${usda.matchedDescription}"`);
     await setCachedNutrition(name, usda.data);
     return { per100g: usda.data, entry: localEntry, wasResolved: true };
   }
@@ -365,8 +387,15 @@ export async function estimateMacrosPerServing(rawIngredientsText: string, servi
       const isStrayFragment = !hasExplicitAmount && !wasResolved;
       const grams = isStrayFragment ? 0 : toGrams(amount, unit, entry);
       const scale = grams / 100;
+      const lineCalories = per100g.calories * scale;
+      // TEMP — remove once the 8k-calorie mystery is confirmed fixed.
+      console.log(
+        `[macros] "${line}" -> name="${name}" grams=${grams.toFixed(0)} ` +
+          `per100g=${JSON.stringify(per100g)} -> ${lineCalories.toFixed(0)} kcal` +
+          (isStrayFragment ? " [SKIPPED: stray fragment]" : "")
+      );
       return {
-        calories: per100g.calories * scale,
+        calories: lineCalories,
         protein: per100g.protein * scale,
         carbs: per100g.carbs * scale,
         fat: per100g.fat * scale,
