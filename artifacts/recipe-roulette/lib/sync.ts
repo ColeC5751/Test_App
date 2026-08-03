@@ -806,6 +806,18 @@ export function useGrocerySync() {
 // off the latest known list rather than a possibly-stale `items` closure,
 // and save() now returns a real boolean so callers (the shared list screen)
 // can tell success from failure instead of always getting `undefined`.
+//
+// NOTE: `rowId` is now tracked as real state (not just a ref). Refs don't
+// trigger re-renders when mutated, so a `useEffect` dependency array of
+// `[rowIdRef.current]` never actually reruns when the ref changes — it only
+// reruns on unrelated re-renders. Combined with React Strict Mode / Fast
+// Refresh double-invoking effects, this could re-run the realtime
+// subscription effect while the previous `removeChannel()` call for the
+// same channel name was still in flight, causing Supabase to hand back the
+// same already-subscribed channel object and throw "cannot add
+// postgres_changes callbacks ... after subscribe()" when `.on()` was called
+// on it again. Using real state for `rowId` makes the effect dependency
+// meaningful and keeps subscribe/unsubscribe cycles properly ordered.
 
 export function useSharedGrocerySync(token: string | undefined) {
   const [items, setItems] = useState<GroceryItem[]>([]);
@@ -813,6 +825,7 @@ export function useSharedGrocerySync(token: string | undefined) {
   const [permission, setPermission] = useState<SharePermission>("view");
   const [notFound, setNotFound] = useState(false);
   const [name, setName] = useState<string | null>(null);
+  const [rowId, setRowId] = useState<string | null>(null);
   const rowIdRef = useRef<string | null>(null);
   const itemsRef = useRef<GroceryItem[]>([]);
   const permissionRef = useRef<SharePermission>("view");
@@ -839,6 +852,7 @@ export function useSharedGrocerySync(token: string | undefined) {
         }
 
         rowIdRef.current = data.id;
+        setRowId(data.id);
         const loadedItems: GroceryItem[] = data.items ?? [];
         itemsRef.current = loadedItems;
         setItems(loadedItems);
@@ -870,12 +884,11 @@ export function useSharedGrocerySync(token: string | undefined) {
   }, [token]);
 
   useEffect(() => {
-    if (!rowIdRef.current) return;
-    const id = rowIdRef.current;
+    if (!rowId) return;
     const channel = supabase
-      .channel(`shared_grocery_${id}`)
+      .channel(`shared_grocery_${rowId}`)
       .on("postgres_changes",
-        { event: "UPDATE", schema: "public", table: "grocery_lists", filter: `id=eq.${id}` },
+        { event: "UPDATE", schema: "public", table: "grocery_lists", filter: `id=eq.${rowId}` },
         (payload) => {
           const remoteItems: GroceryItem[] = (payload.new as any).items ?? [];
           // Previously only `items` was re-read here, so a viewer who had
@@ -894,7 +907,7 @@ export function useSharedGrocerySync(token: string | undefined) {
       )
       .subscribe();
     return () => { supabase.removeChannel(channel); };
-  }, [rowIdRef.current]);
+  }, [rowId]);
 
   const save = useCallback(async (updated: GroceryItem[]): Promise<boolean> => {
     itemsRef.current = updated;
@@ -1145,6 +1158,13 @@ export function usePlanSync() {
   const [shareToken, setShareToken] = useState<string | null>(null);
   const [permission, setPermission] = useState<SharePermission>("view");
   const [name, setName] = useState<string | null>(null);
+  // Tracked as real state (in addition to the ref) so the realtime
+  // subscription effect below has a dependency that actually changes on
+  // re-render. See the note above useSharedGrocerySync for why a
+  // ref-only dependency (`[rowIdRef.current]`) doesn't reliably rerun the
+  // effect and can cause "cannot add postgres_changes callbacks ... after
+  // subscribe()" under Strict Mode / Fast Refresh double-invocation.
+  const [rowId, setRowId] = useState<string | null>(null);
   const rowIdRef = useRef<string | null>(null);
 
   const load = useCallback(async () => {
@@ -1181,6 +1201,7 @@ export function usePlanSync() {
         // Found the person's real plan row. Heal the cached row id in case
         // it was missing, stale, or never set.
         rowIdRef.current = ownerRow.id;
+        setRowId(ownerRow.id);
         await AsyncStorage.setItem(PLAN_ROW_KEY, ownerRow.id);
 
         setPlan(ownerRow.slots ?? {});
@@ -1204,6 +1225,7 @@ export function usePlanSync() {
 
       if (newRow) {
         rowIdRef.current = newRow.id;
+        setRowId(newRow.id);
         setShareToken(newRow.share_token);
         setName(newRow.name ?? null);
         await AsyncStorage.setItem(PLAN_ROW_KEY, newRow.id);
@@ -1252,6 +1274,7 @@ export function usePlanSync() {
 
       if (!error && data) {
         rowIdRef.current = data.id;
+        setRowId(data.id);
         setPlan(data.slots ?? {});
         setShareToken(data.share_token);
         setPermission(data.permission as SharePermission);
@@ -1264,11 +1287,11 @@ export function usePlanSync() {
   }, []);
 
   useEffect(() => {
-    if (!rowIdRef.current) return;
+    if (!rowId) return;
     const channel = supabase
-      .channel(`plan_${rowIdRef.current}`)
+      .channel(`plan_${rowId}`)
       .on("postgres_changes",
-        { event: "UPDATE", schema: "public", table: "meal_plans", filter: `id=eq.${rowIdRef.current}` },
+        { event: "UPDATE", schema: "public", table: "meal_plans", filter: `id=eq.${rowId}` },
         (payload) => {
           const remoteSlots: MealPlan = (payload.new as any).slots ?? {};
           setPlan(remoteSlots);
@@ -1278,7 +1301,7 @@ export function usePlanSync() {
       )
       .subscribe();
     return () => { supabase.removeChannel(channel); };
-  }, [rowIdRef.current]);
+  }, [rowId]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -1305,6 +1328,10 @@ export function useSharedPlanSync(token: string | undefined) {
   const [permission, setPermission] = useState<SharePermission>("view");
   const [notFound, setNotFound] = useState(false);
   const [name, setName] = useState<string | null>(null);
+  // Same real-state fix as usePlanSync/useSharedGrocerySync — see the note
+  // above useSharedGrocerySync for the full explanation of why a
+  // ref-only effect dependency isn't safe here.
+  const [rowId, setRowId] = useState<string | null>(null);
   const rowIdRef = useRef<string | null>(null);
 
   useEffect(() => {
@@ -1329,6 +1356,7 @@ export function useSharedPlanSync(token: string | undefined) {
         }
 
         rowIdRef.current = data.id;
+        setRowId(data.id);
         setPlan(data.slots ?? {});
         setPermission((data.permission ?? "view") as SharePermission);
         setName(data.name ?? null);
@@ -1356,12 +1384,11 @@ export function useSharedPlanSync(token: string | undefined) {
   }, [token]);
 
   useEffect(() => {
-    if (!rowIdRef.current) return;
-    const id = rowIdRef.current;
+    if (!rowId) return;
     const channel = supabase
-      .channel(`shared_plan_${id}`)
+      .channel(`shared_plan_${rowId}`)
       .on("postgres_changes",
-        { event: "UPDATE", schema: "public", table: "meal_plans", filter: `id=eq.${id}` },
+        { event: "UPDATE", schema: "public", table: "meal_plans", filter: `id=eq.${rowId}` },
         (payload) => {
           const remoteSlots: MealPlan = (payload.new as any).slots ?? {};
           // Previously only `slots` was re-read here, so a viewer who had
@@ -1377,7 +1404,7 @@ export function useSharedPlanSync(token: string | undefined) {
       )
       .subscribe();
     return () => { supabase.removeChannel(channel); };
-  }, [rowIdRef.current]);
+  }, [rowId]);
 
   const save = useCallback(async (updated: MealPlan) => {
     setPlan(updated);
