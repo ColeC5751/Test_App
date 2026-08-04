@@ -302,6 +302,8 @@ export default function GroceryScreen() {
     // lastOperation,
   } = useGrocerySync();
 
+  const { step: onboardingStep, advance: advanceOnboarding } = useOnboarding();
+  
   const [loaded, setLoaded] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editValue, setEditValue] = useState("");
