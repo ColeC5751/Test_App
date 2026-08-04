@@ -1,8 +1,10 @@
 import React from "react";
-import { StyleSheet, Text, View } from "react-native";
+import { Pressable, StyleSheet, Text, View } from "react-native";
+import { Feather } from "@expo/vector-icons";
 
 import { useColors } from "@/hooks/useColors";
 import type { Macros } from "@/lib/types";
+import type { IngredientBreakdownItem } from "@/lib/macros";
 
 // Nutrition here is inherently a per-serving figure — it does NOT change
 // based on how many servings the person is scaling the ingredients to
@@ -74,6 +76,75 @@ export function MacroPills({ macros, colors }: { macros: Macros; colors: ReturnT
   );
 }
 
+// Per-ingredient view of how a recipe's macro estimate was built — lets
+// someone see exactly what each line resolved to (and whether it
+// resolved at all), rather than just trusting the aggregate numbers
+// above. Collapsed by default since it's a lot of detail; only rendered
+// when there's actually a breakdown to show (i.e. macros came from
+// lib/macros.ts's estimator, not real API-sourced data — those don't
+// carry a line-by-line breakdown).
+export function IngredientBreakdown({
+  items,
+  colors,
+}: {
+  items: IngredientBreakdownItem[] | undefined;
+  colors: ReturnType<typeof useColors>;
+}) {
+  const [expanded, setExpanded] = React.useState(false);
+  if (!items || items.length === 0) return null;
+
+  return (
+    <View style={[macroStyles.wrap, { backgroundColor: colors.card, borderColor: colors.border }]}>
+      <Pressable
+        onPress={() => setExpanded((v) => !v)}
+        style={macroStyles.headingRow}
+        accessibilityRole="button"
+        accessibilityLabel={expanded ? "Hide ingredient breakdown" : "Show ingredient breakdown"}
+      >
+        <Text style={[macroStyles.heading, { color: colors.mutedForeground }]}>INGREDIENT BREAKDOWN</Text>
+        <Feather name={expanded ? "chevron-up" : "chevron-down"} size={16} color={colors.mutedForeground} />
+      </Pressable>
+      {expanded && (
+        <View>
+          {items.map((item, i) => (
+            <View
+              key={i}
+              style={[
+                macroStyles.ingredientRow,
+                i < items.length - 1 && {
+                  borderBottomWidth: StyleSheet.hairlineWidth,
+                  borderBottomColor: colors.border,
+                },
+              ]}
+            >
+              <View style={macroStyles.ingredientTextCol}>
+                <Text style={[macroStyles.ingredientName, { color: colors.foreground }]} numberOfLines={1}>
+                  {item.line}
+                </Text>
+                <Text style={[macroStyles.ingredientMeta, { color: colors.mutedForeground }]} numberOfLines={1}>
+                  {item.unresolved
+                    ? "Not counted — no matching ingredient found"
+                    : `${Math.round(item.grams)}g · ${item.matchedDescription ?? "unknown source"}`}
+                </Text>
+              </View>
+              {!item.unresolved && (
+                <View style={macroStyles.ingredientMacroCol}>
+                  <Text style={[macroStyles.ingredientCalories, { color: colors.foreground }]}>
+                    {Math.round(item.calories)} kcal
+                  </Text>
+                  <Text style={[macroStyles.ingredientMeta, { color: colors.mutedForeground }]}>
+                    {Math.round(item.protein)}p · {Math.round(item.carbs)}c · {Math.round(item.fat)}f
+                  </Text>
+                </View>
+              )}
+            </View>
+          ))}
+        </View>
+      )}
+    </View>
+  );
+}
+
 const macroStyles = StyleSheet.create({
   wrap: { borderRadius: 14, borderWidth: 1, padding: 16, marginTop: 8, marginBottom: 4 },
   heading: { fontSize: 10, fontFamily: "Inter_600SemiBold", letterSpacing: 2 },
@@ -88,4 +159,10 @@ const macroStyles = StyleSheet.create({
   pill: { flexDirection: "row", alignItems: "baseline", gap: 3, borderRadius: 20, paddingHorizontal: 10, paddingVertical: 4 },
   pillVal: { fontSize: 12, fontFamily: "Inter_700Bold" },
   pillLabel: { fontSize: 11, fontFamily: "Inter_400Regular" },
+  ingredientRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "flex-start", paddingVertical: 10, gap: 10 },
+  ingredientTextCol: { flex: 1 },
+  ingredientMacroCol: { alignItems: "flex-end" },
+  ingredientName: { fontSize: 13, fontFamily: "Inter_600SemiBold" },
+  ingredientMeta: { fontSize: 11, fontFamily: "Inter_400Regular", marginTop: 2 },
+  ingredientCalories: { fontSize: 13, fontFamily: "Inter_700Bold" },
 });
