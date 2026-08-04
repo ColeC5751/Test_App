@@ -227,6 +227,11 @@ export function parseIngredientLine(
   return { name: rest, amount, unit: "", hasExplicitAmount: true };
 }
 
+// Shared with macros.ts (see stripDescriptiveAsides there) — a fragment
+// containing a digit or fraction character almost certainly carries its
+// own quantity and is very likely a real, distinct ingredient.
+export const HAS_QUANTITY_SIGNAL = /[\d¼½¾⅓⅔⅕⅖⅗⅘⅛⅜⅝⅞]/;
+
 export function splitIngredientLines(raw: string): string[] {
   // Split on commas/newlines, but never inside parentheses — recipe text
   // routinely has asides like "(optional, for color)" or "(I usually cut
@@ -234,7 +239,7 @@ export function splitIngredientLines(raw: string): string[] {
   // Splitting blindly on every comma (the previous behavior) chopped
   // those asides into their own "ingredient" lines (e.g. "for color)"),
   // which then got macro-estimated as if they were real food.
-  const lines: string[] = [];
+  const rough: string[] = [];
   let current = "";
   let depth = 0;
   for (const ch of raw) {
@@ -242,14 +247,39 @@ export function splitIngredientLines(raw: string): string[] {
     else if (ch === ")") depth = Math.max(0, depth - 1);
 
     if ((ch === "," || ch === "\n") && depth === 0) {
-      lines.push(current.trim());
+      rough.push(current.trim());
       current = "";
     } else {
       current += ch;
     }
   }
-  if (current.trim()) lines.push(current.trim());
-  return lines.filter(Boolean);
+  if (current.trim()) rough.push(current.trim());
+  const roughLines = rough.filter(Boolean);
+
+  // Second pass: merge any fragment with no digit/fraction anywhere into
+  // the previous line, instead of treating it as its own ingredient.
+  // Comma-separated clauses like ", minced" or ", cut into wedges" are
+  // descriptions of the ingredient before them, not new ingredients —
+  // previously each became a fake standalone "ingredient" that got the
+  // generic-fallback ~100g/~150kcal treatment in macro estimates AND
+  // showed up as its own (nonsensical) row on the grocery list.
+  //
+  // Known tradeoff: a genuinely separate quantity-less ingredient written
+  // as its own comma item (e.g. "salt to taste" as one clause in a longer
+  // list) will get merged into the previous ingredient's text instead of
+  // staying its own line. It isn't lost — it's still present as trailing
+  // text on the previous item's name — but it won't show up as its own
+  // grocery-list row. True NLP-level ingredient-boundary detection would
+  // need more than this heuristic; flag it if that tradeoff bites.
+  const merged: string[] = [];
+  for (const line of roughLines) {
+    if (merged.length > 0 && !HAS_QUANTITY_SIGNAL.test(line)) {
+      merged[merged.length - 1] = `${merged[merged.length - 1]}, ${line}`;
+    } else {
+      merged.push(line);
+    }
+  }
+  return merged;
 }
 
 export function toGroceryItems(
