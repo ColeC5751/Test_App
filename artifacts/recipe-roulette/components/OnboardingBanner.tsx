@@ -133,7 +133,14 @@ const styles = StyleSheet.create({
   actionText: { fontSize: 12, fontFamily: "Inter_600SemiBold" },
   skipBtn: { paddingHorizontal: 4, paddingVertical: 4 },
   skipText: { fontSize: 12, fontFamily: "Inter_400Regular", textDecorationLine: "underline" },
-  ringWrap: { position: "relative", alignItems: "center", justifyContent: "center" },
+  // alignItems/justifyContent intentionally omitted (defaults to "stretch")
+  // — this wrapper sits around the full-width SPIN button. Centering here
+  // would shrink that button down to its text content instead of letting
+  // it fill the row like it normally does, which is what made it look
+  // wrong. The ring itself is absolutely positioned and inset from the
+  // wrapper's own bounds, so it still traces the button's real shape
+  // regardless of this wrapper's alignment.
+  ringWrap: { position: "relative", width: "100%" },
   ring: {
     position: "absolute",
     top: -6, left: -6, right: -6, bottom: -6,
