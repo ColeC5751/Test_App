@@ -1,5 +1,6 @@
 import { useFocusEffect } from "expo-router";
 import { Feather } from "@expo/vector-icons";
+import AsyncStorage from "@react-native-async-storage/async-storage"; // TEMP — for the debug cache-clear button
 import * as Haptics from "expo-haptics";
 import * as ImagePicker from "expo-image-picker";
 import React, { useCallback, useRef, useState } from "react";
@@ -479,6 +480,7 @@ function RecipeDetailModal({
   const [showCookMode, setShowCookMode] = useState(false);
   const [showStepsPreview, setShowStepsPreview] = useState(false);
   const [showDebugBreakdown, setShowDebugBreakdown] = useState(false); // TEMP
+  const [cacheClearedCount, setCacheClearedCount] = useState<number | null>(null); // TEMP
   const baseServings = 1;
 
   React.useEffect(() => {
@@ -487,6 +489,7 @@ function RecipeDetailModal({
     setShowCookMode(false);
     setShowStepsPreview(false);
     setShowDebugBreakdown(false); // TEMP
+    setCacheClearedCount(null); // TEMP
   }, [recipe?.id]);
 
   // Called unconditionally (before the `if (!recipe) return null` below)
@@ -617,6 +620,32 @@ function RecipeDetailModal({
                     </Text>
                   ))}
                 </View>
+              )}
+              {/* TEMP — clears every cached nutrition lookup so stale
+                  values from earlier testing can't mask new fixes.
+                  AsyncStorage is on-device client storage, so this has to
+                  run from inside the app itself — a button is the
+                  simplest way to trigger it without a terminal/REPL.
+                  Remove alongside the other debug affordances above once
+                  everything's confirmed working. */}
+              <Pressable
+                onPress={async () => {
+                  const keys = await AsyncStorage.getAllKeys();
+                  const nutritionKeys = keys.filter((k) => k.startsWith("@nutrition_cache:"));
+                  await AsyncStorage.multiRemove(nutritionKeys);
+                  setCacheClearedCount(nutritionKeys.length);
+                }}
+                style={{ alignSelf: "center", marginBottom: 14 }}
+              >
+                <Text style={{ fontSize: 12, color: colors.mutedForeground, textDecorationLine: "underline" }}>
+                  Clear nutrition cache (debug)
+                </Text>
+              </Pressable>
+              {cacheClearedCount !== null && (
+                <Text style={{ fontSize: 11, color: colors.mutedForeground, textAlign: "center", marginBottom: 10 }}>
+                  Cleared {cacheClearedCount} cached entr{cacheClearedCount === 1 ? "y" : "ies"}. Close and reopen
+                  this recipe to recompute.
+                </Text>
               )}
             </>
           )}
