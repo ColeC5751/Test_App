@@ -27,6 +27,8 @@ import { MacroBar, MacroPills } from "@/components/MacroDisplay";
 import { SavedToast } from "@/components/SavedToast";
 import { CookMode } from "@/components/CookMode";
 import type { PersonalRecipe } from "@/lib/types";
+import { useOnboarding } from "@/lib/onboarding";
+import { OnboardingPulseRing } from "@/components/OnboardingBanner";
 
 const DEFAULT_PROTEINS = ["Fish", "Chicken", "Ground Beef", "Pork"];
 const DEFAULT_CARBS = ["Rice", "Pasta", "Potatoes", "Bread"];
@@ -280,12 +282,14 @@ function RecipeDetailModal({
   onAddToGrocery,
   isSaved,
   onToggleSave,
+  onboardingHighlightSave,
 }: {
   recipe: Recipe | null;
   onClose: () => void;
   onAddToGrocery: (ingredientsText: string, opts: { fromRecipe: string; servingMultiplier: number }) => Promise<void>;
   isSaved: boolean;
   onToggleSave: (recipe: Recipe, servings: number) => Promise<boolean>;
+  onboardingHighlightSave?: boolean;
 }) {
   const colors = useColors();
   const [currentServings, setCurrentServings] = useState<number | null>(null);
@@ -461,12 +465,20 @@ function RecipeDetailModal({
 
             {/* Save to My Dinners — moved here from the floating top-right
                 bookmark icon over the photo, grouped with the other two
-                actions instead of sitting apart from them. */}
+                actions instead of sitting apart from them. During the
+                "save" onboarding step this is the one action that should
+                stand out — everything else on this screen keeps its normal
+                (non-highlighted) styling so there's exactly one obvious
+                next tap. */}
             <Pressable
               onPress={handleSave}
               style={({ pressed }) => [
                 styles.groceryBtn,
-                { backgroundColor: colors.card, borderWidth: 1.5, borderColor: isSaved ? colors.primary : colors.border },
+                {
+                  backgroundColor: colors.card,
+                  borderWidth: onboardingHighlightSave && !isSaved ? 2 : 1.5,
+                  borderColor: isSaved ? colors.primary : onboardingHighlightSave ? colors.primary : colors.border,
+                },
                 pressed && { opacity: 0.9 },
               ]}
             >
@@ -475,6 +487,11 @@ function RecipeDetailModal({
                 {isSaved ? "Saved to My Dinners" : "Save to My Dinners"}
               </Text>
             </Pressable>
+            {onboardingHighlightSave && !isSaved && (
+              <Text style={[styles.onboardingHint, { color: colors.primary }]}>
+                👆 Tap here to save this recipe and continue setup
+              </Text>
+            )}
 
             {recipe.macros && (
               <MacroBar macros={recipe.macros} colors={colors} />
@@ -564,6 +581,14 @@ export default function SpinScreen() {
   // locally only" and never reaching Supabase — see useFocusEffect and
   // handleAddToGrocery below.
   const { load: loadGrocery, addIngredients } = useGrocerySync();
+
+  // Onboarding: this screen owns steps 1 ("spin") and 2 ("save"). Step 3
+  // ("plan_or_grocery") is advanced from grocery.tsx / plan.tsx — see the
+  // hook points documented in those files. `advanceOnboarding` is a no-op
+  // once onboarding is already past a given step, so it's safe to call
+  // unconditionally from success paths without extra guarding beyond the
+  // `onboardingStep === "..."` checks already in place below.
+  const { step: onboardingStep, advance: advanceOnboarding } = useOnboarding();
 
   useFocusEffect(
     useCallback(() => {
@@ -682,6 +707,16 @@ export default function SpinScreen() {
       macros: recipe.macros,
     };
     await savePersonalRecipe(entry);
+
+    // ── Onboarding: step 2 → 3 ──────────────────────────────────────────
+    // A successful save is exactly the signal this step is gated on.
+    // Advancing here (rather than in RecipeDetailModal, which doesn't own
+    // the onboarding hook) keeps onboarding state changes centralized in
+    // this screen alongside the "spin" → "save" transition above.
+    if (onboardingStep === "save") {
+      advanceOnboarding("plan_or_grocery");
+    }
+
     return true;
   };
 
@@ -726,6 +761,17 @@ export default function SpinScreen() {
           setErrorMessage(result.errorMessage);
         } else {
           setRecipes(result.recipes);
+
+          // ── Onboarding: step 1 → 2 ──────────────────────────────────
+          // First successful spin advances "spin" → "save". Also
+          // auto-opens the top result's detail modal — during onboarding
+          // we skip the extra tap of picking a card, since the goal is to
+          // get a new user to the "Save to My Dinners" button as directly
+          // as possible. Outside onboarding this auto-open never fires.
+          if (onboardingStep === "spin" && result.recipes.length > 0) {
+            advanceOnboarding("save");
+            setSelectedRecipe(result.recipes[0]);
+          }
         }
       } catch {
         setIsError(true);
@@ -782,8 +828,18 @@ export default function SpinScreen() {
           </Pressable>
         </View>
 
-        {/* Mode toggle */}
-        <View style={[styles.modeToggle, { backgroundColor: colors.secondary, borderColor: colors.border }]}>
+        {/* Mode toggle — dimmed + disabled during the "spin" onboarding
+            step so a brand-new user can't wander into Fridge mode before
+            completing their first spin. Once onboarding moves past "spin"
+            (or is skipped), this behaves exactly as before. */}
+        <View
+          pointerEvents={onboardingStep === "spin" ? "none" : "auto"}
+          style={[
+            styles.modeToggle,
+            { backgroundColor: colors.secondary, borderColor: colors.border },
+            onboardingStep === "spin" && { opacity: 0.4 },
+          ]}
+        >
           <Pressable
             onPress={() => { setMode("spin"); }}
             style={[styles.modeToggleBtn, mode === "spin" && { backgroundColor: colors.primary, borderRadius: 8 }]}
@@ -913,15 +969,17 @@ export default function SpinScreen() {
               <SlotColumn label="VEGGIE" items={wheels.veggies} animValue={veggieY} />
             </View>
 
-            <Pressable
-              onPress={spin}
-              disabled={spinning}
-              style={({ pressed }) => [styles.spinBtn, { backgroundColor: spinning ? colors.secondary : colors.primary }, pressed && !spinning && { transform: [{ scale: 0.96 }], opacity: 0.9 }]}
-            >
-              <Text style={[styles.spinBtnText, { color: spinning ? colors.mutedForeground : colors.primaryForeground }]}>
-                {spinning ? "SPINNING..." : "SPIN"}
-              </Text>
-            </Pressable>
+            <OnboardingPulseRing active={onboardingStep === "spin" && !spinning}>
+              <Pressable
+                onPress={spin}
+                disabled={spinning}
+                style={({ pressed }) => [styles.spinBtn, { backgroundColor: spinning ? colors.secondary : colors.primary }, pressed && !spinning && { transform: [{ scale: 0.96 }], opacity: 0.9 }]}
+              >
+                <Text style={[styles.spinBtnText, { color: spinning ? colors.mutedForeground : colors.primaryForeground }]}>
+                  {spinning ? "SPINNING..." : "SPIN"}
+                </Text>
+              </Pressable>
+            </OnboardingPulseRing>
 
             {isLoading && (
               <View style={styles.center}>
@@ -968,6 +1026,7 @@ export default function SpinScreen() {
         onAddToGrocery={handleAddToGrocery}
         isSaved={isRecipeSaved(selectedRecipe)}
         onToggleSave={handleToggleSaveRecipe}
+        onboardingHighlightSave={onboardingStep === "save"}
       />
       <WheelSettingsModal
         visible={showSettings}
@@ -994,6 +1053,7 @@ const styles = StyleSheet.create({
   selectionBox: { position: "absolute", top: ITEM_HEIGHT, left: 0, right: 0, height: ITEM_HEIGHT, borderTopWidth: 1.5, borderBottomWidth: 1.5, zIndex: 10 },
   spinBtn: { borderRadius: 50, paddingVertical: 18, alignItems: "center", marginBottom: 32 },
   spinBtnText: { fontSize: 16, fontFamily: "Inter_700Bold", letterSpacing: 3 },
+  onboardingHint: { fontSize: 12, fontFamily: "Inter_500Medium", textAlign: "center", marginTop: -8, marginBottom: 12 },
   center: { alignItems: "center", gap: 10, paddingVertical: 24 },
   statusText: { fontSize: 14, fontFamily: "Inter_400Regular", textAlign: "center" },
   retryBtn: { borderWidth: 1.5, borderRadius: 10, paddingHorizontal: 20, paddingVertical: 10, marginTop: 4 },
