@@ -585,7 +585,7 @@ const calendarStyles = StyleSheet.create({
 export default function PlanScreen() {
   const colors = useColors();
   const topPad = Platform.OS === "web" ? 67 : 0;
-
+const { step: onboardingStep, advance: advanceOnboarding } = useOnboarding();
   const { plan, status, shareToken, permission, save, load, setSharePermission } = usePlanSync();
   // Canonical grocery sync — called here at the component level so
   // handleAddWeekToGrocery can invoke addIngredients without breaking the
