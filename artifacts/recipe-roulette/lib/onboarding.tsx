@@ -1,5 +1,5 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import { useCallback, useEffect, useState } from "react";
+import React, { createContext, useCallback, useContext, useEffect, useState } from "react";
 
 // ─── Onboarding state machine ──────────────────────────────────────────────
 //
@@ -8,6 +8,16 @@ import { useCallback, useEffect, useState } from "react";
 // this step). Intentionally local-only (AsyncStorage, not synced to
 // Supabase) — this is a per-device "have you seen this" flag, not user data
 // worth persisting across devices or surviving a fresh install.
+//
+// IMPORTANT — this is a Context, not a bare hook. An earlier version made
+// this a plain useState-based hook that any component could call directly.
+// That broke Skip: _layout.tsx (the banner) and index.tsx (the pulse ring /
+// highlighted Save button) each called useOnboarding() independently, which
+// gave each of them their own private copy of `step`. Tapping Skip updated
+// only the banner's copy — index.tsx's copy never found out until it
+// remounted (i.e. on a full reload). Routing everything through one
+// Provider means there's exactly one `step` in memory, and every screen
+// that reads it re-renders together the instant it changes.
 //
 // Design choices, and why:
 //   - "plan_or_grocery" is a single step satisfied by EITHER action. Forcing
@@ -53,8 +63,22 @@ export const ONBOARDING_COPY: Record<Exclude<OnboardingStep, "complete">, Onboar
   },
 };
 
-export function useOnboarding() {
-  // null while the persisted value is still loading, so callers can avoid
+type OnboardingContextValue = {
+  step: OnboardingStep | null;
+  isOnboarding: boolean;
+  advance: (next: OnboardingStep) => void;
+  skip: () => void;
+  copy: OnboardingCopy | null;
+};
+
+const OnboardingContext = createContext<OnboardingContextValue | null>(null);
+
+// Wrap the app (or at minimum, everything under the tabs layout) in this
+// once, at the top. See app/(tabs)/_layout.tsx for where this is mounted —
+// it needs to be an ancestor of every screen that reads onboarding state
+// (Spin, Grocery, Plan), not just the layout's own overlay.
+export function OnboardingProvider({ children }: { children: React.ReactNode }) {
+  // null while the persisted value is still loading, so consumers can avoid
   // flashing onboarding UI for a returning user before we know their state.
   const [step, setStep] = useState<OnboardingStep | null>(null);
 
@@ -95,11 +119,34 @@ export function useOnboarding() {
     persist("complete");
   }, [persist]);
 
-  return {
+  const value: OnboardingContextValue = {
     step,
     isOnboarding: step !== null && step !== "complete",
     advance,
     skip,
     copy: step && step !== "complete" ? ONBOARDING_COPY[step] : null,
   };
+
+  return (
+    <OnboardingContext.Provider value={value}>
+      {children}
+    </OnboardingContext.Provider>
+  );
+}
+
+// Same call signature as before (`const { step, advance, ... } =
+// useOnboarding()`), so no changes are needed anywhere this was already
+// being called — index.tsx, and the grocery.tsx / plan.tsx hook points from
+// ONBOARDING_STEP3_PATCH.md all continue to work unmodified. The only
+// change required is wrapping the tree in <OnboardingProvider> once (see
+// _layout.tsx).
+export function useOnboarding(): OnboardingContextValue {
+  const ctx = useContext(OnboardingContext);
+  if (!ctx) {
+    throw new Error(
+      "useOnboarding() was called outside of <OnboardingProvider>. " +
+      "Make sure app/(tabs)/_layout.tsx wraps its content in <OnboardingProvider>."
+    );
+  }
+  return ctx;
 }
