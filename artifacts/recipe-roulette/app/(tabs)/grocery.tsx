@@ -393,6 +393,10 @@ export default function GroceryScreen() {
     await addIngredients(text);
     setManualInput("");
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    // Onboarding: adding anything to the grocery list satisfies step 3.
+if (onboardingStep === "plan_or_grocery") {
+advanceOnboarding("complete");
+}
   };
 
   const handleCopy = async () => {
