@@ -26,7 +26,7 @@ import {
   useGrocerySync,
   useRecipeSync,
 } from "@/lib/sync";
-
+import { useOnboarding } from "@/lib/onboarding";
 import { buildShareUrl } from "@/lib/supabase";
 import { useRecipeMacros, scaleIngredientText } from "@/lib/macros";
 import { MacroBar, MacroPills } from "@/components/MacroDisplay";
