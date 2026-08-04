@@ -9,7 +9,7 @@ import { Platform, StyleSheet, View, useColorScheme } from "react-native";
 
 import { useColors } from "@/hooks/useColors";
 import { useSessionStatus } from "@/hooks/useSessionStatus";
-import { useOnboarding, ONBOARDING_COPY } from "@/lib/onboarding";
+import { useOnboarding, ONBOARDING_COPY, OnboardingProvider } from "@/lib/onboarding";
 import { OnboardingBanner } from "@/components/OnboardingBanner";
 
 // Per-tab active tint. Keeps each icon visually distinct when selected
@@ -228,15 +228,23 @@ const overlayStyles = StyleSheet.create({
 export default function TabLayout() {
   const { locked } = useSessionStatus();
 
+  // OnboardingProvider wraps BOTH the tab navigator and the overlay. This
+  // is the fix for Skip appearing to do nothing until reload: previously
+  // each screen called useOnboarding() as a bare hook, so the banner (here
+  // in _layout.tsx) and index.tsx each held their own independent copy of
+  // `step`. Tapping Skip only updated the banner's copy. Now there's one
+  // Provider above both, so every consumer — the overlay, the Spin screen's
+  // pulse ring, and (per ONBOARDING_STEP3_PATCH.md) Grocery/Plan — reads
+  // from the same state and re-renders together the instant it changes.
   return (
-    <>
+    <OnboardingProvider>
       {isLiquidGlassAvailable() ? (
         <NativeTabLayout sharedLocked={locked} />
       ) : (
         <ClassicTabLayout sharedLocked={locked} />
       )}
       <OnboardingOverlay />
-    </>
+    </OnboardingProvider>
   );
 }
 
