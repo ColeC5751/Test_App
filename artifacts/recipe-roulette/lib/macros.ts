@@ -443,7 +443,6 @@ export async function estimateMacrosPerServing(
   servings: number
 ): Promise<Macros & { ingredientBreakdown: IngredientBreakdownItem[] }> {
   const lines = splitIngredientLines(rawIngredientsText);
-  const breakdown: IngredientBreakdownItem[] = [];
 
   const perIngredientTotals = await Promise.all(
     lines.map(async (line) => {
