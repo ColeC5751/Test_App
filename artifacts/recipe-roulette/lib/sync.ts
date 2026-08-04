@@ -228,6 +228,69 @@ export function parseIngredientLine(
   return { name: rest, amount, unit: "", hasExplicitAmount: true };
 }
 
+// ─── Pantry staple detection ───────────────────────────────────────────────
+//
+// Recipes almost always list staples like salt, pepper, and olive oil with
+// an explicit quantity ("1/2 tsp black pepper", "2 tbsp olive oil"). That
+// quantity made them trip the "keep anything with a quantity" rule in
+// toGroceryItems below unconditionally, so they always ended up on the
+// list even though most people already have them on hand and don't want
+// them added every time a recipe calls for them. This only ever applies to
+// lines pulled in automatically from a recipe (fromRecipe set) — something
+// a person manually types in, staple or not, is always kept as-is, since
+// they clearly want it.
+
+const STAPLE_DESCRIPTORS = [
+  "freshly ground",
+  "ground",
+  "cracked",
+  "fine grain",
+  "fine",
+  "coarse",
+  "kosher",
+  "sea",
+  "table",
+  "fresh",
+  "extra virgin",
+  "extra-virgin",
+  "virgin",
+  "pure",
+  "granulated",
+  "all purpose",
+  "all-purpose",
+];
+
+function normalizeForStapleCheck(name: string): string {
+  let n = name.toLowerCase().trim().replace(/[().]/g, "").trim();
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const d of STAPLE_DESCRIPTORS) {
+      if (n.startsWith(`${d} `)) {
+        n = n.slice(d.length + 1).trim();
+        changed = true;
+      }
+    }
+  }
+  return n;
+}
+
+// Deliberately a short, conservative list of near-universal staples, and
+// matched by exact phrase (after stripping descriptors like "ground" or
+// "kosher") rather than substring — a substring match would wrongly catch
+// things like "bell pepper" or "red pepper flakes" just for containing
+// "pepper".
+const PANTRY_STAPLES = new Set([
+  "salt", "pepper", "black pepper", "white pepper", "peppercorns",
+  "oil", "olive oil", "vegetable oil", "canola oil", "cooking oil",
+  "cooking spray", "nonstick spray", "water", "sugar", "flour",
+  "baking soda", "baking powder", "cornstarch", "garlic powder", "onion powder",
+]);
+
+export function isPantryStaple(name: string): boolean {
+  return PANTRY_STAPLES.has(normalizeForStapleCheck(name));
+}
+
 export function splitIngredientLines(raw: string): string[] {
   // Split on commas/newlines, but never inside parentheses — recipe text
   // routinely has asides like "(optional, for color)" or "(I usually cut
@@ -268,10 +331,28 @@ export function splitIngredientLines(raw: string): string[] {
 
 export function toGroceryItems(
   raw: string,
-  opts?: { fromRecipe?: string; servingMultiplier?: number }
+  opts?: { fromRecipe?: string; servingMultiplier?: number; isManualEntry?: boolean }
 ): GroceryItem[] {
   return splitIngredientLines(raw)
     .filter((line) => {
+      // Anything the person typed in themselves is kept as-is, full stop —
+      // including one-word entries like "napkins" or "vinegar" that don't
+      // happen to be in our local food-recognition table. The
+      // recognized-ingredient check further down exists only to drop
+      // leftover prep-text fragments ("minced", "cut into wedges") that
+      // survive comma-splitting a RECIPE's ingredient list; it was never
+      // meant to gate what someone can manually add, and running it there
+      // is what silently swallowed valid single-word manual entries.
+      if (opts?.isManualEntry) return true;
+
+      // Drop common pantry staples pulled in automatically from a recipe
+      // (see isPantryStaple above for why this only applies here, not to
+      // manual entries).
+      if (opts?.fromRecipe) {
+        const { name } = parseIngredientLine(line);
+        if (isPantryStaple(name)) return false;
+      }
+
       // Keep anything with its own quantity signal anywhere in the text
       // (covers "juice of 1 lemon" as well as "2 cloves garlic") OR
       // anything that matches a real ingredient in the local table even
@@ -699,7 +780,7 @@ export function useGrocerySync() {
   // ─────────────────────────────────────────────────────────────
 
   const addIngredients = useCallback(
-    async (raw: string, opts?: { fromRecipe?: string; servingMultiplier?: number }) => {
+    async (raw: string, opts?: { fromRecipe?: string; servingMultiplier?: number; isManualEntry?: boolean }) => {
       const incoming = toGroceryItems(raw, opts);
       const combined = combineIngredients(itemsRef.current, incoming);
       await save(combined);
@@ -1030,7 +1111,7 @@ export function useSharedGrocerySync(token: string | undefined) {
   // Supabase RLS should also enforce this, but this avoids a wasted round
   // trip and keeps the UI's error path consistent.
   const addIngredients = useCallback(
-    async (raw: string, opts?: { fromRecipe?: string; servingMultiplier?: number }): Promise<boolean> => {
+    async (raw: string, opts?: { fromRecipe?: string; servingMultiplier?: number; isManualEntry?: boolean }): Promise<boolean> => {
       if (permissionRef.current !== "edit") return false;
       const incoming = toGroceryItems(raw, opts);
       const combined = combineIngredients(itemsRef.current, incoming);
