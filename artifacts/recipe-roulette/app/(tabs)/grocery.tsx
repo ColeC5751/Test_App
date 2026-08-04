@@ -21,6 +21,7 @@ import { useColors } from "@/hooks/useColors";
 import { useGrocerySync, AISLE_MAP, AISLE_ORDER } from "@/lib/sync";
 import { buildShareUrl } from "@/lib/supabase";
 import type { GroceryItem, SyncStatus } from "@/lib/types";
+import { useOnboarding } from "@/lib/onboarding";
 
 // ─── Display helpers ───────────────────────────────────────────────────────────
 // Parsing, aisle categorization, and merging live in lib/sync.ts — this file
