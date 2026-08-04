@@ -86,6 +86,79 @@ function parseServingsValue(raw: unknown): number | undefined {
   return undefined;
 }
 
+// ─── Auto-tagging ─────────────────────────────────────────────────────────
+// Best-effort keyword match over the recipe's name + ingredient text.
+// Deliberately conservative — false negatives (missing a tag) are far
+// less annoying to a user than false positives (a wrong tag they have to
+// go remove), so categories only fire on fairly distinctive keywords.
+// Runs at save time; the caller decides whether to apply the result (see
+// ImportModal's `manuallyEditedTags` guard below) so a user's own edits
+// are never silently clobbered by re-running this.
+
+const CUISINE_TAGS: { tag: string; keywords: string[] }[] = [
+  { tag: "Mexican", keywords: ["taco", "salsa", "tortilla", "enchilada", "burrito", "jalapeño", "jalapeno", "queso", "chipotle", "cilantro"] },
+  { tag: "Italian", keywords: ["parmesan", "mozzarella", "marinara", "risotto", "pesto", "prosciutto", "balsamic", "ricotta"] },
+  { tag: "Japanese", keywords: ["soy sauce", "rice vinegar", "nori", "wasabi", "miso", "teriyaki", "mirin", "panko"] },
+  { tag: "Thai", keywords: ["fish sauce", "lemongrass", "thai basil", "curry paste", "coconut milk"] },
+  { tag: "Indian", keywords: ["curry", "garam masala", "turmeric", "naan", "paneer", "ghee", "cumin seed"] },
+  { tag: "Mediterranean", keywords: ["feta", "tzatziki", "hummus", "pita", "za'atar"] },
+  { tag: "Greek", keywords: ["feta", "tzatziki", "kalamata", "greek yogurt"] },
+  { tag: "French", keywords: ["baguette", "dijon", "gruyere", "tarragon", "creme fraiche"] },
+  { tag: "Chinese", keywords: ["hoisin", "oyster sauce", "bok choy", "five spice", "shaoxing"] },
+  { tag: "Korean", keywords: ["gochujang", "kimchi", "gochugaru", "korean bbq"] },
+];
+
+const PROTEIN_TAGS: { tag: string; keywords: string[] }[] = [
+  { tag: "Chicken", keywords: ["chicken"] },
+  { tag: "Beef", keywords: ["beef", "steak", "ground beef"] },
+  { tag: "Pork", keywords: ["pork", "bacon", "ham", "sausage", "chorizo"] },
+  { tag: "Seafood", keywords: ["shrimp", "salmon", "fish", "tuna", "cod", "crab", "scallop", "tilapia", "anchov"] },
+  { tag: "Tofu", keywords: ["tofu", "tempeh"] },
+];
+
+const MEAL_TYPE_TAGS: { tag: string; keywords: string[] }[] = [
+  { tag: "Breakfast", keywords: ["pancake", "waffle", "omelet", "oatmeal", "breakfast", "french toast", "granola"] },
+  { tag: "Dessert", keywords: ["cake", "cookie", "brownie", " pie", "ice cream", "dessert", "chocolate chip", "frosting"] },
+  { tag: "Soup", keywords: ["soup", "broth", "stew", "chowder", "bisque"] },
+  { tag: "Salad", keywords: ["salad", "vinaigrette"] },
+  { tag: "Pizza", keywords: ["pizza dough", "pizza"] },
+  { tag: "Sandwich", keywords: ["sandwich", "burger", "wrap", "sub roll"] },
+  { tag: "Pasta", keywords: ["pasta", "spaghetti", "noodle", "penne", "fettuccine", "lasagna", "linguine"] },
+];
+
+// Keywords that disqualify a recipe from the Vegetarian / Vegan tags.
+const MEAT_KEYWORDS = ["chicken", "beef", "pork", "bacon", "ham", "sausage", "steak", "turkey", "lamb", "shrimp", "salmon", "fish", "tuna", "cod", "crab", "scallop", "tilapia", "anchov", "duck", "venison", "chorizo", "prosciutto"];
+const DAIRY_EGG_KEYWORDS = ["egg", "milk", "cheese", "butter", "cream", "yogurt", "ghee"];
+
+const MAX_AUTO_TAGS = 6;
+
+function generateAutoTags(name: string, ingredientsText: string): string[] {
+  const text = `${name} ${ingredientsText}`.toLowerCase();
+  const has = (kws: string[]) => kws.some((k) => text.includes(k));
+
+  const tags = new Set<string>();
+  for (const { tag, keywords } of CUISINE_TAGS) if (has(keywords)) tags.add(tag);
+  for (const { tag, keywords } of PROTEIN_TAGS) if (has(keywords)) tags.add(tag);
+  for (const { tag, keywords } of MEAL_TYPE_TAGS) if (has(keywords)) tags.add(tag);
+
+  if (!has(MEAT_KEYWORDS)) {
+    tags.add("Vegetarian");
+    if (!has(DAIRY_EGG_KEYWORDS)) tags.add("Vegan");
+  }
+
+  return Array.from(tags).slice(0, MAX_AUTO_TAGS);
+}
+
+// Normalizes a user-typed tag: trims, collapses whitespace, title-cases
+// single words so "spicy" and "Spicy" don't end up as two different tags.
+function normalizeTag(raw: string): string {
+  const trimmed = raw.trim().replace(/\s+/g, " ");
+  if (!trimmed) return "";
+  return trimmed.length <= 24 && !/\s/.test(trimmed)
+    ? trimmed[0].toUpperCase() + trimmed.slice(1)
+    : trimmed;
+}
+
 // ─── Import Modal ─────────────────────────────────────────────────────────
 
 function ImportModal({
@@ -113,6 +186,15 @@ function ImportModal({
   const [formPhoto, setFormPhoto] = useState("");
   const [formServings, setFormServings] = useState("");
   const [urlInput, setUrlInput] = useState("");
+  const [formTags, setFormTags] = useState<string[]>([]);
+  const [tagInput, setTagInput] = useState("");
+  // True once the user has manually added/removed a tag (this modal
+  // session), or when opening an existing recipe that already has
+  // user-set tags. While true, the auto-suggest effect below stops
+  // overwriting formTags as name/ingredients change, so correcting a
+  // typo in the ingredient list can never silently wipe out tags the
+  // user chose themselves. The "Suggest tags" button resets it.
+  const manuallyEditedTags = useRef(false);
 
   React.useEffect(() => {
     if (visible && editingRecipe) {
@@ -121,16 +203,50 @@ function ImportModal({
       setFormSteps(editingRecipe.steps);
       setFormPhoto(editingRecipe.photoUrl ?? "");
       setFormServings(editingRecipe.servings ? String(editingRecipe.servings) : "");
+      setFormTags(editingRecipe.tags ?? []);
+      manuallyEditedTags.current = !!(editingRecipe.tags && editingRecipe.tags.length > 0);
       setMode("manual");
     } else if (visible && !editingRecipe) {
       setFormName(""); setFormIngredients(""); setFormSteps(""); setFormPhoto(""); setFormServings("");
+      setFormTags([]);
+      manuallyEditedTags.current = false;
     }
   }, [visible, editingRecipe?.id]);
+
+  // Live auto-tag suggestions for new/legacy-untagged recipes: recompute
+  // whenever the name or ingredients change, as long as the user hasn't
+  // taken manual control of the tag list yet (see manuallyEditedTags
+  // above). This is what makes photo/URL extraction "just work" too —
+  // once handlePhotoImport/handleUrlImport populate formName/
+  // formIngredients, this effect picks it up the same as manual typing.
+  React.useEffect(() => {
+    if (!visible || manuallyEditedTags.current) return;
+    setFormTags(generateAutoTags(formName, formIngredients));
+  }, [formName, formIngredients, visible]);
+
+  const addTag = () => {
+    const tag = normalizeTag(tagInput);
+    if (!tag) return;
+    manuallyEditedTags.current = true;
+    setFormTags((prev) => (prev.some((t) => t.toLowerCase() === tag.toLowerCase()) ? prev : [...prev, tag]));
+    setTagInput("");
+  };
+
+  const removeTag = (tag: string) => {
+    manuallyEditedTags.current = true;
+    setFormTags((prev) => prev.filter((t) => t !== tag));
+  };
+
+  const resuggestTags = () => {
+    manuallyEditedTags.current = false;
+    setFormTags(generateAutoTags(formName, formIngredients));
+  };
 
   const reset = () => {
     setFormName(""); setFormIngredients(""); setFormSteps("");
     setFormPhoto(""); setFormServings(""); setUrlInput(""); setExtractError("");
-    setIsExtracting(false); setMode("manual");
+    setIsExtracting(false); setMode("manual"); setFormTags([]); setTagInput("");
+    manuallyEditedTags.current = false;
   };
 
   const handleClose = () => { reset(); onClose(); };
@@ -147,6 +263,7 @@ function ImportModal({
       servings: parsedFormServings && parsedFormServings > 0 ? parsedFormServings : undefined,
       createdAt: editingRecipe ? editingRecipe.createdAt : Date.now(),
       source: editingRecipe ? editingRecipe.source : mode,
+      tags: formTags,
     });
     reset();
     onClose();
@@ -347,6 +464,35 @@ function ImportModal({
                 placeholderTextColor={colors.mutedForeground}
                 keyboardType="number-pad"
               />
+
+              <View style={styles.tagsHeaderRow}>
+                <Text style={[styles.formLabel, { color: colors.mutedForeground }]}>TAGS</Text>
+                <Pressable onPress={resuggestTags} hitSlop={8} style={styles.suggestTagsBtn}>
+                  <Feather name="refresh-cw" size={11} color={colors.primary} />
+                  <Text style={[styles.suggestTagsText, { color: colors.primary }]}>Suggest tags</Text>
+                </Pressable>
+              </View>
+              <View style={styles.tagChipRow}>
+                {formTags.map((tag) => (
+                  <View key={tag} style={[styles.tagChip, { backgroundColor: colors.secondary, borderColor: colors.border }]}>
+                    <Text style={[styles.tagChipText, { color: colors.foreground }]}>{tag}</Text>
+                    <Pressable onPress={() => removeTag(tag)} hitSlop={8}>
+                      <Feather name="x" size={11} color={colors.mutedForeground} />
+                    </Pressable>
+                  </View>
+                ))}
+                <TextInput
+                  style={[styles.tagInput, { color: colors.foreground, borderColor: colors.border }]}
+                  value={tagInput}
+                  onChangeText={setTagInput}
+                  onSubmitEditing={addTag}
+                  onBlur={addTag}
+                  placeholder={formTags.length ? "add tag…" : "e.g. spicy, weeknight, air fryer"}
+                  placeholderTextColor={colors.mutedForeground}
+                  returnKeyType="done"
+                  blurOnSubmit={false}
+                />
+              </View>
 
               <Text style={[styles.formLabel, { color: colors.mutedForeground }]}>STEPS</Text>
               <TextInput style={[inputStyle, styles.multiInput]} value={formSteps} onChangeText={setFormSteps} placeholder="1. Preheat pan... 2. Season salmon..." placeholderTextColor={colors.mutedForeground} multiline numberOfLines={5} textAlignVertical="top" />
@@ -624,6 +770,16 @@ function RecipeDetailModal({
             </Pressable>
           )}
 
+          {recipe.tags && recipe.tags.length > 0 && (
+            <View style={styles.detailTagRow}>
+              {recipe.tags.map((tag) => (
+                <View key={tag} style={[styles.rowTagChip, { backgroundColor: colors.secondary }]}>
+                  <Text style={[styles.rowTagChipText, { color: colors.mutedForeground }]}>{tag}</Text>
+                </View>
+              ))}
+            </View>
+          )}
+
           <Text style={[styles.sectionLabel, { color: colors.mutedForeground }]}>INGREDIENTS</Text>
           <View style={[styles.sectionCard, { backgroundColor: colors.card, borderColor: colors.border }]}>
             <Text style={[styles.bodyText, { color: colors.foreground }]}>{scaledIngredients}</Text>
@@ -764,6 +920,7 @@ function RecipeListRow({
   colors,
   onPress,
   onDelete,
+  onTagPress,
   sourceIcon,
 }: {
   recipe: PersonalRecipe;
@@ -771,6 +928,7 @@ function RecipeListRow({
   colors: ReturnType<typeof useColors>;
   onPress: () => void;
   onDelete: () => void;
+  onTagPress: (tag: string) => void;
   sourceIcon: (source?: string) => keyof typeof Feather.glyphMap;
 }) {
   const { macros } = useRecipeMacros(recipe);
@@ -799,6 +957,20 @@ function RecipeListRow({
               spinner per row while a whole list resolves would be
               noisier than just letting the pills pop in once ready. */}
           {macros && <MacroPills macros={macros} colors={colors} />}
+          {recipe.tags && recipe.tags.length > 0 && (
+            <View style={styles.rowTagChipRow}>
+              {recipe.tags.slice(0, 3).map((tag) => (
+                <Pressable
+                  key={tag}
+                  onPress={(e) => { e.stopPropagation?.(); onTagPress(tag); }}
+                  hitSlop={4}
+                  style={[styles.rowTagChip, { backgroundColor: colors.secondary }]}
+                >
+                  <Text style={[styles.rowTagChipText, { color: colors.mutedForeground }]} numberOfLines={1}>{tag}</Text>
+                </Pressable>
+              ))}
+            </View>
+          )}
         </View>
         <View style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
           <Feather name={sourceIcon(recipe.source)} size={14} color={colors.mutedForeground} />
@@ -842,6 +1014,19 @@ export default function RouletteScreen() {
   const [selectedRecipe, setSelectedRecipe] = useState<PersonalRecipe | null>(null);
   const [editingRecipe, setEditingRecipe] = useState<PersonalRecipe | null>(null);
   const [showSavedToast, setShowSavedToast] = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
+
+  // Filters the browse list only — the wheel/spin pool below still draws
+  // from the full `recipes` array, so an active search never shrinks
+  // what "Spin" can pick from, only what's shown while browsing.
+  const filteredRecipes = React.useMemo(() => {
+    const q = searchQuery.trim().toLowerCase();
+    if (!q) return recipes;
+    return recipes.filter((r) => {
+      const haystack = `${r.name} ${r.ingredients} ${(r.tags ?? []).join(" ")}`.toLowerCase();
+      return haystack.includes(q);
+    });
+  }, [recipes, searchQuery]);
 
   const slotY = useRef(new Animated.Value(0)).current;
 
@@ -1010,9 +1195,33 @@ export default function RouletteScreen() {
         <View style={styles.listHeader}>
           <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
             <Text style={[styles.listTitle, { color: colors.foreground }]}>My Recipes</Text>
-            {recipes.length > 0 && <Text style={[styles.listCount, { color: colors.mutedForeground }]}>{recipes.length}</Text>}
+            {recipes.length > 0 && (
+              <Text style={[styles.listCount, { color: colors.mutedForeground }]}>
+                {searchQuery.trim() ? filteredRecipes.length : recipes.length}
+              </Text>
+            )}
           </View>
         </View>
+
+        {recipes.length > 0 && (
+          <View style={[styles.searchBar, { backgroundColor: colors.card, borderColor: colors.border }]}>
+            <Feather name="search" size={15} color={colors.mutedForeground} />
+            <TextInput
+              style={[styles.searchInput, { color: colors.foreground }]}
+              value={searchQuery}
+              onChangeText={setSearchQuery}
+              placeholder="Search by name, ingredient, or tag…"
+              placeholderTextColor={colors.mutedForeground}
+              returnKeyType="search"
+              autoCorrect={false}
+            />
+            {searchQuery.length > 0 && (
+              <Pressable onPress={() => setSearchQuery("")} hitSlop={10}>
+                <Feather name="x-circle" size={15} color={colors.mutedForeground} />
+              </Pressable>
+            )}
+          </View>
+        )}
 
         {!loaded ? (
           <ActivityIndicator color={colors.primary} style={{ marginTop: 24 }} />
@@ -1022,8 +1231,14 @@ export default function RouletteScreen() {
             <Text style={[styles.emptyTitle, { color: colors.foreground }]}>No recipes yet</Text>
             <Text style={[styles.emptyText, { color: colors.mutedForeground }]}>Tap the + button to add your first recipe</Text>
           </View>
+        ) : filteredRecipes.length === 0 ? (
+          <View style={styles.empty}>
+            <Feather name="search" size={36} color={colors.mutedForeground} />
+            <Text style={[styles.emptyTitle, { color: colors.foreground }]}>No matches</Text>
+            <Text style={[styles.emptyText, { color: colors.mutedForeground }]}>Try a different name, ingredient, or tag</Text>
+          </View>
         ) : (
-          recipes.map((recipe) => {
+          filteredRecipes.map((recipe) => {
             const isPick = !spinning && tonightsPick?.id === recipe.id;
             return (
               <RecipeListRow
@@ -1033,6 +1248,7 @@ export default function RouletteScreen() {
                 colors={colors}
                 onPress={() => setSelectedRecipe(recipe)}
                 onDelete={() => deleteRecipe(recipe.id)}
+                onTagPress={(tag) => setSearchQuery(tag)}
                 sourceIcon={sourceIcon}
               />
             );
@@ -1094,6 +1310,12 @@ const styles = StyleSheet.create({
   recipeText:         { flex: 1, gap: 3 },
   recipeName:         { fontSize: 15, fontFamily: "Inter_600SemiBold" },
   recipeIngredientPreview: { fontSize: 12, fontFamily: "Inter_400Regular" },
+  rowTagChipRow:      { flexDirection: "row", flexWrap: "wrap", gap: 4, marginTop: 6 },
+  detailTagRow:       { flexDirection: "row", flexWrap: "wrap", gap: 6, marginBottom: 14 },
+  rowTagChip:         { borderRadius: 999, paddingHorizontal: 8, paddingVertical: 2, maxWidth: 110 },
+  rowTagChipText:     { fontSize: 10, fontFamily: "Inter_400Regular" },
+  searchBar:          { flexDirection: "row", alignItems: "center", gap: 8, borderRadius: 10, borderWidth: 1, paddingHorizontal: 12, paddingVertical: 10, marginBottom: 12 },
+  searchInput:        { flex: 1, fontSize: 14, fontFamily: "Inter_400Regular", padding: 0 },
   modalRoot:          { flex: 1 },
   modalHeader:        { flexDirection: "row", justifyContent: "space-between", alignItems: "center", padding: 20, borderBottomWidth: 1 },
   modalTitle:         { fontSize: 20, fontFamily: "Inter_700Bold", flex: 1, marginRight: 12 },
@@ -1116,6 +1338,13 @@ const styles = StyleSheet.create({
   formLabel:          { fontSize: 10, fontFamily: "Inter_600SemiBold", letterSpacing: 2, marginTop: 14, marginBottom: 4 },
   input:              { borderRadius: 10, borderWidth: 1, paddingHorizontal: 14, paddingVertical: 12, fontSize: 14, fontFamily: "Inter_400Regular" },
   multiInput:         { textAlignVertical: "top", minHeight: 90 },
+  tagsHeaderRow:      { flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginTop: 14, marginBottom: 4 },
+  suggestTagsBtn:     { flexDirection: "row", alignItems: "center", gap: 4 },
+  suggestTagsText:    { fontSize: 11, fontFamily: "Inter_600SemiBold" },
+  tagChipRow:         { flexDirection: "row", flexWrap: "wrap", gap: 6, alignItems: "center" },
+  tagChip:            { flexDirection: "row", alignItems: "center", gap: 5, borderRadius: 999, borderWidth: 1, paddingHorizontal: 10, paddingVertical: 6 },
+  tagChipText:        { fontSize: 12, fontFamily: "Inter_400Regular" },
+  tagInput:           { flex: 1, minWidth: 100, borderRadius: 999, borderWidth: 1, paddingHorizontal: 12, paddingVertical: 6, fontSize: 12, fontFamily: "Inter_400Regular" },
   saveBtn:            { borderRadius: 10, paddingVertical: 14, alignItems: "center", marginTop: 16 },
   saveBtnText:        { fontSize: 15, fontFamily: "Inter_600SemiBold" },
   detailImage:        { width: "100%", height: 200, borderRadius: 12, marginBottom: 16 },
