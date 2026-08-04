@@ -1,6 +1,6 @@
 import { BlurView } from "expo-blur";
 import { isLiquidGlassAvailable } from "expo-glass-effect";
-import { Tabs } from "expo-router";
+import { Tabs, usePathname, useRouter } from "expo-router";
 import { Icon, Label, NativeTabs } from "expo-router/unstable-native-tabs";
 import { SymbolView } from "expo-symbols";
 import { Feather } from "@expo/vector-icons";
@@ -9,6 +9,8 @@ import { Platform, StyleSheet, View, useColorScheme } from "react-native";
 
 import { useColors } from "@/hooks/useColors";
 import { useSessionStatus } from "@/hooks/useSessionStatus";
+import { useOnboarding, ONBOARDING_COPY } from "@/lib/onboarding";
+import { OnboardingBanner } from "@/components/OnboardingBanner";
 
 // Per-tab active tint. Keeps each icon visually distinct when selected
 // instead of every tab sharing one accent color. Inactive state still
@@ -21,6 +23,15 @@ const TAB_TINTS = {
   plan: "#F472B6", // Plan — pink
   shared: "#C084FC", // Shared — purple
 } as const;
+
+// Which tab route each onboarding step "lives on" — used so the banner can
+// offer a "Go" deep link back to the right screen if the person has
+// wandered elsewhere mid-flow, instead of just nagging with no way back.
+const STEP_ROUTE: Record<string, string> = {
+  spin: "/(tabs)",
+  save: "/(tabs)",
+  plan_or_grocery: "/(tabs)/grocery",
+};
 
 function NativeTabLayout({ sharedLocked }: { sharedLocked: boolean }) {
   return (
@@ -177,13 +188,56 @@ function ClassicTabLayout({ sharedLocked }: { sharedLocked: boolean }) {
   );
 }
 
+// Renders the persistent onboarding banner floating above the active tab
+// bar's content area. Lives in the layout (not per-screen) so it survives
+// tab switches without every screen needing to import and place it itself.
+// Positioned via absolute layout so it doesn't fight each screen's own
+// ScrollView padding — screens should NOT add their own top padding for it.
+function OnboardingOverlay() {
+  const { step, copy, skip } = useOnboarding();
+  const router = useRouter();
+  const pathname = usePathname();
+
+  if (!step || step === "complete" || !copy) return null;
+
+  const targetRoute = STEP_ROUTE[step];
+  const onCorrectScreen = targetRoute && pathname.startsWith(targetRoute) && (targetRoute !== "/(tabs)" || pathname === "/(tabs)" || pathname === "/");
+
+  return (
+    <View style={overlayStyles.wrap} pointerEvents="box-none">
+      <OnboardingBanner
+        copy={copy}
+        onSkip={skip}
+        showReturnAction={!onCorrectScreen}
+        onReturnHome={() => targetRoute && router.push(targetRoute as any)}
+      />
+    </View>
+  );
+}
+
+const overlayStyles = StyleSheet.create({
+  wrap: {
+    position: "absolute",
+    top: Platform.OS === "web" ? 67 : 54,
+    left: 0,
+    right: 0,
+    zIndex: 50,
+  },
+});
+
 export default function TabLayout() {
   const { locked } = useSessionStatus();
 
-  if (isLiquidGlassAvailable()) {
-    return <NativeTabLayout sharedLocked={locked} />;
-  }
-  return <ClassicTabLayout sharedLocked={locked} />;
+  return (
+    <>
+      {isLiquidGlassAvailable() ? (
+        <NativeTabLayout sharedLocked={locked} />
+      ) : (
+        <ClassicTabLayout sharedLocked={locked} />
+      )}
+      <OnboardingOverlay />
+    </>
+  );
 }
 
 const styles = StyleSheet.create({
