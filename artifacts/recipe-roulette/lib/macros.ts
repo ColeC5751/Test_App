@@ -19,7 +19,7 @@
 
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useEffect, useState } from "react";
-import { parseIngredientLine, splitIngredientLines } from "./sync";
+import { parseIngredientLine, splitIngredientLines, HAS_QUANTITY_SIGNAL } from "./sync";
 import type { Macros, PersonalRecipe } from "./types";
 
 // Re-exported so existing `import type { Macros } from "@/lib/macros"`
@@ -197,11 +197,25 @@ function extractNutrient(foodNutrients: any[], nutrientName: string, unitName?: 
 // for a human reading the recipe ("salmon (I usually buy it in one filet
 // and cut into pieces)") but actively hurt a full-text search API — extra
 // words dilute relevance and can push an irrelevant result to the top.
-// This is ONLY used for nutrition lookup (local match + USDA query); the
-// original name with its aside intact is still used everywhere else
-// (display, grocery list, etc.).
+// Similarly, splitIngredientLines now merges digit-less trailing clauses
+// like ", minced" or ", cut into wedges" back onto the previous
+// ingredient's raw text (see sync.ts) so they aren't treated as separate
+// fake ingredients — but that merged text still isn't useful to feed into
+// a nutrition search verbatim, so strip it here too. This is ONLY used
+// for nutrition lookup (local match + USDA query); the original name with
+// everything intact is still used everywhere else (display, grocery
+// list, etc.).
 function stripDescriptiveAsides(name: string): string {
-  return name.replace(/\([^)]*\)/g, "").trim() || name.trim();
+  const noParens = name.replace(/\([^)]*\)/g, "").trim();
+  // Drop a trailing ", <clause with no quantity signal>" — e.g.
+  // "of garlic, minced" -> "of garlic". A clause that DOES contain a
+  // digit/fraction is left alone, since it likely carries real
+  // information (amount, size, etc.) rather than being pure description.
+  const withoutTrailingClause = noParens.replace(
+    new RegExp(`,\\s*[^,]*$`),
+    (match) => (HAS_QUANTITY_SIGNAL.test(match) ? match : "")
+  );
+  return withoutTrailingClause.trim() || noParens || name.trim();
 }
 
 // Restricted to Foundation + SR Legacy data types: both report nutrients
