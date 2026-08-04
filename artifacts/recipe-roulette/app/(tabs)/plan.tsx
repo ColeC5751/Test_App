@@ -838,6 +838,10 @@ const { step: onboardingStep, advance: advanceOnboarding } = useOnboarding();
     await save({ ...plan, [key]: slot });
     setPickerDate(null);
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    // Onboarding: assigning a recipe to any day satisfies step 3.
+if (onboardingStep === "plan_or_grocery") {
+advanceOnboarding("complete");
+}
   };
 
   const handleSpinRecipe = async () => {
