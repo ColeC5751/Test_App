@@ -490,12 +490,13 @@ export default function SharedPlanScreen() {
   // Same account-based recipe list as plan.tsx — an editor always picks
   // from their OWN signed-in account's recipes.
   //
-  // `addRecipe` here is assumed to mirror the save used by the That's
-  // Dinner tab's bookmark button (handleToggleSaveRecipe in index.tsx) —
-  // i.e. it takes a recipe-shaped object and adds it to this account's My
-  // Dinners. If useRecipeSync's real method has a different name/signature,
-  // swap the call inside handleCopyToMyDinners below to match.
-  const { recipes, load: loadRecipes, addRecipe } = useRecipeSync();
+  // useRecipeSync() (see lib/sync.ts) exposes `save`, not `addRecipe` — a
+  // prior version of this screen called a method that didn't exist, so
+  // every copy attempt threw, was swallowed by handleCopyToMyDinners's
+  // catch block, and the person just saw a silent "Could not save" alert.
+  // Renamed on destructure (saveRecipe) to avoid colliding with the
+  // shared-plan's own `save` from useSharedPlanSync above.
+  const { recipes, load: loadRecipes, save: saveRecipe } = useRecipeSync();
 
   const [weekOffset, setWeekOffset] = useState(0);
   const [viewMode, setViewMode] = useState<"list" | "calendar">("list");
@@ -723,14 +724,29 @@ export default function SharedPlanScreen() {
     if (!viewingSlot || !recipeDetails) return;
     setSavingToMyDinners(true);
     try {
-      await addRecipe({
+      // save() treats this as a brand-new personal recipe (not the
+      // collaborator's original), so it gets its own fresh id rather than
+      // reusing viewingSlot.slot.recipeId — that id belongs to whichever
+      // account originally added this meal and may not even exist in
+      // *this* account's `recipes` table. save() also depends on `id`
+      // being present: it uses it both to decide insert-vs-update
+      // (recipes.findIndex((r) => r.id === recipe.id)) and as the
+      // Supabase row-cache key, so leaving it out would silently break
+      // that lookup.
+      const newRecipe: PersonalRecipe = {
+        id: `recipe_${Date.now()}`,
         name: viewingSlot.slot.recipeName,
         photoUrl: viewingSlot.slot.recipePhoto,
         ingredients: recipeDetails.ingredients ?? "",
         steps: recipeDetails.steps ?? "",
         servings: recipeDetails.baseServings ?? 4,
         source: "personal",
-      });
+      };
+      await saveRecipe(newRecipe);
+      // Keyed by the SLOT's original recipeId (not newRecipe.id) because
+      // that's what viewingAlreadySaved checks below — it needs to answer
+      // "has *this plan slot* been copied", regardless of what id the
+      // copy ended up with in this account's own recipes table.
       setSavedThisSession((prev) => new Set(prev).add(viewingSlot.slot.recipeId));
       await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     } catch (error) {
