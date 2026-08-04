@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { supabase } from "./supabase";
+import { HAS_QUANTITY_SIGNAL, isRecognizedIngredient } from "./ingredientMatch";
 import type {
   GroceryItem,
   MealPlan,
@@ -227,19 +228,27 @@ export function parseIngredientLine(
   return { name: rest, amount, unit: "", hasExplicitAmount: true };
 }
 
-// Shared with macros.ts (see stripDescriptiveAsides there) — a fragment
-// containing a digit or fraction character almost certainly carries its
-// own quantity and is very likely a real, distinct ingredient.
-export const HAS_QUANTITY_SIGNAL = /[\d¼½¾⅓⅔⅕⅖⅗⅘⅛⅜⅝⅞]/;
-
 export function splitIngredientLines(raw: string): string[] {
   // Split on commas/newlines, but never inside parentheses — recipe text
   // routinely has asides like "(optional, for color)" or "(I usually cut
   // it into pieces)" where an internal comma is NOT a new ingredient.
-  // Splitting blindly on every comma (the previous behavior) chopped
-  // those asides into their own "ingredient" lines (e.g. "for color)"),
-  // which then got macro-estimated as if they were real food.
-  const rough: string[] = [];
+  // Splitting blindly on every comma chopped those asides into their own
+  // "ingredient" lines (e.g. "for color)"), which then got treated as
+  // real food.
+  //
+  // Deliberately does NOT try to merge or drop digit-less fragments here
+  // (an earlier version did, merging things like ", minced" into the
+  // previous line) — that approach could glue a genuinely separate
+  // ingredient onto an unrelated neighbor's identity and quantity (e.g.
+  // "6 slices bread, homemade mayonnaise" merging into one "ingredient"
+  // whose keyword match picked mayonnaise's nutrition data but kept
+  // bread's "6 slices" quantity, reporting ~600g of mayo). Every fragment
+  // is kept here; each CONSUMER decides what to do with a fragment that
+  // has no explicit quantity — see toGroceryItems below (a cheap,
+  // synchronous, local-table-only check) and estimateMacrosPerServing in
+  // macros.ts (a more accurate check that also tries USDA before giving
+  // up on a fragment).
+  const lines: string[] = [];
   let current = "";
   let depth = 0;
   for (const ch of raw) {
@@ -247,58 +256,52 @@ export function splitIngredientLines(raw: string): string[] {
     else if (ch === ")") depth = Math.max(0, depth - 1);
 
     if ((ch === "," || ch === "\n") && depth === 0) {
-      rough.push(current.trim());
+      lines.push(current.trim());
       current = "";
     } else {
       current += ch;
     }
   }
-  if (current.trim()) rough.push(current.trim());
-  const roughLines = rough.filter(Boolean);
-
-  // Second pass: merge any fragment with no digit/fraction anywhere into
-  // the previous line, instead of treating it as its own ingredient.
-  // Comma-separated clauses like ", minced" or ", cut into wedges" are
-  // descriptions of the ingredient before them, not new ingredients —
-  // previously each became a fake standalone "ingredient" that got the
-  // generic-fallback ~100g/~150kcal treatment in macro estimates AND
-  // showed up as its own (nonsensical) row on the grocery list.
-  //
-  // Known tradeoff: a genuinely separate quantity-less ingredient written
-  // as its own comma item (e.g. "salt to taste" as one clause in a longer
-  // list) will get merged into the previous ingredient's text instead of
-  // staying its own line. It isn't lost — it's still present as trailing
-  // text on the previous item's name — but it won't show up as its own
-  // grocery-list row. True NLP-level ingredient-boundary detection would
-  // need more than this heuristic; flag it if that tradeoff bites.
-  const merged: string[] = [];
-  for (const line of roughLines) {
-    if (merged.length > 0 && !HAS_QUANTITY_SIGNAL.test(line)) {
-      merged[merged.length - 1] = `${merged[merged.length - 1]}, ${line}`;
-    } else {
-      merged.push(line);
-    }
-  }
-  return merged;
+  if (current.trim()) lines.push(current.trim());
+  return lines.filter(Boolean);
 }
 
 export function toGroceryItems(
   raw: string,
   opts?: { fromRecipe?: string; servingMultiplier?: number }
 ): GroceryItem[] {
-  return splitIngredientLines(raw).map((line, i) => {
-    const { name, amount, unit } = parseIngredientLine(line);
-    return {
-      id: `g_${Date.now()}_${i}`,
-      name,
-      amount,
-      unit,
-      checked: false,
-      aisle: getAisle(name),
-      addedFromRecipe: opts?.fromRecipe,
-      servingMultiplier: opts?.servingMultiplier,
-    };
-  });
+  return splitIngredientLines(raw)
+    .filter((line) => {
+      // Keep anything with its own quantity signal anywhere in the text
+      // (covers "juice of 1 lemon" as well as "2 cloves garlic") OR
+      // anything that matches a real ingredient in the local table even
+      // without a quantity ("homemade mayonnaise", "salt to taste").
+      // Only genuinely unrecognized, quantity-less fragments — almost
+      // always leftover prep text that survived comma-splitting, like
+      // "minced" or "cut into wedges" — get dropped. This can't check
+      // USDA (this function has to stay synchronous — it's called
+      // directly, not awaited, from several places), so an obscure real
+      // ingredient not in the local table could still be dropped here;
+      // that's a real but much narrower limitation than the previous
+      // merge-based approach, which could corrupt an unrelated
+      // ingredient's data instead of just omitting an uncommon one.
+      if (HAS_QUANTITY_SIGNAL.test(line)) return true;
+      const { name } = parseIngredientLine(line);
+      return isRecognizedIngredient(name);
+    })
+    .map((line, i) => {
+      const { name, amount, unit } = parseIngredientLine(line);
+      return {
+        id: `g_${Date.now()}_${i}`,
+        name,
+        amount,
+        unit,
+        checked: false,
+        aisle: getAisle(name),
+        addedFromRecipe: opts?.fromRecipe,
+        servingMultiplier: opts?.servingMultiplier,
+      };
+    });
 }
 
 export function combineIngredients(existing: GroceryItem[], incoming: GroceryItem[]): GroceryItem[] {
