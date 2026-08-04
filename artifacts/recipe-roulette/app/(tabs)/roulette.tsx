@@ -1,6 +1,5 @@
 import { useFocusEffect } from "expo-router";
 import { Feather } from "@expo/vector-icons";
-import AsyncStorage from "@react-native-async-storage/async-storage"; // TEMP — for the debug cache-clear button
 import * as Haptics from "expo-haptics";
 import * as ImagePicker from "expo-image-picker";
 import React, { useCallback, useRef, useState } from "react";
@@ -24,7 +23,7 @@ import {
 import { useColors } from "@/hooks/useColors";
 import { useGrocerySync, useRecipeSync } from "@/lib/sync";
 import { useRecipeMacros, scaleIngredientText } from "@/lib/macros";
-import { MacroBar, MacroPills } from "@/components/MacroDisplay";
+import { MacroBar, MacroPills, IngredientBreakdown } from "@/components/MacroDisplay";
 import { SavedToast } from "@/components/SavedToast";
 import { CookMode } from "@/components/CookMode";
 import type { PersonalRecipe } from "@/lib/types";
@@ -476,20 +475,23 @@ function RecipeDetailModal({
 }) {
   const colors = useColors();
   const [addedToGrocery, setAddedToGrocery] = useState(false);
-  const [servings, setServings] = useState(1);
+  const [servings, setServings] = useState(recipe?.servings ?? 4);
   const [showCookMode, setShowCookMode] = useState(false);
   const [showStepsPreview, setShowStepsPreview] = useState(false);
-  const [showDebugBreakdown, setShowDebugBreakdown] = useState(false); // TEMP
-  const [cacheClearedCount, setCacheClearedCount] = useState<number | null>(null); // TEMP
-  const baseServings = 1;
 
   React.useEffect(() => {
     setAddedToGrocery(false);
-    setServings(1);
+    // Previously always reset to 1 regardless of the recipe's actual
+    // yield, and baseServings below was hardcoded to 1 too — so a
+    // 4-serving recipe's ingredient list (already written for 4 people)
+    // got treated as if "1×" meant one serving, and the stepper scaled
+    // relative to that fiction instead of the recipe's real base. Now
+    // both the initial display AND the scaling baseline come from the
+    // recipe's real servings count, so "as imported" genuinely means
+    // "as imported" and stepping up/down scales from there correctly.
+    setServings(recipe?.servings ?? 4);
     setShowCookMode(false);
     setShowStepsPreview(false);
-    setShowDebugBreakdown(false); // TEMP
-    setCacheClearedCount(null); // TEMP
   }, [recipe?.id]);
 
   // Called unconditionally (before the `if (!recipe) return null` below)
@@ -500,6 +502,9 @@ function RecipeDetailModal({
   if (!recipe) return null;
 
   const sourceBadge = recipe.source === "photo" ? "📷 Photo import" : recipe.source === "url" ? "🔗 Link import" : "✍️ Manual";
+  // The recipe's ingredient list, as written, represents this many
+  // servings — the stepper scales relative to THIS, not a fixed 1.
+  const baseServings = recipe.servings ?? 4;
   const multiplier = servings / baseServings;
   const scaledIngredients = scaleIngredientText(recipe.ingredients, multiplier);
 
@@ -541,9 +546,18 @@ function RecipeDetailModal({
             <Text style={[styles.sourceBadgeText, { color: colors.mutedForeground }]}>{sourceBadge}</Text>
           </View>
 
-          {/* Servings stepper */}
+          {/* Servings stepper — scales ingredient amounts (not nutrition,
+              which is a fixed per-serving figure) relative to the
+              recipe's actual yield (baseServings), not a fixed "1". */}
           <View style={[styles.servingsRow, { backgroundColor: colors.card, borderColor: colors.border }]}>
-            <Text style={[styles.servingsLabel, { color: colors.mutedForeground }]}>SERVINGS</Text>
+            <View>
+              <Text style={[styles.servingsLabel, { color: colors.mutedForeground }]}>SERVINGS</Text>
+              {servings !== baseServings && (
+                <Text style={{ fontSize: 11, color: colors.mutedForeground, marginTop: 2 }}>
+                  Recipe as written makes {baseServings}
+                </Text>
+              )}
+            </View>
             <View style={styles.stepper}>
               <Pressable
                 onPress={() => { setServings((s) => Math.max(1, s - 1)); Haptics.selectionAsync(); }}
@@ -551,7 +565,7 @@ function RecipeDetailModal({
               >
                 <Feather name="minus" size={16} color={colors.foreground} />
               </Pressable>
-              <Text style={[styles.stepperValue, { color: colors.foreground }]}>{servings}×</Text>
+              <Text style={[styles.stepperValue, { color: colors.foreground }]}>{servings}</Text>
               <Pressable
                 onPress={() => { setServings((s) => Math.min(20, s + 1)); Haptics.selectionAsync(); }}
                 style={[styles.stepperBtn, { backgroundColor: colors.secondary, borderColor: colors.border }]}
@@ -574,81 +588,11 @@ function RecipeDetailModal({
               <Text style={[styles.macrosLoadingText, { color: colors.mutedForeground }]}>Calculating nutrition…</Text>
             </View>
           ) : macros ? (
-            <MacroBar macros={macros} colors={colors} />
-          ) : null}
-
-          {/* TEMP — always-visible diagnostic, remove alongside the debug
-              button below once this is sorted out. This tells us WHICH
-              case we're in without relying on the button working:
-              - "no macros yet" -> still loading or recipe has no ingredients
-              - "macros present, debugLines: none" -> recipe.macros was
-                already set (bookmarked/real API data, or a stale cached
-                value from before debugLines existed), so
-                estimateMacrosPerServing never ran this time
-              - "macros present, debugLines: N" -> should be showing the
-                button below; if it's not visible, it's a rendering issue,
-                not a data issue */}
-          <Text style={{ fontSize: 11, color: colors.mutedForeground, textAlign: "center", marginBottom: 4 }}>
-            DEBUG: {!macros ? "no macros yet" : `macros present, debugLines: ${macros.debugLines ? macros.debugLines.length : "none"}`}
-          </Text>
-
-          {/* TEMP — debug button to see the per-ingredient macro
-              breakdown on-screen, no logs/terminal needed. Remove once
-              the calorie mystery is confirmed fixed. Only shows up when
-              debugLines is actually present (i.e. macros came from the
-              estimator, not real API-sourced data).
-              Rendered inline rather than via Alert.alert — Alert.alert
-              triggered from inside an already-open <Modal> can silently
-              fail to appear on Android (known RN issue: it can attach to
-              the wrong native window layer), which is what was likely
-              happening here. Inline rendering has no such failure mode. */}
-          {macros?.debugLines && macros.debugLines.length > 0 && (
             <>
-              <Pressable
-                onPress={() => setShowDebugBreakdown((v) => !v)}
-                style={{ alignSelf: "center", marginTop: 6, marginBottom: 10 }}
-              >
-                <Text style={{ fontSize: 12, color: colors.mutedForeground, textDecorationLine: "underline" }}>
-                  {showDebugBreakdown ? "Hide" : "Show"} macro breakdown (debug)
-                </Text>
-              </Pressable>
-              {showDebugBreakdown && (
-                <View style={{ borderRadius: 10, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.card, padding: 12, marginBottom: 14 }}>
-                  {macros.debugLines.map((line, i) => (
-                    <Text key={i} style={{ fontSize: 11, color: colors.foreground, marginBottom: 10, fontFamily: "Courier" }}>
-                      {line}
-                    </Text>
-                  ))}
-                </View>
-              )}
-              {/* TEMP — clears every cached nutrition lookup so stale
-                  values from earlier testing can't mask new fixes.
-                  AsyncStorage is on-device client storage, so this has to
-                  run from inside the app itself — a button is the
-                  simplest way to trigger it without a terminal/REPL.
-                  Remove alongside the other debug affordances above once
-                  everything's confirmed working. */}
-              <Pressable
-                onPress={async () => {
-                  const keys = await AsyncStorage.getAllKeys();
-                  const nutritionKeys = keys.filter((k) => k.startsWith("@nutrition_cache:"));
-                  await AsyncStorage.multiRemove(nutritionKeys);
-                  setCacheClearedCount(nutritionKeys.length);
-                }}
-                style={{ alignSelf: "center", marginBottom: 14 }}
-              >
-                <Text style={{ fontSize: 12, color: colors.mutedForeground, textDecorationLine: "underline" }}>
-                  Clear nutrition cache (debug)
-                </Text>
-              </Pressable>
-              {cacheClearedCount !== null && (
-                <Text style={{ fontSize: 11, color: colors.mutedForeground, textAlign: "center", marginBottom: 10 }}>
-                  Cleared {cacheClearedCount} cached entr{cacheClearedCount === 1 ? "y" : "ies"}. Close and reopen
-                  this recipe to recompute.
-                </Text>
-              )}
+              <MacroBar macros={macros} colors={colors} />
+              <IngredientBreakdown items={macros.ingredientBreakdown} colors={colors} />
             </>
-          )}
+          ) : null}
 
           <Pressable
             onPress={handleAddToGrocery}
