@@ -85,7 +85,7 @@ const NUTRITION_DB: NutritionEntry[] = [
   { keywords: ["mushroom"], per100g: { calories: 22, protein: 3.1, carbs: 3.3, fat: 0.3, fiber: 1 } },
   { keywords: ["zucchini", "squash", "eggplant"], per100g: { calories: 20, protein: 1.5, carbs: 4, fat: 0.2, fiber: 1.5 } },
   { keywords: ["cucumber"], per100g: { calories: 15, protein: 0.7, carbs: 3.6, fat: 0.1, fiber: 0.5 } },
-  { keywords: ["lettuce", "cabbage", "kale"], per100g: { calories: 20, protein: 1.5, carbs: 3.5, fat: 0.3, fiber: 1.8 } },
+  { keywords: ["salad greens", "mixed greens", "spring mix", "arugula", "romaine", "lettuce", "cabbage", "kale", "greens"], per100g: { calories: 20, protein: 1.5, carbs: 3.5, fat: 0.3, fiber: 1.8 }, gramsPerUnit: { cup: 30 } },
   { keywords: ["corn"], per100g: { calories: 96, protein: 3.4, carbs: 21, fat: 1.5, fiber: 2.4 } },
 
   // ── Dairy ──
@@ -298,6 +298,41 @@ async function getCachedNutrition(name: string): Promise<Per100g | null> {
   return null;
 }
 
+// Separate from the value cache above, and deliberately NOT reusing
+// GENERIC_FALLBACK as a stored value: a cache hit here must still report
+// wasResolved: false (it's remembering "USDA doesn't know this either",
+// not a real resolution), so callers can keep treating unmatched stray
+// text as zero-contribution rather than fabricating mass for it. Without
+// this, an ingredient neither the local table nor USDA recognizes would
+// hit USDA again on every single lookup.
+const NUTRITION_NOTFOUND_PREFIX = "@nutrition_notfound:";
+const memoryNotFoundCache = new Set<string>();
+
+async function isCachedNotFound(name: string): Promise<boolean> {
+  const key = cacheKeyFor(name);
+  if (memoryNotFoundCache.has(key)) return true;
+  try {
+    const stored = await AsyncStorage.getItem(NUTRITION_NOTFOUND_PREFIX + key);
+    if (stored) {
+      memoryNotFoundCache.add(key);
+      return true;
+    }
+  } catch {
+    // Treat as a miss and re-resolve.
+  }
+  return false;
+}
+
+async function markNotFound(name: string): Promise<void> {
+  const key = cacheKeyFor(name);
+  memoryNotFoundCache.add(key);
+  try {
+    await AsyncStorage.setItem(NUTRITION_NOTFOUND_PREFIX + key, "1");
+  } catch {
+    // Non-fatal — just re-resolves next session instead of persisting.
+  }
+}
+
 async function setCachedNutrition(name: string, data: Per100g): Promise<void> {
   const key = cacheKeyFor(name);
   memoryNutritionCache.set(key, data);
@@ -310,56 +345,84 @@ async function setCachedNutrition(name: string, data: Per100g): Promise<void> {
 }
 
 // Resolves per-100g nutrition + the local entry (for its gramsPerUnit
-// overrides) for one ingredient name: cache → USDA → local table.
+// overrides) for one ingredient name: local table → cache → USDA.
+//
+// Local table is checked FIRST and, if matched, used directly — not as a
+// last resort. USDA's full-text search is reliable for specific,
+// unambiguous ingredient names ("salmon", "chicken breast"), but poorly
+// suited to generic recipe phrasing ("salad greens", "mixed veggies"),
+// where it has no way to know it landed on an unrelated composite dish
+// rather than the plain ingredient. The local table is deliberately
+// curated for exactly the common ingredients where that ambiguity bites,
+// so trusting it first avoids that whole failure mode. USDA remains
+// valuable for the long tail of ingredients not worth curating by hand.
 //
 // Deliberately does NOT cache "error" results (network failure, API
 // down) — those are worth retrying next time rather than permanently
-// locking in the rough local fallback because of a transient issue. A
-// genuine "not_found" from USDA (the ingredient just isn't in their
-// database under this name) DOES get cached, since that's unlikely to
-// change and re-querying USDA for it every time would be wasted calls.
+// locking in a rough guess because of a transient issue.
+//
 // `wasResolved: false` means NEITHER the local table NOR USDA actually
-// recognized this as a food (local match fell through to
-// GENERIC_FALLBACK, and USDA returned not_found/error) — as opposed to
-// `entry === GENERIC_FALLBACK` alone, which only tells you the *local*
-// table missed and says nothing about whether USDA came through instead.
-// Conflating those two previously would have meant treating a
-// USDA-resolved ingredient that simply isn't in the local table (e.g.
-// "juice of 1 lemon" — "lemon" isn't a NUTRITION_DB keyword, but USDA
-// almost certainly has it) as if it were unresolved. Callers that want
-// to detect genuinely-unmatched stray text (see estimateMacrosPerServing)
-// need this combined signal, not just the local one.
+// recognized this as a food — used by estimateMacrosPerServing to detect
+// genuinely-unmatched stray text.
 async function resolveIngredientNutrition(
   name: string
 ): Promise<{ per100g: Per100g; entry: NutritionEntry; wasResolved: boolean; matchedDescription?: string }> {
   const localEntry = matchNutritionEntry(name);
   const localMatched = localEntry !== GENERIC_FALLBACK;
 
+  if (localMatched) {
+    return {
+      per100g: localEntry.per100g,
+      entry: localEntry,
+      wasResolved: true,
+      matchedDescription: `local table: ${localEntry.keywords[0]}`,
+    };
+  }
+
   const cached = await getCachedNutrition(name);
-  if (cached) return { per100g: cached, entry: localEntry, wasResolved: true, matchedDescription: "(cached)" };
+  if (cached) return { per100g: cached, entry: localEntry, wasResolved: true, matchedDescription: "cached USDA match" };
+
+  if (await isCachedNotFound(name)) {
+    return { per100g: localEntry.per100g, entry: localEntry, wasResolved: false, matchedDescription: undefined };
+  }
 
   const usda = await fetchUsdaNutrition(name);
-
   if (usda.status === "found") {
     await setCachedNutrition(name, usda.data);
     return { per100g: usda.data, entry: localEntry, wasResolved: true, matchedDescription: usda.matchedDescription };
   }
-  // Only cache the "not_found" result when the local table actually
-  // matched something — i.e. only cache genuine resolutions. Caching a
-  // bare GENERIC_FALLBACK for every unmatched/stray fragment would (a)
-  // bloat AsyncStorage with identical values for things like "minced" or
-  // random unrecognized spices, and (b) make a later cache HIT
-  // indistinguishable from a real resolution, undermining the
-  // wasResolved signal below.
-  if (usda.status === "not_found" && localMatched) {
-    await setCachedNutrition(name, localEntry.per100g);
+  if (usda.status === "not_found") {
+    await markNotFound(name);
   }
-  return {
-    per100g: localEntry.per100g,
-    entry: localEntry,
-    wasResolved: localMatched,
-    matchedDescription: localMatched ? `(local table: ${localEntry.keywords[0]})` : undefined,
-  };
+
+  return { per100g: localEntry.per100g, entry: localEntry, wasResolved: false, matchedDescription: undefined };
+}
+
+/**
+ * One ingredient's contribution to a recipe's macro estimate — the data
+ * backing the "ingredient breakdown" feature in the recipe detail screen
+ * (see IngredientBreakdown in MacroDisplay.tsx). Whole-recipe amounts,
+ * NOT divided by servings (estimateMacrosPerServing divides the totals
+ * by servings only in its final return value).
+ */
+export interface IngredientBreakdownItem {
+  /** The original recipe text this line came from, e.g. "1-2 pounds salmon (...)" */
+  line: string;
+  /** Parsed/cleaned ingredient name used for the nutrition lookup */
+  name: string;
+  /** Where the nutrition data came from — a USDA food description, a
+   *  local-table match, or undefined if this line matched nothing */
+  matchedDescription?: string;
+  /** True if this line couldn't be matched to any real food and
+   *  contributes nothing — almost always leftover prep text that
+   *  survived comma-splitting (see splitIngredientLines in sync.ts) */
+  unresolved: boolean;
+  grams: number;
+  calories: number;
+  protein: number;
+  carbs: number;
+  fat: number;
+  fiber: number;
 }
 
 /**
@@ -378,9 +441,9 @@ async function resolveIngredientNutrition(
 export async function estimateMacrosPerServing(
   rawIngredientsText: string,
   servings: number
-): Promise<Macros & { debugLines?: string[] }> {
+): Promise<Macros & { ingredientBreakdown: IngredientBreakdownItem[] }> {
   const lines = splitIngredientLines(rawIngredientsText);
-  const debugLines: string[] = []; // TEMP — remove once the calorie mystery is confirmed fixed.
+  const breakdown: IngredientBreakdownItem[] = [];
 
   const perIngredientTotals = await Promise.all(
     lines.map(async (line) => {
@@ -408,21 +471,26 @@ export async function estimateMacrosPerServing(
       const isStrayFragment = !hasExplicitAmount && !wasResolved;
       const grams = isStrayFragment ? 0 : toGrams(amount, unit, entry);
       const scale = grams / 100;
-      const lineCalories = per100g.calories * scale;
-      debugLines.push(
-        `"${line}"\n  -> name="${name}"${isStrayFragment ? " [SKIPPED: stray fragment]" : ""}\n` +
-          `  -> matched: ${matchedDescription ?? "none"}\n` +
-          `  -> ${grams.toFixed(0)}g @ ${per100g.calories.toFixed(0)}kcal/100g = ${lineCalories.toFixed(0)} kcal`
-      );
-      return {
-        calories: lineCalories,
+      const result = {
+        calories: per100g.calories * scale,
         protein: per100g.protein * scale,
         carbs: per100g.carbs * scale,
         fat: per100g.fat * scale,
         fiber: per100g.fiber * scale,
       };
+      const breakdownItem: IngredientBreakdownItem = {
+        line,
+        name,
+        matchedDescription: isStrayFragment ? undefined : matchedDescription,
+        unresolved: isStrayFragment,
+        grams,
+        ...result,
+      };
+      return { ...result, breakdownItem };
     })
   );
+
+  const breakdown: IngredientBreakdownItem[] = perIngredientTotals.map((t) => t.breakdownItem);
 
   const totals = perIngredientTotals.reduce(
     (acc, t) => ({
@@ -452,7 +520,7 @@ export async function estimateMacrosPerServing(
     fat: totals.fat / safeServings,
     fiber: totals.fiber / safeServings,
     estimated: true,
-    debugLines, // TEMP — remove once the calorie mystery is confirmed fixed.
+    ingredientBreakdown: breakdown,
   };
 }
 
@@ -472,8 +540,10 @@ export async function estimateMacrosPerServing(
  */
 export function useRecipeMacros(
   recipe: PersonalRecipe | null
-): { macros: (Macros & { debugLines?: string[] }) | null; loading: boolean } {
-  const [macros, setMacros] = useState<(Macros & { debugLines?: string[] }) | null>(recipe?.macros ?? null);
+): { macros: (Macros & { ingredientBreakdown?: IngredientBreakdownItem[] }) | null; loading: boolean } {
+  const [macros, setMacros] = useState<(Macros & { ingredientBreakdown?: IngredientBreakdownItem[] }) | null>(
+    recipe?.macros ?? null
+  );
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
