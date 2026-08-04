@@ -48,6 +48,13 @@ export interface PersonalRecipe {
   // from a Spoonacular search result; otherwise absent until something
   // calls lib/macros.ts's estimateMacrosPerServing() to fill the gap.
   macros?: Macros;
+  // Cuisine/protein/meal-type/diet labels. Auto-generated from name +
+  // ingredients at save time (see generateAutoTags in roulette.tsx), but
+  // fully user-editable afterward — once a user adds/removes a tag, the
+  // auto-generator stops overwriting this recipe's tags on further edits.
+  // Absent on recipes saved before this field existed; treat as [] rather
+  // than assuming untagged means "no tags wanted".
+  tags?: string[];
 }
 
 export interface PlanSlot {
