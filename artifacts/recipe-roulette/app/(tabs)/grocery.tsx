@@ -392,7 +392,11 @@ export default function GroceryScreen() {
   const handleManualAdd = async () => {
     const text = manualInput.trim();
     if (!text) return;
-    await addIngredients(text);
+    // isManualEntry: true tells toGroceryItems to skip the
+    // recognized-ingredient gate, which otherwise silently dropped
+    // one-word entries (e.g. "napkins") that aren't in the local food
+    // table. Manual entries are always kept as typed.
+    await addIngredients(text, { isManualEntry: true });
     setManualInput("");
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     // Onboarding: adding anything to the grocery list satisfies step 3.
