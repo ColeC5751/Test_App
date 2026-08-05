@@ -308,6 +308,7 @@ export default function GroceryScreen() {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editValue, setEditValue] = useState("");
   const [manualInput, setManualInput] = useState("");
+  const [manualInputFocused, setManualInputFocused] = useState(false);
   const [showShareModal, setShowShareModal] = useState(false);
 
   // Title editing — same pattern as the shared list screen. Tapping the
@@ -478,6 +479,19 @@ advanceOnboarding("complete");
               </Text>
               <SyncDot status={status} />
             </View>
+            {items.length > 0 && (
+              <View style={[styles.progressTrack, { backgroundColor: colors.secondary }]}>
+                <View
+                  style={[
+                    styles.progressFill,
+                    {
+                      backgroundColor: colors.primary,
+                      width: `${Math.round((checked.length / items.length) * 100)}%`,
+                    },
+                  ]}
+                />
+              </View>
+            )}
           </View>
           <View style={styles.headerActions}>
             {items.length > 0 && (
@@ -506,7 +520,13 @@ advanceOnboarding("complete");
         </View>
 
         {/* Manual add input */}
-        <View style={[styles.manualAddRow, { backgroundColor: colors.card, borderColor: colors.border }]}>
+        <View
+          style={[
+            styles.manualAddRow,
+            { backgroundColor: colors.card, borderColor: manualInputFocused ? colors.primary : colors.border },
+          ]}
+        >
+          <Feather name="shopping-bag" size={16} color={colors.mutedForeground} />
           <TextInput
             style={[styles.manualAddInput, { color: colors.foreground }]}
             value={manualInput}
@@ -514,12 +534,18 @@ advanceOnboarding("complete");
             placeholder="Add an item (e.g. 2 lbs ground beef)"
             placeholderTextColor={colors.mutedForeground}
             onSubmitEditing={handleManualAdd}
+            onFocus={() => setManualInputFocused(true)}
+            onBlur={() => setManualInputFocused(false)}
             returnKeyType="done"
           />
           <Pressable
             onPress={handleManualAdd}
             disabled={!manualInput.trim()}
-            style={[styles.manualAddBtn, { backgroundColor: manualInput.trim() ? colors.primary : colors.muted }]}
+            style={({ pressed }) => [
+              styles.manualAddBtn,
+              { backgroundColor: manualInput.trim() ? colors.primary : colors.muted },
+              pressed && manualInput.trim() && { opacity: 0.85 },
+            ]}
           >
             <Feather name="plus" size={18} color={manualInput.trim() ? colors.primaryForeground : colors.mutedForeground} />
           </Pressable>
@@ -528,7 +554,9 @@ advanceOnboarding("complete");
         {/* Empty state */}
         {loaded && items.length === 0 && (
           <View style={styles.empty}>
-            <Feather name="shopping-cart" size={40} color={colors.mutedForeground} />
+            <View style={[styles.emptyIconWrap, { backgroundColor: colors.secondary }]}>
+              <Feather name="shopping-cart" size={26} color={colors.mutedForeground} />
+            </View>
             <Text style={[styles.emptyTitle, { color: colors.foreground }]}>Your list is empty</Text>
             <Text style={[styles.emptyText, { color: colors.mutedForeground }]}>
               Add an item above, or tap "Add to Grocery List" inside any recipe
@@ -540,9 +568,12 @@ advanceOnboarding("complete");
         {uncheckedGroups.map(({ aisle, icon, items: aisleItems }) => (
           <View key={aisle} style={styles.aisleSection}>
             <View style={styles.aisleHeader}>
-              <Text style={styles.aisleIcon}>{icon}</Text>
-              <Text style={[styles.aisleLabel, { color: colors.mutedForeground }]}>{aisle.toUpperCase()}</Text>
+              <View style={[styles.aisleIconWrap, { backgroundColor: colors.secondary }]}>
+                <Text style={styles.aisleIcon}>{icon}</Text>
+              </View>
+              <Text style={[styles.aisleLabel, { color: colors.foreground }]}>{aisle.toUpperCase()}</Text>
               <View style={[styles.aisleLine, { backgroundColor: colors.border }]} />
+              <Text style={[styles.aisleCount, { color: colors.mutedForeground }]}>{aisleItems.length}</Text>
             </View>
             {aisleItems.map((item) => (
               <GroceryRow
@@ -565,9 +596,12 @@ advanceOnboarding("complete");
         {checked.length > 0 && (
           <View style={styles.aisleSection}>
             <View style={styles.aisleHeader}>
-              <Text style={styles.aisleIcon}>✅</Text>
-              <Text style={[styles.aisleLabel, { color: colors.mutedForeground }]}>IN CART</Text>
+              <View style={[styles.aisleIconWrap, { backgroundColor: colors.secondary }]}>
+                <Text style={styles.aisleIcon}>✅</Text>
+              </View>
+              <Text style={[styles.aisleLabel, { color: colors.foreground }]}>IN CART</Text>
               <View style={[styles.aisleLine, { backgroundColor: colors.border }]} />
+              <Text style={[styles.aisleCount, { color: colors.mutedForeground }]}>{checked.length}</Text>
             </View>
             {checkedGroups.map(({ items: aisleItems }) =>
               aisleItems.map((item) => (
@@ -633,12 +667,14 @@ function GroceryRow({
   onEditCommit: () => void;
   onDelete: () => void;
 }) {
+  const showAmount = (item.amount > 0 && item.unit !== "") || item.amount !== 1;
+
   return (
     <View
       style={[
         styles.row,
         { backgroundColor: colors.card, borderColor: colors.border },
-        item.checked && styles.rowChecked,
+        item.checked && [styles.rowChecked, { backgroundColor: colors.secondary, borderColor: "transparent" }],
       ]}
     >
       <Pressable onPress={onToggle} hitSlop={8}>
@@ -647,26 +683,42 @@ function GroceryRow({
         </View>
       </Pressable>
 
-      {item.amount > 0 && item.unit !== "" || item.amount !== 1 ? (
-        isEditing ? (
-          <TextInput
-            style={[styles.amountInput, { color: colors.foreground, borderColor: colors.primary, backgroundColor: colors.secondary }]}
-            value={editValue}
-            onChangeText={onEditChange}
-            onBlur={onEditCommit}
-            onSubmitEditing={onEditCommit}
-            keyboardType="numeric"
-            autoFocus
-            selectTextOnFocus
-          />
-        ) : (
-          <Pressable onPress={onEditStart} hitSlop={8}>
-            <Text style={[styles.amountBadge, { backgroundColor: colors.secondary, color: colors.mutedForeground }]}>
-              {item.amount % 1 === 0 ? item.amount : item.amount.toFixed(1)}{item.unit ? ` ${item.unit}` : ""}
-            </Text>
-          </Pressable>
-        )
-      ) : null}
+      {/* Fixed-width column regardless of whether this item has a quantity
+          to show. Previously the badge/input was only rendered — and only
+          took up space — when the item had an amount, so a "1, no unit"
+          item's name started flush against the checkbox while every
+          neighboring row's name started further right, after its badge.
+          Reserving this column always keeps every row's name starting at
+          the same x position. */}
+      <View style={styles.amountCol}>
+        {showAmount ? (
+          isEditing ? (
+            <TextInput
+              style={[styles.amountInput, { color: colors.foreground, borderColor: colors.primary, backgroundColor: colors.background }]}
+              value={editValue}
+              onChangeText={onEditChange}
+              onBlur={onEditCommit}
+              onSubmitEditing={onEditCommit}
+              keyboardType="numeric"
+              autoFocus
+              selectTextOnFocus
+            />
+          ) : (
+            <Pressable onPress={onEditStart} hitSlop={8}>
+              <Text
+                style={[
+                  styles.amountBadge,
+                  { backgroundColor: colors.secondary, color: colors.foreground },
+                  item.checked && { backgroundColor: "transparent", color: colors.mutedForeground },
+                ]}
+                numberOfLines={1}
+              >
+                {item.amount % 1 === 0 ? item.amount : item.amount.toFixed(1)}{item.unit ? ` ${item.unit}` : ""}
+              </Text>
+            </Pressable>
+          )
+        ) : null}
+      </View>
 
       <View style={styles.rowTextWrap}>
         <Text
@@ -682,7 +734,7 @@ function GroceryRow({
         )}
       </View>
 
-      <Pressable onPress={onDelete} hitSlop={12}>
+      <Pressable onPress={onDelete} hitSlop={12} style={({ pressed }) => [styles.deleteBtn, pressed && { backgroundColor: colors.secondary }]}>
         <Feather name="x" size={16} color={colors.mutedForeground} />
       </Pressable>
     </View>
@@ -713,23 +765,52 @@ const styles = StyleSheet.create({
   sub: { fontSize: 13, fontFamily: "Inter_400Regular" },
   headerActions: { flexDirection: "row", gap: 8, marginTop: 4 },
   headerBtn: { width: 36, height: 36, borderRadius: 18, borderWidth: 1, alignItems: "center", justifyContent: "center" },
-  manualAddRow: { flexDirection: "row", alignItems: "center", gap: 10, borderRadius: 12, borderWidth: 1, paddingHorizontal: 14, paddingVertical: 6, marginBottom: 20 },
-  manualAddInput: { flex: 1, fontSize: 14, fontFamily: "Inter_400Regular", paddingVertical: 12 },
-  manualAddBtn: { width: 32, height: 32, borderRadius: 16, alignItems: "center", justifyContent: "center" },
-  empty: { alignItems: "center", paddingVertical: 64, gap: 12 },
+  manualAddRow: {
+    flexDirection: "row", alignItems: "center", gap: 10, borderRadius: 14, borderWidth: 1.5,
+    paddingHorizontal: 14, paddingVertical: 6, marginBottom: 24,
+    shadowColor: "#000", shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.05, shadowRadius: 8, elevation: 1,
+  },
+  manualAddInput: { flex: 1, fontSize: 14, fontFamily: "Inter_400Regular", paddingVertical: 13 },
+  manualAddBtn: { width: 34, height: 34, borderRadius: 17, alignItems: "center", justifyContent: "center" },
+
+  // Progress bar under the header, showing checked vs. total at a glance —
+  // previously the only feedback was the "X of Y remaining" text.
+  progressTrack: { height: 5, borderRadius: 3, marginTop: 10, overflow: "hidden" },
+  progressFill: { height: "100%", borderRadius: 3 },
+
+  empty: { alignItems: "center", paddingVertical: 64, gap: 14 },
+  emptyIconWrap: { width: 64, height: 64, borderRadius: 32, alignItems: "center", justifyContent: "center", marginBottom: 2 },
   emptyTitle: { fontSize: 17, fontFamily: "Inter_600SemiBold" },
   emptyText: { fontSize: 13, fontFamily: "Inter_400Regular", textAlign: "center", maxWidth: 260, lineHeight: 20 },
-  aisleSection: { marginBottom: 20 },
-  aisleHeader: { flexDirection: "row", alignItems: "center", gap: 8, marginBottom: 10 },
-  aisleIcon: { fontSize: 16 },
-  aisleLabel: { fontSize: 10, fontFamily: "Inter_600SemiBold", letterSpacing: 2 },
+
+  aisleSection: { marginBottom: 22 },
+  aisleHeader: { flexDirection: "row", alignItems: "center", gap: 10, marginBottom: 12 },
+  aisleIconWrap: { width: 26, height: 26, borderRadius: 13, alignItems: "center", justifyContent: "center" },
+  aisleIcon: { fontSize: 13 },
+  aisleLabel: { fontSize: 11, fontFamily: "Inter_700Bold", letterSpacing: 1.5 },
+  aisleCount: { fontSize: 11, fontFamily: "Inter_600SemiBold" },
   aisleLine: { flex: 1, height: 1 },
-  row: { flexDirection: "row", alignItems: "center", gap: 12, borderRadius: 12, borderWidth: 1, paddingHorizontal: 14, paddingVertical: 13, marginBottom: 8 },
-  rowChecked: { opacity: 0.45 },
+
+  row: {
+    flexDirection: "row", alignItems: "center", gap: 12, borderRadius: 14, borderWidth: 1,
+    paddingHorizontal: 14, paddingVertical: 13, marginBottom: 9,
+    shadowColor: "#000", shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.04, shadowRadius: 4, elevation: 1,
+  },
+  // Checked rows previously used a flat opacity, which washed out the
+  // border along with everything else and made the whole row look
+  // "disabled" rather than "done." Now they get a tinted fill instead
+  // (set inline, from colors.secondary) and only the text dims.
+  rowChecked: { shadowOpacity: 0, elevation: 0 },
   checkbox: { width: 22, height: 22, borderRadius: 6, borderWidth: 1.5, alignItems: "center", justifyContent: "center", flexShrink: 0 },
-  amountBadge: { fontSize: 12, fontFamily: "Inter_600SemiBold", borderRadius: 6, paddingHorizontal: 7, paddingVertical: 3, overflow: "hidden" },
-  amountInput: { fontSize: 13, fontFamily: "Inter_600SemiBold", borderRadius: 6, borderWidth: 1.5, paddingHorizontal: 8, paddingVertical: 3, width: 64 },
+
+  // Reserves the same width whether or not an item shows a quantity, so
+  // every row's name starts at the same x position.
+  amountCol: { minWidth: 52, alignItems: "flex-start", justifyContent: "center" },
+  amountBadge: { fontSize: 12, fontFamily: "Inter_700Bold", borderRadius: 7, paddingHorizontal: 8, paddingVertical: 4, overflow: "hidden" },
+  amountInput: { fontSize: 13, fontFamily: "Inter_600SemiBold", borderRadius: 7, borderWidth: 1.5, paddingHorizontal: 8, paddingVertical: 4, width: 64 },
+
   rowTextWrap: { flex: 1, gap: 2 },
   rowText: { fontSize: 15, fontFamily: "Inter_400Regular", lineHeight: 20 },
   rowSource: { fontSize: 11, fontFamily: "Inter_400Regular" },
+  deleteBtn: { width: 28, height: 28, borderRadius: 14, alignItems: "center", justifyContent: "center" },
 });
