@@ -127,6 +127,9 @@ export function IngredientBreakdown({
   const [expanded, setExpanded] = React.useState(false);
   if (!items || items.length === 0) return null;
 
+  const resolvedCount = items.filter((i) => !i.unresolved).length;
+  const maxCalories = Math.max(1, ...items.map((i) => (i.unresolved ? 0 : i.calories)));
+
   return (
     <View style={[macroStyles.wrap, { backgroundColor: colors.card, borderColor: colors.border }]}>
       <Pressable
@@ -135,44 +138,85 @@ export function IngredientBreakdown({
         accessibilityRole="button"
         accessibilityLabel={expanded ? "Hide ingredient breakdown" : "Show ingredient breakdown"}
       >
-        <Text style={[macroStyles.heading, { color: colors.mutedForeground }]}>INGREDIENT BREAKDOWN</Text>
+        <Text style={[macroStyles.heading, { color: colors.mutedForeground }]}>
+          INGREDIENT BREAKDOWN · {resolvedCount}
+        </Text>
         <Feather name={expanded ? "chevron-up" : "chevron-down"} size={16} color={colors.mutedForeground} />
       </Pressable>
       {expanded && (
-        <View>
-          {items.map((item, i) => (
-            <View
-              key={i}
-              style={[
-                macroStyles.ingredientRow,
-                i < items.length - 1 && {
-                  borderBottomWidth: StyleSheet.hairlineWidth,
-                  borderBottomColor: colors.border,
-                },
-              ]}
-            >
-              <View style={macroStyles.ingredientTextCol}>
-                <Text style={[macroStyles.ingredientName, { color: colors.foreground }]} numberOfLines={1}>
-                  {item.line}
-                </Text>
-                <Text style={[macroStyles.ingredientMeta, { color: colors.mutedForeground }]} numberOfLines={1}>
-                  {item.unresolved
-                    ? "Not counted — no matching ingredient found"
-                    : `${Math.round(item.grams)}g · ${item.matchedDescription ?? "unknown source"}`}
-                </Text>
-              </View>
-              {!item.unresolved && (
-                <View style={macroStyles.ingredientMacroCol}>
-                  <Text style={[macroStyles.ingredientCalories, { color: colors.foreground }]}>
-                    {Math.round(item.calories)} kcal
-                  </Text>
-                  <Text style={[macroStyles.ingredientMeta, { color: colors.mutedForeground }]}>
-                    {Math.round(item.protein)}p · {Math.round(item.carbs)}c · {Math.round(item.fat)}f
-                  </Text>
+        <View style={{ marginTop: 4 }}>
+          {items.map((item, i) => {
+            // Bar width scales to this ingredient's share of the biggest
+            // calorie contributor in the list — turns the list into a
+            // rough bar chart at a glance, same spirit as MacroBar's
+            // ratio bar above. Unresolved lines get none (nothing to
+            // chart) and sit visually quieter.
+            const barPct = item.unresolved ? 0 : Math.max(6, Math.round((item.calories / maxCalories) * 100));
+            return (
+              <View
+                key={i}
+                style={[
+                  macroStyles.ingredientRow,
+                  i < items.length - 1 && {
+                    borderBottomWidth: StyleSheet.hairlineWidth,
+                    borderBottomColor: colors.border,
+                  },
+                  item.unresolved && { opacity: 0.5 },
+                ]}
+              >
+                {!item.unresolved && (
+                  <View style={macroStyles.ingredientBarTrack}>
+                    <View
+                      style={[
+                        macroStyles.ingredientBarFill,
+                        { width: `${barPct}%`, backgroundColor: colors.primary },
+                      ]}
+                    />
+                  </View>
+                )}
+                <View style={macroStyles.ingredientContentRow}>
+                  <View style={macroStyles.ingredientTextCol}>
+                    <Text style={[macroStyles.ingredientName, { color: colors.foreground }]} numberOfLines={1}>
+                      {item.line}
+                    </Text>
+                    {item.unresolved ? (
+                      <View style={macroStyles.ingredientUnresolvedRow}>
+                        <Feather name="minus-circle" size={11} color={colors.mutedForeground} />
+                        <Text style={[macroStyles.ingredientMeta, { color: colors.mutedForeground }]}>
+                          Not counted — no match found
+                        </Text>
+                      </View>
+                    ) : (
+                      <Text style={[macroStyles.ingredientMeta, { color: colors.mutedForeground }]} numberOfLines={1}>
+                        {Math.round(item.grams)}g · {item.matchedDescription ?? "unknown source"}
+                      </Text>
+                    )}
+                  </View>
+                  {!item.unresolved && (
+                    <View style={macroStyles.ingredientMacroCol}>
+                      <Text style={[macroStyles.ingredientCalories, { color: colors.foreground }]}>
+                        {Math.round(item.calories)} kcal
+                      </Text>
+                      <View style={macroStyles.ingredientMacroDots}>
+                        <View style={[macroStyles.dot, { backgroundColor: MACRO_COLORS.protein }]} />
+                        <Text style={[macroStyles.ingredientMeta, { color: colors.mutedForeground }]}>
+                          {Math.round(item.protein)}
+                        </Text>
+                        <View style={[macroStyles.dot, { backgroundColor: MACRO_COLORS.carbs }]} />
+                        <Text style={[macroStyles.ingredientMeta, { color: colors.mutedForeground }]}>
+                          {Math.round(item.carbs)}
+                        </Text>
+                        <View style={[macroStyles.dot, { backgroundColor: MACRO_COLORS.fat }]} />
+                        <Text style={[macroStyles.ingredientMeta, { color: colors.mutedForeground }]}>
+                          {Math.round(item.fat)}
+                        </Text>
+                      </View>
+                    </View>
+                  )}
                 </View>
-              )}
-            </View>
-          ))}
+              </View>
+            );
+          })}
         </View>
       )}
     </View>
@@ -201,10 +245,15 @@ const macroStyles = StyleSheet.create({
   pillDot: { width: 6, height: 6, borderRadius: 3, alignSelf: "center", marginRight: -1 },
   pillVal: { fontSize: 12, fontFamily: "Inter_700Bold" },
   pillLabel: { fontSize: 11, fontFamily: "Inter_400Regular" },
-  ingredientRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "flex-start", paddingVertical: 10, gap: 10 },
+  ingredientRow: { paddingVertical: 10, position: "relative", overflow: "hidden", borderRadius: 8 },
+  ingredientBarTrack: { position: "absolute", top: 0, left: 0, right: 0, bottom: 0 },
+  ingredientBarFill: { height: "100%", opacity: 0.08 },
+  ingredientContentRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "flex-start", gap: 10, paddingHorizontal: 2 },
   ingredientTextCol: { flex: 1 },
   ingredientMacroCol: { alignItems: "flex-end" },
   ingredientName: { fontSize: 13, fontFamily: "Inter_600SemiBold" },
   ingredientMeta: { fontSize: 11, fontFamily: "Inter_400Regular", marginTop: 2 },
+  ingredientUnresolvedRow: { flexDirection: "row", alignItems: "center", gap: 4, marginTop: 2 },
   ingredientCalories: { fontSize: 13, fontFamily: "Inter_700Bold" },
+  ingredientMacroDots: { flexDirection: "row", alignItems: "center", gap: 3, marginTop: 3 },
 });
