@@ -3,6 +3,7 @@ import {
   Animated,
   Dimensions,
   Modal,
+  Platform,
   Pressable,
   SafeAreaView,
   ScrollView,
@@ -27,6 +28,9 @@ export interface CookModeProps {
 const { width: SCREEN_WIDTH } = Dimensions.get("window");
 
 // ─── Progress Bar ─────────────────────────────────────────────────────────────
+// Slightly thicker with rounded ends on both the track and fill, and a soft
+// glow behind the fill so it reads as an active/"cooking" indicator rather
+// than a flat loading bar.
 
 function ProgressBar({
   current,
@@ -56,7 +60,16 @@ function ProgressBar({
 
   return (
     <View style={[styles.progressTrack, { backgroundColor: trackColor }]}>
-      <Animated.View style={[styles.progressFill, { width, backgroundColor: color }]} />
+      <Animated.View
+        style={[
+          styles.progressFill,
+          {
+            width,
+            backgroundColor: color,
+            shadowColor: color,
+          },
+        ]}
+      />
     </View>
   );
 }
@@ -68,6 +81,10 @@ export function CookMode({ visible, recipeName, steps, onClose }: CookModeProps)
   const [currentStep, setCurrentStep] = useState(0);
   const slideAnim = useRef(new Animated.Value(0)).current;
   const fadeAnim = useRef(new Animated.Value(1)).current;
+  // Drives the step-bubble's little "pop" whenever the step number changes,
+  // and the done-state icon's entrance — purely decorative, doesn't touch
+  // any of the existing step-transition logic below.
+  const bubbleScale = useRef(new Animated.Value(1)).current;
 
   // Note: screen keep-awake requires expo-keep-awake (~14.0.3) to be added
   // to package.json and pnpm-lock.yaml. Omitted here to avoid lockfile changes.
@@ -98,6 +115,16 @@ export function CookMode({ visible, recipeName, steps, onClose }: CookModeProps)
         Animated.timing(fadeAnim, { toValue: 1, duration: 180, useNativeDriver: true }),
         Animated.timing(slideAnim, { toValue: 0, duration: 180, useNativeDriver: true }),
       ]).start();
+      // Small pop on the step-number bubble to draw the eye back to "which
+      // step am I on" every time it changes — timed to land alongside the
+      // fade/slide-in above rather than the fade-out.
+      bubbleScale.setValue(0.85);
+      Animated.spring(bubbleScale, {
+        toValue: 1,
+        friction: 5,
+        tension: 140,
+        useNativeDriver: true,
+      }).start();
     });
   };
 
@@ -132,19 +159,30 @@ export function CookMode({ visible, recipeName, steps, onClose }: CookModeProps)
 
         {/* Header */}
         <View style={[styles.header, { borderBottomColor: colors.border }]}>
-          <Pressable onPress={handleClose} style={styles.closeBtn} hitSlop={12}>
-            <Feather name="x" size={22} color={colors.foreground} />
+          <Pressable
+            onPress={handleClose}
+            style={({ pressed }) => [
+              styles.closeBtn,
+              { backgroundColor: colors.card, borderColor: colors.border },
+              pressed && { opacity: 0.7 },
+            ]}
+            hitSlop={12}
+          >
+            <Feather name="x" size={18} color={colors.foreground} />
           </Pressable>
           <View style={styles.headerCenter}>
             <Text style={[styles.recipeName, { color: colors.foreground }]} numberOfLines={1}>
               {recipeName}
             </Text>
-            <Text style={[styles.stepCount, { color: colors.mutedForeground }]}>
-              Step {currentStep + 1} of {totalSteps}
-            </Text>
+            <View style={[styles.stepPill, { backgroundColor: colors.secondary }]}>
+              <Feather name="clock" size={10} color={colors.mutedForeground} />
+              <Text style={[styles.stepCount, { color: colors.mutedForeground }]}>
+                Step {currentStep + 1} of {totalSteps}
+              </Text>
+            </View>
           </View>
           {/* Spacer to balance the close button */}
-          <View style={styles.closeBtn} />
+          <View style={styles.closeBtnSpacer} />
         </View>
 
         {/* Progress bar */}
@@ -161,12 +199,27 @@ export function CookMode({ visible, recipeName, steps, onClose }: CookModeProps)
           contentContainerStyle={styles.stepScrollContent}
           showsVerticalScrollIndicator={false}
         >
-          {/* Step number bubble */}
-          <View style={[styles.stepBubble, { backgroundColor: colors.primary }]}>
-            <Text style={[styles.stepBubbleText, { color: colors.primaryForeground }]}>
-              {currentStep + 1}
-            </Text>
-          </View>
+          {/* Step number bubble — ringed + shadowed so it reads as the focal
+              point of the screen, with a small pop animation on change. */}
+          <Animated.View style={{ transform: [{ scale: bubbleScale }] }}>
+            <View
+              style={[
+                styles.stepBubbleRing,
+                { borderColor: colors.secondary },
+              ]}
+            >
+              <View
+                style={[
+                  styles.stepBubble,
+                  { backgroundColor: colors.primary, shadowColor: colors.primary },
+                ]}
+              >
+                <Text style={[styles.stepBubbleText, { color: colors.primaryForeground }]}>
+                  {currentStep + 1}
+                </Text>
+              </View>
+            </View>
+          </Animated.View>
 
           {/* Step text — currentStep only updates once fadeAnim has reached
                0 (see animateTransition), so the text swap always happens
@@ -182,9 +235,16 @@ export function CookMode({ visible, recipeName, steps, onClose }: CookModeProps)
               { opacity: fadeAnim, transform: [{ translateX: slideAnim }] },
             ]}
           >
-            <Text style={[styles.stepText, { color: colors.foreground }]}>
-              {steps[currentStep]}
-            </Text>
+            <View
+              style={[
+                styles.stepCard,
+                { backgroundColor: colors.card, borderColor: colors.border },
+              ]}
+            >
+              <Text style={[styles.stepText, { color: colors.foreground }]}>
+                {steps[currentStep]}
+              </Text>
+            </View>
           </Animated.View>
 
           {/* Done state */}
@@ -196,7 +256,9 @@ export function CookMode({ visible, recipeName, steps, onClose }: CookModeProps)
                 { opacity: fadeAnim },
               ]}
             >
-              <Text style={styles.doneEmoji}>🍽️</Text>
+              <View style={[styles.doneIconRing, { backgroundColor: colors.background, borderColor: colors.primary }]}>
+                <Text style={styles.doneEmoji}>🍽️</Text>
+              </View>
               <Text style={[styles.doneTitle, { color: colors.foreground }]}>
                 That's it!
               </Text>
@@ -241,7 +303,7 @@ export function CookMode({ visible, recipeName, steps, onClose }: CookModeProps)
               style={({ pressed }) => [
                 styles.navBtn,
                 styles.navBtnPrimary,
-                { backgroundColor: colors.primary },
+                { backgroundColor: colors.primary, shadowColor: colors.primary },
                 pressed && { opacity: 0.9 },
               ]}
             >
@@ -256,7 +318,7 @@ export function CookMode({ visible, recipeName, steps, onClose }: CookModeProps)
               style={({ pressed }) => [
                 styles.navBtn,
                 styles.navBtnPrimary,
-                { backgroundColor: colors.primary },
+                { backgroundColor: colors.primary, shadowColor: colors.primary },
                 pressed && { opacity: 0.9 },
               ]}
             >
@@ -279,6 +341,7 @@ export function CookMode({ visible, recipeName, steps, onClose }: CookModeProps)
                   const dir = i > currentStep ? 1 : -1;
                   animateTransition(dir, () => setCurrentStep(i));
                 }}
+                hitSlop={6}
               >
                 <View
                   style={[
@@ -290,7 +353,7 @@ export function CookMode({ visible, recipeName, steps, onClose }: CookModeProps)
                           : i < currentStep
                           ? colors.accent
                           : colors.muted,
-                      width: i === currentStep ? 20 : 8,
+                      width: i === currentStep ? 22 : 8,
                     },
                   ]}
                 />
@@ -320,53 +383,95 @@ const styles = StyleSheet.create({
   headerCenter: {
     flex: 1,
     alignItems: "center",
-    gap: 2,
+    gap: 6,
   },
   closeBtn: {
-    width: 40,
-    height: 40,
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    borderWidth: 1,
     alignItems: "center",
     justifyContent: "center",
+  },
+  closeBtnSpacer: {
+    width: 36,
+    height: 36,
   },
   recipeName: {
     fontSize: 15,
     fontFamily: "Inter_600SemiBold",
     textAlign: "center",
   },
+  stepPill: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 5,
+    borderRadius: 10,
+    paddingHorizontal: 9,
+    paddingVertical: 3,
+  },
   stepCount: {
-    fontSize: 12,
-    fontFamily: "Inter_400Regular",
+    fontSize: 11,
+    fontFamily: "Inter_600SemiBold",
+    letterSpacing: 0.2,
   },
   progressTrack: {
-    height: 3,
+    height: 4,
     width: "100%",
+    borderRadius: 2,
+    overflow: "hidden",
   },
   progressFill: {
-    height: 3,
+    height: 4,
     borderRadius: 2,
+    ...Platform.select({
+      ios: { shadowOpacity: 0.5, shadowRadius: 4, shadowOffset: { width: 0, height: 0 } },
+      android: {},
+      default: {},
+    }),
   },
   stepScroll: {
     flex: 1,
   },
   stepScrollContent: {
     padding: 28,
-    paddingTop: 36,
+    paddingTop: 40,
     alignItems: "center",
-    gap: 24,
+    gap: 28,
     flexGrow: 1,
   },
-  stepBubble: {
-    width: 56,
-    height: 56,
-    borderRadius: 28,
+  stepBubbleRing: {
+    width: 76,
+    height: 76,
+    borderRadius: 38,
+    borderWidth: 2,
     alignItems: "center",
     justifyContent: "center",
   },
+  stepBubble: {
+    width: 60,
+    height: 60,
+    borderRadius: 30,
+    alignItems: "center",
+    justifyContent: "center",
+    ...Platform.select({
+      ios: { shadowOpacity: 0.3, shadowRadius: 10, shadowOffset: { width: 0, height: 4 } },
+      android: { elevation: 4 },
+      default: {},
+    }),
+  },
   stepBubbleText: {
-    fontSize: 22,
+    fontSize: 24,
     fontFamily: "Inter_700Bold",
   },
   stepTextWrap: { width: "100%", alignItems: "center" },
+  stepCard: {
+    width: "100%",
+    borderRadius: 18,
+    borderWidth: 1,
+    paddingHorizontal: 22,
+    paddingVertical: 26,
+  },
   stepText: {
     fontSize: 20,
     fontFamily: "Inter_400Regular",
@@ -375,16 +480,25 @@ const styles = StyleSheet.create({
     width: "100%",
   },
   doneCard: {
-    borderRadius: 16,
+    borderRadius: 18,
     borderWidth: 1.5,
-    padding: 24,
+    padding: 28,
     alignItems: "center",
     gap: 8,
     width: "100%",
-    marginTop: 16,
+    marginTop: 12,
+  },
+  doneIconRing: {
+    width: 64,
+    height: 64,
+    borderRadius: 32,
+    borderWidth: 1.5,
+    alignItems: "center",
+    justifyContent: "center",
+    marginBottom: 4,
   },
   doneEmoji: {
-    fontSize: 40,
+    fontSize: 30,
   },
   doneTitle: {
     fontSize: 22,
@@ -411,6 +525,11 @@ const styles = StyleSheet.create({
   },
   navBtnPrimary: {
     flex: 2,
+    ...Platform.select({
+      ios: { shadowOpacity: 0.25, shadowRadius: 10, shadowOffset: { width: 0, height: 4 } },
+      android: { elevation: 3 },
+      default: {},
+    }),
   },
   navBtnSecondary: {
     flex: 1,
