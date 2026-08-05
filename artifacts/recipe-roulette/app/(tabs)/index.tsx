@@ -35,6 +35,34 @@ const DEFAULT_CARBS = ["Rice", "Pasta", "Potatoes", "Bread"];
 const DEFAULT_VEGGIES = ["Broccoli", "Spinach", "Carrots", "Peppers"];
 
 const WHEELS_KEY = "@recipe_roulette_wheels";
+const DIET_FILTERS_KEY = "@recipe_roulette_diet_filters";
+
+// Diet is single-select (Spoonacular's `diet` param takes one value — "no
+// filter" isn't a diet, it's the absence of the param, so it's modeled as
+// `null` rather than an option in this list). Intolerances are multi-select
+// (Spoonacular's `intolerances` param takes a comma-separated list). Values
+// match Spoonacular's expected param values exactly; labels are what's
+// actually shown in the settings modal.
+const DIET_OPTIONS: { label: string; value: string }[] = [
+  { label: "Vegetarian", value: "vegetarian" },
+  { label: "Vegan", value: "vegan" },
+  { label: "Gluten Free", value: "gluten free" },
+  { label: "Ketogenic", value: "ketogenic" },
+  { label: "Paleo", value: "paleo" },
+  { label: "Pescatarian", value: "pescetarian" },
+];
+
+const INTOLERANCE_OPTIONS: string[] = [
+  "Dairy", "Egg", "Gluten", "Peanut", "Seafood",
+  "Sesame", "Shellfish", "Soy", "Tree Nut", "Wheat",
+];
+
+type DietFilters = {
+  diet: string | null; // one of DIET_OPTIONS[].value, or null for "no diet filter"
+  intolerances: string[]; // subset of INTOLERANCE_OPTIONS, lowercased for the API
+};
+
+const DEFAULT_DIET_FILTERS: DietFilters = { diet: null, intolerances: [] };
 
 const FRIDGE_SUGGESTIONS = [
   "Chicken", "Beef", "Salmon", "Pork", "Eggs", "Tofu",
@@ -105,11 +133,23 @@ type WheelData = {
 
 type FetchResult = { recipes: Recipe[]; errorMessage?: string };
 
-async function fetchRecipes(ingredients: string): Promise<FetchResult> {
+async function fetchRecipes(ingredients: string, filters?: DietFilters): Promise<FetchResult> {
   try {
-    const res = await fetch(
-      `https://test-app-api-server.vercel.app/api/recipes/search?ingredients=${encodeURIComponent(ingredients)}`
-    );
+    let url = `https://test-app-api-server.vercel.app/api/recipes/search?ingredients=${encodeURIComponent(ingredients)}`;
+    // NOTE: this assumes the proxy at test-app-api-server forwards `diet`
+    // and `intolerances` through to Spoonacular's /recipes/findByIngredients
+    // (or complexSearch) call unchanged. Spoonacular accepts both params
+    // with these exact names/formats. If results don't actually change when
+    // a filter is toggled, the proxy's search handler needs these two
+    // params added to whatever it forwards — this is a server-side change
+    // outside this file.
+    if (filters?.diet) {
+      url += `&diet=${encodeURIComponent(filters.diet)}`;
+    }
+    if (filters?.intolerances && filters.intolerances.length > 0) {
+      url += `&intolerances=${encodeURIComponent(filters.intolerances.join(","))}`;
+    }
+    const res = await fetch(url);
     const data = await res.json();
     if (!res.ok) {
       const code = data?.code ?? "";
@@ -150,16 +190,20 @@ function SlotColumn({ label, items, animValue }: { label: string; items: string[
   );
 }
 
-function WheelSettingsModal({
+function SpinSettingsModal({
   visible,
   onClose,
   wheels,
-  onSave,
+  onSaveWheels,
+  dietFilters,
+  onSaveDietFilters,
 }: {
   visible: boolean;
   onClose: () => void;
   wheels: WheelData;
-  onSave: (wheels: WheelData) => void;
+  onSaveWheels: (wheels: WheelData) => void;
+  dietFilters: DietFilters;
+  onSaveDietFilters: (filters: DietFilters) => void;
 }) {
   const colors = useColors();
   const [proteins, setProteins] = useState<string[]>(wheels.proteins);
@@ -169,15 +213,42 @@ function WheelSettingsModal({
   const [newCarb, setNewCarb] = useState("");
   const [newVeggie, setNewVeggie] = useState("");
 
+  // Local draft copies of the dietary filters, same pattern as the wheel
+  // arrays above — edited freely here, only committed on "Save Changes".
+  const [draftDiet, setDraftDiet] = useState<string | null>(dietFilters.diet);
+  const [draftIntolerances, setDraftIntolerances] = useState<string[]>(dietFilters.intolerances);
+
   useEffect(() => {
     setProteins(wheels.proteins);
     setCarbs(wheels.carbs);
     setVeggies(wheels.veggies);
   }, [wheels]);
 
+  useEffect(() => {
+    setDraftDiet(dietFilters.diet);
+    setDraftIntolerances(dietFilters.intolerances);
+  }, [dietFilters]);
+
+  const toggleDiet = (value: string) => {
+    // Single-select with tap-to-clear: tapping the already-selected diet
+    // deselects it (back to "no diet filter") rather than requiring a
+    // separate "None" option to sit in the list.
+    setDraftDiet((current) => (current === value ? null : value));
+    Haptics.selectionAsync();
+  };
+
+  const toggleIntolerance = (label: string) => {
+    const value = label.toLowerCase();
+    setDraftIntolerances((current) =>
+      current.includes(value) ? current.filter((v) => v !== value) : [...current, value]
+    );
+    Haptics.selectionAsync();
+  };
+
   const handleSave = () => {
     if (proteins.length === 0 || carbs.length === 0 || veggies.length === 0) return;
-    onSave({ proteins, carbs, veggies });
+    onSaveWheels({ proteins, carbs, veggies });
+    onSaveDietFilters({ diet: draftDiet, intolerances: draftIntolerances });
     onClose();
   };
 
@@ -233,19 +304,78 @@ function WheelSettingsModal({
     </View>
   );
 
+  const renderToggleChip = (
+    label: string,
+    selected: boolean,
+    onPress: () => void,
+    key: string,
+  ) => (
+    <Pressable
+      key={key}
+      onPress={onPress}
+      style={[
+        styles.filterChip,
+        {
+          backgroundColor: selected ? colors.primary : colors.secondary,
+          borderColor: selected ? colors.primary : colors.border,
+        },
+      ]}
+    >
+      {selected && <Feather name="check" size={12} color={colors.primaryForeground} style={{ marginRight: 4 }} />}
+      <Text style={[styles.filterChipText, { color: selected ? colors.primaryForeground : colors.foreground }]}>
+        {label}
+      </Text>
+    </Pressable>
+  );
+
   return (
     <Modal visible={visible} animationType="slide" presentationStyle="pageSheet" onRequestClose={onClose}>
       <SafeAreaView style={[styles.modalRoot, { backgroundColor: colors.background }]}>
         <View style={[styles.modalHeader, { borderBottomColor: colors.border }]}>
-          <Text style={[styles.modalTitle, { color: colors.foreground }]}>Customize Wheels</Text>
+          <Text style={[styles.modalTitle, { color: colors.foreground }]}>Settings</Text>
           <Pressable onPress={onClose}>
             <Feather name="x" size={22} color={colors.foreground} />
           </Pressable>
         </View>
         <ScrollView contentContainerStyle={{ padding: 20, paddingBottom: 48 }} showsVerticalScrollIndicator={false}>
+          {/* ── Dietary Filters ──────────────────────────────────────────
+              Applies to both Spin and "What's in my fridge?" searches —
+              both funnel through the shared fetchRecipes() helper, which
+              is what actually appends these as query params. */}
+          <View style={styles.categorySection}>
+            <Text style={[styles.categoryLabel, { color: colors.mutedForeground }]}>DIET</Text>
+            <Text style={[styles.filterHint, { color: colors.mutedForeground }]}>
+              Tap a diet to filter results — tap it again to clear it
+            </Text>
+            <View style={styles.filterChipRow}>
+              {DIET_OPTIONS.map((opt) =>
+                renderToggleChip(opt.label, draftDiet === opt.value, () => toggleDiet(opt.value), opt.value)
+              )}
+            </View>
+          </View>
+
+          <View style={styles.categorySection}>
+            <Text style={[styles.categoryLabel, { color: colors.mutedForeground }]}>AVOID (INTOLERANCES)</Text>
+            <Text style={[styles.filterHint, { color: colors.mutedForeground }]}>
+              Select any to exclude from results — choose as many as you need
+            </Text>
+            <View style={styles.filterChipRow}>
+              {INTOLERANCE_OPTIONS.map((label) =>
+                renderToggleChip(
+                  label,
+                  draftIntolerances.includes(label.toLowerCase()),
+                  () => toggleIntolerance(label),
+                  label
+                )
+              )}
+            </View>
+          </View>
+
+          {/* ── Wheel customization (unchanged) ─────────────────────────── */}
           {renderCategory("PROTEIN", proteins, setProteins, newProtein, setNewProtein)}
           {renderCategory("CARBS", carbs, setCarbs, newCarb, setNewCarb)}
           {renderCategory("VEGGIE", veggies, setVeggies, newVeggie, setNewVeggie)}
+
           <Pressable onPress={handleSave} style={[styles.saveBtn, { backgroundColor: colors.primary }]}>
             <Text style={[styles.saveBtnText, { color: colors.primaryForeground }]}>Save Changes</Text>
           </Pressable>
@@ -624,9 +754,19 @@ export default function SpinScreen() {
   });
   const [showSettings, setShowSettings] = useState(false);
 
+  // Dietary filters — same load/save pattern as wheels above, just a
+  // separate AsyncStorage key so toggling filters never touches wheel data
+  // and vice versa. Applies to both Spin and Fridge search (see spin() and
+  // searchFridge() below, both of which now pass `dietFilters` through to
+  // fetchRecipes()).
+  const [dietFilters, setDietFilters] = useState<DietFilters>(DEFAULT_DIET_FILTERS);
+
   useEffect(() => {
     AsyncStorage.getItem(WHEELS_KEY).then((json) => {
       if (json) setWheels(JSON.parse(json));
+    }).catch(() => {});
+    AsyncStorage.getItem(DIET_FILTERS_KEY).then((json) => {
+      if (json) setDietFilters(JSON.parse(json));
     }).catch(() => {});
   }, []);
 
@@ -641,6 +781,16 @@ export default function SpinScreen() {
     await AsyncStorage.setItem(WHEELS_KEY, JSON.stringify(newWheels));
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
   };
+
+  const handleSaveDietFilters = async (newFilters: DietFilters) => {
+    setDietFilters(newFilters);
+    await AsyncStorage.setItem(DIET_FILTERS_KEY, JSON.stringify(newFilters));
+    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+  };
+
+  // Small badge count for the settings gear button — lets someone glance
+  // at the tab and know filters are active without opening the sheet.
+  const activeFilterCount = (dietFilters.diet ? 1 : 0) + dietFilters.intolerances.length;
 
   const [selProtein, setSelProtein] = useState(0);
   const [selCarb, setSelCarb] = useState(0);
@@ -755,7 +905,7 @@ export default function SpinScreen() {
       setRecipes([]);
 
       try {
-        const result = await fetchRecipes(ingredients);
+        const result = await fetchRecipes(ingredients, dietFilters);
         if (result.errorMessage) {
           setIsError(true);
           setErrorMessage(result.errorMessage);
@@ -801,7 +951,7 @@ export default function SpinScreen() {
     setFridgeError("");
     setFridgeResults([]);
     try {
-      const result = await fetchRecipes(fridgeTags.join(","));
+      const result = await fetchRecipes(fridgeTags.join(","), dietFilters);
       if (result.errorMessage) {
         setFridgeError(result.errorMessage);
       } else {
@@ -825,6 +975,11 @@ export default function SpinScreen() {
           <Text style={[styles.heading, { color: colors.foreground }]}>That's Dinner</Text>
           <Pressable onPress={() => setShowSettings(true)} style={[styles.settingsBtn, { backgroundColor: colors.card, borderColor: colors.border }]}>
             <Feather name="settings" size={18} color={colors.foreground} />
+            {activeFilterCount > 0 && (
+              <View style={[styles.filterBadge, { backgroundColor: colors.primary, borderColor: colors.background }]}>
+                <Text style={[styles.filterBadgeText, { color: colors.primaryForeground }]}>{activeFilterCount}</Text>
+              </View>
+            )}
           </Pressable>
         </View>
 
@@ -1028,11 +1183,13 @@ export default function SpinScreen() {
         onToggleSave={handleToggleSaveRecipe}
         onboardingHighlightSave={onboardingStep === "save"}
       />
-      <WheelSettingsModal
+      <SpinSettingsModal
         visible={showSettings}
         onClose={() => setShowSettings(false)}
         wheels={wheels}
-        onSave={handleSaveWheels}
+        onSaveWheels={handleSaveWheels}
+        dietFilters={dietFilters}
+        onSaveDietFilters={handleSaveDietFilters}
       />
     </>
   );
@@ -1044,6 +1201,12 @@ const styles = StyleSheet.create({
   heading: { fontSize: 26, fontFamily: "Inter_700Bold", marginBottom: 4 },
   sub: { fontSize: 13, fontFamily: "Inter_400Regular" },
   settingsBtn: { width: 38, height: 38, borderRadius: 19, borderWidth: 1, alignItems: "center", justifyContent: "center", marginTop: 4 },
+  filterBadge: { position: "absolute", top: -4, right: -4, minWidth: 18, height: 18, borderRadius: 9, borderWidth: 2, alignItems: "center", justifyContent: "center", paddingHorizontal: 3 },
+  filterBadgeText: { fontSize: 10, fontFamily: "Inter_700Bold" },
+  filterHint: { fontSize: 11, fontFamily: "Inter_400Regular", marginBottom: 10 },
+  filterChipRow: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
+  filterChip: { flexDirection: "row", alignItems: "center", borderRadius: 20, borderWidth: 1, paddingHorizontal: 12, paddingVertical: 7 },
+  filterChipText: { fontSize: 12, fontFamily: "Inter_500Medium" },
   machine: { flexDirection: "row", gap: 8, marginBottom: 20 },
   colWrap: { flex: 1, alignItems: "center" },
   colLabel: { fontSize: 10, letterSpacing: 2, fontFamily: "Inter_600SemiBold", marginBottom: 8 },
