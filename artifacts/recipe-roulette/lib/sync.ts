@@ -385,11 +385,120 @@ export function toGroceryItems(
     });
 }
 
+// ─── Ingredient name canonicalization (for combining) ─────────────────────
+//
+// combineIngredients (below) dedupes on ingredient name, but recipes and
+// manual entries rarely agree on how to phrase the same ingredient —
+// "romaine lettuce leaves", "1 head romaine lettuce", and "romaine" all
+// describe the same grocery purchase but never matched as the same
+// string. canonicalizeIngredientName produces a normalized form used ONLY
+// as the matching key below — whichever raw name arrived on the list
+// first is still what's displayed, so this never rewrites what the
+// person sees, only what counts as "the same item" for merging purposes.
+//
+// The word lists here are deliberately narrow, chosen against one
+// asymmetry: stripping too much silently merges two different products
+// (the shopper doesn't buy something they needed — a real cost), while
+// stripping too little just leaves two list lines instead of one
+// (mildly annoying, never wrong). Every word below was checked against
+// that asymmetry; anything genuinely ambiguous was left off entirely.
+//
+// This list is deliberately DISJOINT from words that define a distinct
+// product/SKU rather than describe prep or grade — none of the following
+// are ever stripped, on purpose: "diced"/"crushed" (a canned tomato
+// product, not a prep step done at home), "shredded"/"grated" (pre-
+// shredded cheese is a different purchase than a block), "boneless"/
+// "skinless" (a different cut at the counter), fat-content words
+// ("lean", "fat-free", "whole", "skim", "nonfat", "salted", "unsalted",
+// "sweetened", "unsweetened"), state words ("fresh", "frozen", "canned",
+// "dried", "cooked", "raw"), and style/cuisine words ("Italian", "Cajun",
+// "breakfast" sausage, "Greek" yogurt, "light"/"dark" brown sugar,
+// "powdered"/"granulated" sugar, "seasoned"/"unseasoned"). If a new strip
+// word is ever added here, double-check it doesn't collide with one of
+// those — e.g. a bare "shredded" would wrongly merge a bag of shredded
+// cheese with a block.
+
+const STRIP_WORDS = new Set([
+  // prep / physical form — describes what you'll do with it, not what
+  // you're buying
+  "chopped", "minced", "sliced", "cubed", "julienned",
+  "halved", "quartered", "wedge", "wedges",
+  "peeled", "trimmed", "deveined", "toasted",
+  // plant-part / package unit — "leaves" vs. "head" is the exact case
+  // this feature was requested for
+  "leaf", "leaves", "head", "heads", "stalk", "stalks",
+  "sprig", "sprigs", "clove", "cloves", "bulb", "bulbs",
+  "floret", "florets", "ear", "ears", "bunch", "bunches",
+  // ripeness — same product, not a different one
+  "ripe", "overripe",
+  // ethical/quality certification — same product, different sourcing
+  "organic",
+  // size grade
+  "large", "medium", "small",
+]);
+
+// Multi-word phrases stripped as a unit (checked before the single-word
+// pass so "grass fed" doesn't get half-matched by an unrelated rule).
+const STRIP_PHRASES = ["grass fed", "free range", "cage free", "wild caught", "farm raised"];
+
+// Modifier words only stripped when they immediately precede a specific
+// noun. Unlike the words above, these aren't safe to strip everywhere —
+// a bare "sea" would wrongly affect a real product name ("sea bass"), and
+// "virgin"/"extra virgin" is only a grade descriptor when it's actually
+// modifying an oil.
+const CONDITIONAL_STRIP: { modifier: string; beforeNoun: string | RegExp }[] = [
+  { modifier: "kosher", beforeNoun: "salt" },
+  { modifier: "sea", beforeNoun: "salt" },
+  { modifier: "table", beforeNoun: "salt" },
+  { modifier: "extra virgin", beforeNoun: /^oil\b|\boil$/ },
+  { modifier: "virgin", beforeNoun: /^oil\b|\boil$/ },
+];
+
+export function canonicalizeIngredientName(rawName: string): string {
+  let name = rawName
+    .toLowerCase()
+    .trim()
+    .replace(/[().,]/g, " ")
+    .replace(/-/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  if (!name) return name;
+
+  // Conditional modifier+noun pairs first, since they depend on what
+  // immediately follows — that context would be lost once the generic
+  // pass below tokenizes the name freely.
+  for (const { modifier, beforeNoun } of CONDITIONAL_STRIP) {
+    const prefix = `${modifier} `;
+    if (name.startsWith(prefix)) {
+      const rest = name.slice(prefix.length);
+      const matches =
+        typeof beforeNoun === "string" ? rest.startsWith(beforeNoun) : beforeNoun.test(rest);
+      if (matches) name = rest;
+    }
+  }
+
+  // Multi-word strip phrases next.
+  for (const phrase of STRIP_PHRASES) {
+    name = name.replace(new RegExp(`\\b${phrase}\\b`, "g"), " ");
+  }
+
+  // Then single strip words, wherever they fall in the name — "lettuce
+  // leaves" and "leaves of romaine lettuce" both reduce the same way.
+  const kept = name.split(" ").filter((tok) => tok && !STRIP_WORDS.has(tok));
+  const result = kept.join(" ").replace(/\s+/g, " ").trim();
+
+  // Never return an empty string — if stripping would somehow remove the
+  // entire name, fall back to the original rather than losing the item
+  // from matching entirely.
+  return result || name;
+}
+
 export function combineIngredients(existing: GroceryItem[], incoming: GroceryItem[]): GroceryItem[] {
   const result = [...existing];
   for (const inc of incoming) {
-    const incLower = inc.name.toLowerCase().trim();
-    const idx = result.findIndex((e) => e.name.toLowerCase().trim() === incLower);
+    const incKey = canonicalizeIngredientName(inc.name);
+    const idx = result.findIndex((e) => canonicalizeIngredientName(e.name) === incKey);
     if (idx === -1) {
       result.push({ ...inc });
     } else {
@@ -403,6 +512,12 @@ export function combineIngredients(existing: GroceryItem[], incoming: GroceryIte
         const readable = mlToReadable(totalMl);
         result[idx] = { ...ex, amount: readable.amount, unit: readable.unit };
       } else {
+        // Same canonical ingredient, but the units aren't the same or
+        // convertible (e.g. "leaves" vs. "head", "cloves" vs. "bulb") —
+        // there's no honest fixed ratio between those, so rather than
+        // guess, keep this as its own line rather than forcing a wrong
+        // combined quantity. It'll still land in the same aisle as its
+        // canonical match, just as a separate entry.
         result.push({ ...inc, id: `${inc.id}_${Date.now()}` });
       }
     }
