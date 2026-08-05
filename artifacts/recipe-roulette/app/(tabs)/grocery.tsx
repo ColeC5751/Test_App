@@ -667,7 +667,13 @@ function GroceryRow({
   onEditCommit: () => void;
   onDelete: () => void;
 }) {
-  const showAmount = (item.amount > 0 && item.unit !== "") || item.amount !== 1;
+  // Always show a quantity indicator — including a plain "1" for items
+  // with no unit — rather than leaving the amount column empty. Hiding it
+  // for amount===1/no-unit items used to leave a visibly blank gap next
+  // to the checkbox on those rows, which read as broken rather than
+  // intentional once every row's name column was aligned to the same
+  // width (see amountCol below).
+  const showAmount = true;
 
   return (
     <View
