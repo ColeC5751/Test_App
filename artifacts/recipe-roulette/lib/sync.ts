@@ -201,10 +201,26 @@ function expandLeadingRange(line: string): string {
   return line.slice(0, rangeMatch.index) + avg + line.slice(rangeMatch.index! + rangeMatch[0].length);
 }
 
+// Recipe text routinely carries author asides in parentheses — "(optional,
+// for color)", "(I love Boston best on this)", even can sizes like "(14.5
+// oz)" — that are notes for the cook, not something that changes what
+// gets bought. Left in, they turn into the literal displayed grocery item
+// name ("paprika (optional, for color)"), which is what was cluttering
+// the list. Stripped unconditionally — applies to manual entries too,
+// since nobody wants "(optional)" on their shopping list regardless of
+// how the item was added.
+function stripParentheticalAsides(text: string): string {
+  const stripped = text.replace(/\s*\([^)]*\)/g, "").replace(/\s+/g, " ").trim();
+  // Guard against a line that was ENTIRELY parenthetical (e.g. just "(a
+  // note)") — falling back to the original avoids ending up with an
+  // empty ingredient.
+  return stripped || text.trim();
+}
+
 export function parseIngredientLine(
   rawLine: string
 ): { name: string; amount: number; unit: string; hasExplicitAmount: boolean } {
-  const line = expandLeadingRange(decodeEntities(rawLine).trim());
+  const line = stripParentheticalAsides(expandLeadingRange(decodeEntities(rawLine).trim()));
   const match = line.match(AMOUNT_PREFIX);
   // `hasExplicitAmount: false` signals this line had no parseable leading
   // quantity at all — used by macros.ts to distinguish a genuine
