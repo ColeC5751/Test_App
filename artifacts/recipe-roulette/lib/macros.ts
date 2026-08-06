@@ -86,6 +86,93 @@ function toGrams(amount: number, unit: string, entry: NutritionEntry): number {
   return amount * perItem;
 }
 
+// ─── Non-food fragment filtering ────────────────────────────────────────────
+//
+// Comma-splitting in sync.ts can leave prep-instruction fragments that
+// share a comma with a real ingredient but aren't food themselves — e.g.
+// "2 cloves garlic, minced" -> "2 cloves garlic" + "minced". Previously
+// these were only caught AFTER a USDA round-trip, by checking whether
+// USDA happened to return nothing (wasResolved: false). That's not
+// reliable: USDA's full-text search often returns *something* for a bare
+// prep word or instruction (e.g. "minced" can match an unrelated branded
+// product, "divided" can match a random SR Legacy entry), so `wasResolved`
+// comes back true for text that was never actually food, and that false
+// macro value then gets fed into the recipe's totals AND cached under this
+// fragment's name for every future lookup.
+//
+// KNOWN_BAD_FRAGMENTS lists exactly that kind of text — pure prep/
+// instruction language with no nutritional content of its own — so it can
+// be rejected before ever reaching USDA, rather than trusting whatever
+// USDA's ranker returns for it. Exported so it doubles as the fixture list
+// for a "does the filter still catch these" unit test.
+export const KNOWN_BAD_FRAGMENTS: readonly string[] = [
+  "minced",
+  "chopped",
+  "finely chopped",
+  "roughly chopped",
+  "diced",
+  "finely diced",
+  "sliced",
+  "thinly sliced",
+  "julienned",
+  "crushed",
+  "grated",
+  "shredded",
+  "peeled",
+  "seeded",
+  "deveined",
+  "trimmed",
+  "rinsed",
+  "drained",
+  "melted",
+  "softened",
+  "room temperature",
+  "at room temperature",
+  "divided",
+  "to taste",
+  "or to taste",
+  "for garnish",
+  "for serving",
+  "optional",
+  "if desired",
+  "plus more for garnish",
+  "plus more for serving",
+  "freshly ground",
+  "cut into wedges",
+  "cut into cubes",
+  "cut into pieces",
+  "cut into chunks",
+  "cut into strips",
+  "cut in half",
+  "halved",
+  "quartered",
+  "lengthwise",
+  "crosswise",
+];
+
+// Matches an exact known-bad fragment, or a "cut into <word(s)>" pattern
+// generally (KNOWN_BAD_FRAGMENTS only lists the common specific cases,
+// but the shape generalizes and new variants shouldn't need a code
+// change to be caught).
+const NON_FOOD_FRAGMENT = new RegExp(
+  `^(?:${KNOWN_BAD_FRAGMENTS.map((f) => f.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join(
+    "|"
+  )}|cut\\s+into\\s+\\w+(?:\\s+\\w+)?)$`,
+  "i"
+);
+
+// Cheap pre-filter run BEFORE any local-table/USDA lookup. Deliberately
+// conservative — it only rejects text that's either too short to be a
+// real food name or an exact/near match for known prep language. Anything
+// else still goes through the normal local-table -> cache -> USDA path,
+// so real quantity-less ingredients ("salt", "olive oil") are unaffected.
+function isLikelyFoodFragment(name: string): boolean {
+  const cleaned = stripDescriptiveAsides(name).trim();
+  if (cleaned.length < 3) return false;
+  if (NON_FOOD_FRAGMENT.test(cleaned)) return false;
+  return true;
+}
+
 // ─── USDA FoodData Central integration ─────────────────────────────────────
 //
 // Personal free API key (fdc.nal.usda.gov/api-key-signup) — not rate-shared
@@ -127,6 +214,37 @@ function stripDescriptiveAsides(name: string): string {
   return withoutTrailingClause.trim() || noParens || name.trim();
 }
 
+// Significant (non-stopword, length > 2) words in a string, lowercased —
+// used by hasWordOverlap below to sanity-check that a USDA search result
+// is actually about the ingredient we searched for, not just whatever
+// ranked #1 in the API's full-text search.
+const STOPWORDS = new Set(["of", "and", "the", "a", "an", "or", "with", "for", "to", "in"]);
+function significantWords(s: string): Set<string> {
+  return new Set(
+    s
+      .toLowerCase()
+      .split(/\W+/)
+      .filter((w) => w.length > 2 && !STOPWORDS.has(w))
+  );
+}
+
+// Requires at least one shared significant word between the query and a
+// candidate USDA result's description. This is deliberately loose (one
+// word, not all of them — "raw" vs "roasted" style variants should still
+// match) but it's enough to reject results that are just noise: a search
+// for a prep fragment or an odd/rare ingredient name occasionally returns
+// a top-5 with zero actual relation to the query, and without this check
+// that unrelated food's macros get silently attributed to the ingredient.
+function hasWordOverlap(query: string, description: string): boolean {
+  const qWords = significantWords(query);
+  if (qWords.size === 0) return false;
+  const dWords = significantWords(description);
+  for (const w of qWords) {
+    if (dWords.has(w)) return true;
+  }
+  return false;
+}
+
 // Restricted to Foundation + SR Legacy data types: both report nutrients
 // per 100g consistently (matching this module's whole architecture).
 // Branded-food results get excluded — those report per-serving-as-labeled
@@ -147,12 +265,19 @@ async function fetchUsdaNutrition(
     const foods: any[] = data?.foods ?? [];
     if (foods.length === 0) return { status: "not_found" };
 
-    // pageSize=1 previously trusted whatever ranked first, with no way to
-    // tell a good match from a bad one. Preferring a "raw"/plain result
-    // among the top few candidates avoids landing on a prepared dish or
-    // an unrelated cut/variant that happens to rank #1 for a noisy query.
-    const preferred = foods.find((f) => typeof f?.description === "string" && /\braw\b/i.test(f.description));
-    const food = preferred ?? foods[0];
+    // Reject candidates that don't share even one significant word with
+    // the query — see hasWordOverlap above. Without this, a noisy or
+    // unusual ingredient name can land on a completely unrelated food
+    // (e.g. a prep fragment matching a random branded item's name) and
+    // that gets reported as a confident "found" match.
+    const relevant = foods.filter((f) => hasWordOverlap(name, f.description ?? ""));
+    if (relevant.length === 0) return { status: "not_found" };
+
+    // Among relevant candidates, prefer a "raw"/plain result — avoids
+    // landing on a prepared dish or an unrelated cut/variant that happens
+    // to rank #1 for a noisy query.
+    const preferred = relevant.find((f) => typeof f?.description === "string" && /\braw\b/i.test(f.description));
+    const food = preferred ?? relevant[0];
 
     const nutrients: any[] = food.foodNutrients ?? [];
     return {
@@ -288,6 +413,15 @@ async function resolveIngredientNutrition(
     };
   }
 
+  // Reject text that's a known/likely prep instruction before it ever
+  // reaches USDA or the persistent caches — see isLikelyFoodFragment and
+  // KNOWN_BAD_FRAGMENTS above. This is checked here (not earlier, in the
+  // caller) so the local-table path above still runs first — some short
+  // "prep-looking" strings can coincidentally be real foods.
+  if (!isLikelyFoodFragment(name)) {
+    return { per100g: localEntry.per100g, entry: localEntry, wasResolved: false, matchedDescription: undefined };
+  }
+
   const cached = await getCachedNutrition(name);
   if (cached) return { per100g: cached, entry: localEntry, wasResolved: true, matchedDescription: "cached USDA match" };
 
@@ -377,6 +511,12 @@ export async function estimateMacrosPerServing(
       // count. A genuine quantity-less ingredient (e.g. "salt to taste")
       // also still has hasExplicitAmount: true from its own line, so this
       // only affects fragments with neither a quantity nor any food match.
+      //
+      // wasResolved is now also false for anything caught by the
+      // KNOWN_BAD_FRAGMENTS / isLikelyFoodFragment pre-filter inside
+      // resolveIngredientNutrition, so prep fragments that USDA would
+      // otherwise have "found" a false match for are correctly treated
+      // as stray fragments here too.
       const isStrayFragment = !hasExplicitAmount && !wasResolved;
       const grams = isStrayFragment ? 0 : toGrams(amount, unit, entry);
       const scale = grams / 100;
