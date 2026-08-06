@@ -23,7 +23,8 @@ import { useFocusEffect } from "expo-router";
 import { useColors } from "@/hooks/useColors";
 import { useGrocerySync, useRecipeSync } from "@/lib/sync";
 import type { Macros as MacrosShared } from "@/lib/types";
-import { MacroBar, MacroPills } from "@/components/MacroDisplay";
+import { MacroBar, MacroPills, IngredientBreakdown } from "@/components/MacroDisplay";
+import type { IngredientBreakdownItem } from "@/lib/macros";
 import { SavedToast } from "@/components/SavedToast";
 import { CookMode } from "@/components/CookMode";
 import type { PersonalRecipe } from "@/lib/types";
@@ -123,6 +124,7 @@ type Recipe = {
   ingredients: RecipeIngredient[];
   instructions: string[];
   macros?: Macros;
+  ingredientBreakdown?: IngredientBreakdownItem[];
 };
 
 type WheelData = {
@@ -624,7 +626,10 @@ function RecipeDetailModal({
             )}
 
             {recipe.macros && (
-              <MacroBar macros={recipe.macros} colors={colors} />
+              <>
+                <MacroBar macros={recipe.macros} colors={colors} />
+                <IngredientBreakdown items={recipe.ingredientBreakdown} colors={colors} />
+              </>
             )}
 
             {recipe.ingredients.length > 0 && (
