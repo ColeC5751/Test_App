@@ -59,7 +59,7 @@ export default async function handler(req: any, res: any) {
         }));
 
         const servings = r.servings ?? 4;
-        const totalMacros = calculateMacros(mappedIngredients);
+        const { totals: totalMacros, breakdown } = calculateMacros(mappedIngredients);
 
         const macros = {
           calories: Math.round(totalMacros.calories / servings),
@@ -68,6 +68,20 @@ export default async function handler(req: any, res: any) {
           fat:      Math.round(totalMacros.fat       / servings),
           fiber:    Math.round(totalMacros.fiber     / servings),
         };
+
+        // Scaled to per-serving too, same reason as `macros` above — a
+        // breakdown row showing whole-recipe grams/calories next to a
+        // per-serving total reads as contradictory even when both
+        // numbers are individually correct.
+        const ingredientBreakdown = breakdown.map((item) => ({
+          ...item,
+          grams: item.grams / servings,
+          calories: item.calories / servings,
+          protein: item.protein / servings,
+          carbs: item.carbs / servings,
+          fat: item.fat / servings,
+          fiber: item.fiber / servings,
+        }));
 
         return {
           id: r.id,
@@ -78,6 +92,7 @@ export default async function handler(req: any, res: any) {
           ingredients: mappedIngredients,
           instructions: (r.analyzedInstructions?.[0]?.steps ?? []).map((s: any) => s.step),
           macros,
+          ingredientBreakdown,
         };
       }),
     });
@@ -270,15 +285,15 @@ const nutritionData: Record<string, NutritionPer100> = {
   "brown sugar":     { calories: 380, protein: 0,   carbs: 98,  fat: 0,   fiber: 0 },
 };
 
-function lookupNutrition(name: string): NutritionPer100 | null {
+function lookupNutrition(name: string): { data: NutritionPer100; matchedKey: string } | null {
   const lower = name.toLowerCase().trim();
-  if (nutritionData[lower]) return nutritionData[lower];
+  if (nutritionData[lower]) return { data: nutritionData[lower], matchedKey: lower };
   const keys = Object.keys(nutritionData).sort((a, b) => b.length - a.length);
   for (const key of keys) {
-    if (lower.includes(key)) return nutritionData[key];
+    if (lower.includes(key)) return { data: nutritionData[key], matchedKey: key };
   }
   for (const key of keys) {
-    if (key.includes(lower)) return nutritionData[key];
+    if (key.includes(lower)) return { data: nutritionData[key], matchedKey: key };
   }
   return null;
 }
@@ -289,23 +304,63 @@ function toGrams(amount: number, unit: string): number {
   return amount * (UNIT_TO_GRAMS[key] ?? 100);
 }
 
-function calculateMacros(ingredients: { amount: number; unit: string; name: string }[]): Macros {
+// Shaped to match IngredientBreakdownItem in the RN app's lib/macros.ts —
+// same field names, so the existing <IngredientBreakdown> component can
+// render this directly with zero changes on the client side. NOT
+// literally imported from there (this is a separate Vercel function,
+// not part of the RN app's build) — kept structurally identical instead.
+// If that client-side type ever changes shape, this needs a matching
+// update by hand.
+type IngredientBreakdownItem = {
+  line: string;
+  name: string;
+  matchedDescription?: string;
+  unresolved: boolean;
+  grams: number;
+  calories: number;
+  protein: number;
+  carbs: number;
+  fat: number;
+  fiber: number;
+};
+
+function calculateMacros(
+  ingredients: { amount: number; unit: string; name: string; original: string }[]
+): { totals: Macros; breakdown: IngredientBreakdownItem[] } {
   const totals: Macros = { calories: 0, protein: 0, carbs: 0, fat: 0, fiber: 0 };
+  const breakdown: IngredientBreakdownItem[] = [];
   for (const ing of ingredients) {
-    const nutrition = lookupNutrition(ing.name);
-    if (!nutrition) continue;
-    const factor = toGrams(ing.amount, ing.unit) / 100;
-    totals.calories += nutrition.calories * factor;
-    totals.protein  += nutrition.protein  * factor;
-    totals.carbs    += nutrition.carbs    * factor;
-    totals.fat      += nutrition.fat      * factor;
-    totals.fiber    += nutrition.fiber    * factor;
+    const match = lookupNutrition(ing.name);
+    const grams = toGrams(ing.amount, ing.unit);
+    const factor = grams / 100;
+    const item: IngredientBreakdownItem = {
+      line: ing.original || ing.name,
+      name: ing.name,
+      matchedDescription: match ? `local table: ${match.matchedKey}` : undefined,
+      unresolved: !match,
+      grams: match ? grams : 0,
+      calories: match ? match.data.calories * factor : 0,
+      protein: match ? match.data.protein * factor : 0,
+      carbs: match ? match.data.carbs * factor : 0,
+      fat: match ? match.data.fat * factor : 0,
+      fiber: match ? match.data.fiber * factor : 0,
+    };
+    breakdown.push(item);
+    if (!match) continue;
+    totals.calories += item.calories;
+    totals.protein += item.protein;
+    totals.carbs += item.carbs;
+    totals.fat += item.fat;
+    totals.fiber += item.fiber;
   }
   return {
-    calories: Math.round(totals.calories),
-    protein:  Math.round(totals.protein),
-    carbs:    Math.round(totals.carbs),
-    fat:      Math.round(totals.fat),
-    fiber:    Math.round(totals.fiber),
+    totals: {
+      calories: Math.round(totals.calories),
+      protein: Math.round(totals.protein),
+      carbs: Math.round(totals.carbs),
+      fat: Math.round(totals.fat),
+      fiber: Math.round(totals.fiber),
+    },
+    breakdown,
   };
 }
