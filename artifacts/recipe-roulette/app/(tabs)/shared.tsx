@@ -24,12 +24,14 @@ import {
   ScrollView,
   StyleSheet,
   Text,
+  TextInput,
   View,
 } from "react-native";
 
 import { useColors } from "@/hooks/useColors";
 import { useRequireSession } from "@/hooks/useRequireSession";
 import { supabase } from "@/lib/supabase";
+import { deleteAccount } from "@/lib/account";
 import {
   useSharedWithMePlans,
   useSharedWithMeGroceryLists,
@@ -147,6 +149,146 @@ const confirmStyles = StyleSheet.create({
   btnText: { fontSize: 14, fontFamily: "Inter_600SemiBold" },
 });
 
+// ─── Delete Account Modal ───────────────────────────────────────────────────
+// Deliberately a separate, stricter component from ConfirmModal above,
+// rather than reusing it with a scarier icon. Account deletion is
+// permanent and irreversible in a way sign-out and "remove shared item"
+// aren't — this requires typing DELETE before the button even becomes
+// pressable, so it can't be dismissed with a single reflexive tap the way
+// a two-button Alert can. Calls the delete-account Edge Function via
+// lib/account.ts; the actual data/auth deletion happens server-side (see
+// that function for why it can't happen in the client).
+
+const DELETE_CONFIRM_PHRASE = "DELETE";
+
+function DeleteAccountModal({
+  visible,
+  onClose,
+  onDeleted,
+}: {
+  visible: boolean;
+  onClose: () => void;
+  onDeleted: () => void;
+}) {
+  const colors = useColors();
+  const [confirmText, setConfirmText] = useState("");
+  const [deleting, setDeleting] = useState(false);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+
+  const canConfirm = confirmText.trim().toUpperCase() === DELETE_CONFIRM_PHRASE && !deleting;
+
+  const handleClose = () => {
+    if (deleting) return; // don't allow dismissing mid-request
+    setConfirmText("");
+    setErrorMessage(null);
+    onClose();
+  };
+
+  const handleDelete = async () => {
+    if (!canConfirm) return;
+    setDeleting(true);
+    setErrorMessage(null);
+
+    const result = await deleteAccount();
+
+    if (!result.success) {
+      setDeleting(false);
+      setErrorMessage(result.message);
+      return;
+    }
+
+    Platform.OS !== "web" && Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    setConfirmText("");
+    setDeleting(false);
+    onDeleted();
+  };
+
+  return (
+    <Modal visible={visible} animationType="fade" transparent onRequestClose={handleClose}>
+      <View style={confirmStyles.overlay}>
+        <View style={[confirmStyles.card, { backgroundColor: colors.background, borderColor: colors.border }]}>
+          <View style={[confirmStyles.iconWrap, { backgroundColor: colors.secondary }]}>
+            <Feather name="alert-triangle" size={20} color={colors.destructive} />
+          </View>
+
+          <Text style={[confirmStyles.title, { color: colors.foreground }]}>Delete your account?</Text>
+          <Text style={[confirmStyles.message, { color: colors.mutedForeground }]}>
+            This permanently deletes your account, recipes, meal plans, and grocery lists. Shared plans/lists you
+            created will no longer be accessible to anyone you shared them with. This cannot be undone.
+          </Text>
+
+          <Text style={[deleteStyles.inputLabel, { color: colors.mutedForeground }]}>
+            Type DELETE to confirm
+          </Text>
+          <TextInput
+            value={confirmText}
+            onChangeText={setConfirmText}
+            autoCapitalize="characters"
+            autoCorrect={false}
+            editable={!deleting}
+            placeholder="DELETE"
+            placeholderTextColor={colors.mutedForeground}
+            style={[
+              deleteStyles.input,
+              { backgroundColor: colors.secondary, borderColor: colors.border, color: colors.foreground },
+            ]}
+          />
+
+          {errorMessage && (
+            <Text style={[deleteStyles.errorText, { color: colors.destructive }]}>{errorMessage}</Text>
+          )}
+
+          <View style={confirmStyles.actions}>
+            <Pressable
+              onPress={handleClose}
+              disabled={deleting}
+              style={({ pressed }) => [
+                confirmStyles.btn,
+                { backgroundColor: colors.card, borderColor: colors.border, borderWidth: 1 },
+                (pressed || deleting) && { opacity: 0.7 },
+              ]}
+            >
+              <Text style={[confirmStyles.btnText, { color: colors.foreground }]}>Cancel</Text>
+            </Pressable>
+            <Pressable
+              onPress={handleDelete}
+              disabled={!canConfirm}
+              style={({ pressed }) => [
+                confirmStyles.btn,
+                { backgroundColor: colors.destructive },
+                (!canConfirm || pressed) && { opacity: canConfirm ? 0.85 : 0.4 },
+              ]}
+            >
+              {deleting ? (
+                <ActivityIndicator color="#fff" size="small" />
+              ) : (
+                <Text style={[confirmStyles.btnText, { color: "#fff" }]}>Delete Account</Text>
+              )}
+            </Pressable>
+          </View>
+        </View>
+      </View>
+    </Modal>
+  );
+}
+
+const deleteStyles = StyleSheet.create({
+  inputLabel: { fontSize: 11, fontFamily: "Inter_600SemiBold", letterSpacing: 1, alignSelf: "flex-start", marginTop: 4 },
+  input: {
+    width: "100%",
+    borderWidth: 1,
+    borderRadius: 10,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    fontSize: 15,
+    fontFamily: "Inter_600SemiBold",
+    marginTop: 6,
+    marginBottom: 8,
+    textAlign: "center",
+  },
+  errorText: { fontSize: 12, fontFamily: "Inter_400Regular", textAlign: "center", marginBottom: 8 },
+});
+
 function formatJoinedAt(iso: string): string {
   const d = new Date(iso);
   return d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
@@ -171,6 +313,8 @@ export default function SharedWithMeScreen() {
 
   const [showSignOutModal, setShowSignOutModal] = useState(false);
   const [signingOut, setSigningOut] = useState(false);
+
+  const [showDeleteAccountModal, setShowDeleteAccountModal] = useState(false);
 
   const [pendingRemoval, setPendingRemoval] = useState<PendingRemoval>(null);
   const [removing, setRemoving] = useState(false);
@@ -219,6 +363,31 @@ export default function SharedWithMeScreen() {
   // removing immediately — same reasoning as sign out above.
   const handleRequestRemove = (kind: "plan" | "grocery", id: string, title: string) => {
     setPendingRemoval({ kind, id, title });
+  };
+
+  // Fires once DeleteAccountModal's Edge Function call succeeds. Mirrors
+  // confirmSignOut's local-cache cleanup below (same AsyncStorage keys),
+  // since the account no longer exists to sync back to on next launch —
+  // there's nothing to "resume" into. Routes to /auth same as sign-out,
+  // with a plain Alert confirming what happened since there's no screen
+  // left to show a toast on (the account itself is gone).
+  const handleAccountDeleted = async () => {
+    setShowDeleteAccountModal(false);
+
+    await AsyncStorage.multiRemove([
+      "@recipe_roulette_grocery",
+      "@recipe_roulette_grocery_row_id",
+      "@recipe_roulette_plan",
+      "@recipe_roulette_plan_row_id",
+      "@recipe_roulette_personal",
+    ]);
+
+    router.replace("/auth");
+    // Slight delay so the alert appears after navigation settles rather
+    // than racing the route transition.
+    setTimeout(() => {
+      Alert.alert("Account deleted", "Your account and all associated data have been permanently removed.");
+    }, 400);
   };
 
   // Fires once the person taps "Remove" in the confirm modal. This removes
@@ -381,6 +550,23 @@ export default function SharedWithMeScreen() {
             ))}
           </>
         )}
+
+        {/* Account management — placed at the bottom of the screen so it's
+            always reachable regardless of whether the person has any
+            shared plans/lists, but visually secondary to the actual
+            content above. Discoverability matters here (App Store review
+            checks that account deletion isn't buried), but it shouldn't
+            compete with the screen's primary purpose for attention. */}
+        <View style={[styles.accountSection, { borderTopColor: colors.border }]}>
+          <Text style={[styles.sectionLabel, { color: colors.mutedForeground }]}>ACCOUNT</Text>
+          <Pressable
+            onPress={() => setShowDeleteAccountModal(true)}
+            style={({ pressed }) => [styles.deleteAccountLink, pressed && { opacity: 0.7 }]}
+          >
+            <Feather name="trash-2" size={14} color={colors.destructive} />
+            <Text style={[styles.deleteAccountText, { color: colors.destructive }]}>Delete Account</Text>
+          </Pressable>
+        </View>
       </ScrollView>
 
       <ConfirmModal
@@ -406,6 +592,12 @@ export default function SharedWithMeScreen() {
         onConfirm={confirmRemove}
         onCancel={() => setPendingRemoval(null)}
         busy={removing}
+      />
+
+      <DeleteAccountModal
+        visible={showDeleteAccountModal}
+        onClose={() => setShowDeleteAccountModal(false)}
+        onDeleted={handleAccountDeleted}
       />
     </>
   );
@@ -470,6 +662,9 @@ const styles = StyleSheet.create({
   heading: { fontSize: 26, fontFamily: "Inter_700Bold", marginBottom: 4 },
   sub: { fontSize: 13, fontFamily: "Inter_400Regular" },
   sectionLabel: { fontSize: 10, fontFamily: "Inter_600SemiBold", letterSpacing: 2, marginBottom: 10 },
+  accountSection: { marginTop: 32, paddingTop: 20, borderTopWidth: 1 },
+  deleteAccountLink: { flexDirection: "row", alignItems: "center", gap: 8, paddingVertical: 6 },
+  deleteAccountText: { fontSize: 14, fontFamily: "Inter_600SemiBold" },
   empty: { alignItems: "center", paddingVertical: 64, gap: 12, paddingHorizontal: 24 },
   emptyText: { fontSize: 14, fontFamily: "Inter_400Regular", textAlign: "center", lineHeight: 20 },
   row: {
