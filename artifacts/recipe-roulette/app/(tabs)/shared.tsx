@@ -374,6 +374,22 @@ export default function SharedWithMeScreen() {
   const handleAccountDeleted = async () => {
     setShowDeleteAccountModal(false);
 
+    // The account no longer exists server-side after deleteAccount()
+    // succeeds, but the Supabase client is still holding a session token
+    // from before deletion — it has no way to know the account was
+    // deleted until that token is actually used and rejected. Without
+    // clearing it here, whatever route guard (useRequireSession /
+    // useSessionStatus) decides "there's a session → show the tabs" keeps
+    // treating this as a signed-in user, which silently overrides the
+    // router.replace("/auth") below the moment it re-runs.
+    //
+    // scope: "local" clears the cached session/tokens on this device only
+    // and skips calling Supabase's server-side logout endpoint — that
+    // endpoint would just fail (or no-op) anyway since the user it would
+    // be invalidating a session for no longer exists, so there's no
+    // reason to wait on it or risk it throwing.
+    await supabase.auth.signOut({ scope: "local" });
+
     await AsyncStorage.multiRemove([
       "@recipe_roulette_grocery",
       "@recipe_roulette_grocery_row_id",
